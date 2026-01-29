@@ -1,0 +1,367 @@
+import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { CredencialesWapi } from './entities/credenciales-wapi.entity';
+import { Mensaje } from '../inbox/entities/mensaje.entity';
+import { Lead } from '../inbox/entities/lead.entity';
+import { Prospecto } from '../inbox/entities/prospecto.entity';
+import { AiService } from '../ia/ia.service';
+import { WapiService } from './wapi.service';
+import { SmartSplitService } from '../ia/smart-split.service';
+import { InboxGateway } from '../inbox/inbox.gateway';
+import { RedisService } from '../common/redis/redis.service';
+
+@Injectable()
+export class WebhookService implements OnModuleInit {
+    private readonly logger = new Logger(WebhookService.name);
+
+    constructor(
+        private configService: ConfigService,
+        @InjectRepository(CredencialesWapi)
+        private credencialesRepo: Repository<CredencialesWapi>,
+        @InjectRepository(Mensaje)
+        private mensajeRepo: Repository<Mensaje>,
+        @InjectRepository(Lead)
+        private leadRepo: Repository<Lead>,
+        @InjectRepository(Prospecto)
+        private prospectoRepo: Repository<Prospecto>,
+        private aiService: AiService,
+        private wapiService: WapiService,
+        private smartSplitService: SmartSplitService,
+        @Inject(forwardRef(() => InboxGateway))
+        private inboxGateway: InboxGateway,
+        private redisService: RedisService,
+    ) { }
+
+    async onModuleInit() {
+        await this.syncCredentialsFromEnv();
+    }
+
+    private async syncCredentialsFromEnv() {
+        try {
+            const token = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
+            const phoneId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
+            const businessId = this.configService.get<string>('META_BUSINESS_ACCOUNT_ID');
+            const appId = this.configService.get<string>('META_APP_ID');
+            const verifyToken = this.configService.get<string>('WHATSAPP_WEBHOOK_VERIFY_TOKEN');
+            const codigoEmpresa = 1; // Default para MVP
+
+            if (!token || !phoneId) {
+                this.logger.warn('Credenciales de Meta no encontradas en .env. Saltando sincronización.');
+                return;
+            }
+
+            // Buscar si ya existen credenciales para la empresa 1
+            const credenciales = await this.credencialesRepo.find({ where: { codigoEmpresa } });
+
+            let credencial: CredencialesWapi;
+
+            if (credenciales.length > 0) {
+                // Tomar el primero
+                credencial = credenciales[0];
+
+                // Si hay duplicados, borrarlos
+                if (credenciales.length > 1) {
+                    const duplicados = credenciales.slice(1);
+                    const ids = duplicados.map(c => c.id);
+                    await this.credencialesRepo.delete(ids);
+                    this.logger.warn(`⚠️ Se encontraron y eliminaron ${ids.length} credenciales duplicadas para empresa ${codigoEmpresa}.`);
+                }
+            } else {
+                credencial = this.credencialesRepo.create({ codigoEmpresa });
+            }
+
+            // Actualizar siempre con lo que hay en el .env
+            credencial.wapiToken = token;
+            credencial.wapiPhoneId = phoneId;
+            credencial.wapiBusinessId = businessId;
+            credencial.appId = appId;
+            credencial.verifyToken = verifyToken;
+            credencial.estado = 1;
+
+            await this.credencialesRepo.save(credencial);
+            this.logger.log('Credenciales WAPI sincronizadas desde .env exitosamente.');
+
+        } catch (error) {
+            this.logger.error(`Error sincronizando credenciales WAPI: ${error.message}`);
+        }
+    }
+
+    verifyWebhook(mode: string, token: string, challenge: string): string {
+        const verifyToken = this.configService.get<string>('WHATSAPP_WEBHOOK_VERIFY_TOKEN');
+
+        if (mode === 'subscribe' && token === verifyToken) {
+            this.logger.log('Webhook verificado correctamente');
+            return challenge;
+        }
+
+        this.logger.warn(`Fallo verificacion Webhook: Token enviado '${token}' no coincide con env.`);
+        return null;
+    }
+
+    async processIncomingMessage(codigoEmpresa: number, body: any) {
+        try {
+            if (body.object === 'whatsapp_business_account') {
+                const entry = body.entry?.[0];
+                const changes = entry?.changes?.[0];
+                const value = changes?.value;
+
+                // Procesar Mensajes Entrantes
+                if (value?.messages) {
+                    const message = value.messages[0];
+                    const contact = value.contacts?.[0];
+
+                    await this.handleIncomingMessage(codigoEmpresa, message, contact);
+                }
+
+                // Procesar Estados (Sent, Delivered, Read)
+                if (value?.statuses) {
+                    const status = value.statuses[0];
+                    await this.handleStatusUpdate(status);
+                }
+            }
+        } catch (error) {
+            this.logger.error(`Error procesando mensaje webhook: ${error.message}`, error.stack);
+        }
+    }
+
+
+    // Mapa para controlar los timeouts de debounce por lead
+    private timeouts = new Map<string, NodeJS.Timeout>();
+
+    private async handleIncomingMessage(codigoEmpresa: number, message: any, contact: any) {
+        const waId = contact?.wa_id;
+        const from = message.from;
+        const type = message.type;
+        const body = message.text?.body || message.button?.text || '[Multimedia]';
+        const timestamp = new Date(parseInt(message.timestamp) * 1000);
+
+        this.logger.log(`Mensaje recibido de ${from}: ${body}`);
+
+        // 1. Buscar o Crear Lead (Identidad)
+        let lead = await this.leadRepo.findOne({
+            where: { telefono: from } // Ahora buscamos en tbl_leads por teléfono único
+        });
+
+        if (!lead) {
+            // Crear nuevo Lead
+            lead = this.leadRepo.create({
+                codigoEmpresa,
+                telefono: from,
+                nombre: contact?.profile?.name || 'Lead WhatsApp',
+                // UUID se genera automáticamente en la entidad
+                fechaRegistro: new Date(),
+            });
+            await this.leadRepo.save(lead);
+            this.logger.log(`Nuevo Lead creado: ${lead.uuid}`);
+
+            // Opcional: Crear un Prospecto "Orgánico" por defecto para este Lead
+            const nuevoProspecto = this.prospectoRepo.create({
+                idLead: lead.id,
+                codigoEmpresa,
+                origenDato: 'WhatsApp Inbound',
+                origenId: 3,
+                estadoGestion: 'nuevo',
+                fechaRegistro: new Date()
+            });
+            await this.prospectoRepo.save(nuevoProspecto);
+        }
+
+        // 2. Guardar Mensaje en BD
+        const nuevoMensaje = this.mensajeRepo.create({
+            codigoEmpresa,
+            leadUuid: lead.uuid, // Vinculamos al Lead
+            idEmisorTipo: 1, // 1 = Lead/Cliente
+            contenido: body,
+            numeroTelefono: from,
+            fechaRecibido: new Date(),
+            fechaCreacion: new Date(),
+            tipoMultimedia: type !== 'text' ? type : null,
+            wamidMsg: message.id,
+            leido: 0
+        });
+
+        await this.mensajeRepo.save(nuevoMensaje);
+        this.logger.log(`Mensaje guardado ID: ${nuevoMensaje.id}`);
+
+        // Notificar mensaje nuevo en tiempo real
+        this.inboxGateway.notifyNewMessage(codigoEmpresa, lead.uuid, {
+            tipo: 'mensaje',
+            id: nuevoMensaje.id,
+            contenido: nuevoMensaje.contenido,
+            fechaCreacion: nuevoMensaje.fechaCreacion,
+            fechaRecibido: nuevoMensaje.fechaRecibido,
+            idEmisorTipo: nuevoMensaje.idEmisorTipo,
+            tipoEmisor: 'Prospecto',
+            urlMultimedia: nuevoMensaje.urlMultimedia,
+            tipoMultimedia: nuevoMensaje.tipoMultimedia,
+            estadoMensaje: nuevoMensaje.estadoMensaje,
+            leido: nuevoMensaje.leido,
+        });
+
+        // Notificar actualización de conversaciones (para que aparezcan nuevos leads)
+        this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
+
+        // 3. Enviar "Escribiendo..." / Marcar Leído (Legacy Style)
+        await this.wapiService.markAsReadAndTyping(codigoEmpresa, message.id);
+
+        // ============================================================
+        // LÓGICA DE BUFFERING (REDIS + DEBOUNCE)
+        // ============================================================
+
+        // Agregar mensaje actual al buffer de Redis
+        await this.redisService.appendMessageToBuffer(lead.uuid, body);
+
+        // Configuración de tiempo de espera
+        const bufferSeconds = parseInt(this.configService.get<string>('MESSAGE_BUFFER_SECONDS', '5'));
+        const delayMs = bufferSeconds * 1000;
+
+        // Limpiar timeout anterior si existe (Reiniciar el contador - Debounce)
+        if (this.timeouts.has(lead.uuid)) {
+            clearTimeout(this.timeouts.get(lead.uuid));
+            this.logger.debug(`Reiniciando buffer timer para Lead: ${lead.uuid}`);
+        }
+
+        // Configurar nuevo timeout
+        const timeoutId = setTimeout(async () => {
+            this.logger.log(`Procesando buffer de mensajes para Lead: ${lead.uuid} tras ${bufferSeconds}s de silencio.`);
+            this.timeouts.delete(lead.uuid); // Limpiar referencia local
+
+            try {
+                // Recuperar y limpiar buffer desde Redis
+                const mensajesBuffered = await this.redisService.getAndClearBuffer(lead.uuid);
+
+                if (!mensajesBuffered || mensajesBuffered.length === 0) {
+                    return;
+                }
+
+                // Unir mensajes
+                const mensajeUnificado = mensajesBuffered.join('\n');
+                this.logger.log(`Mensaje unificado para IA: "${mensajeUnificado}"`);
+
+                // 4. Generar Respuesta con IA
+                const historial = []; // Historial se gestiona internamente en AiService si está vacío
+
+                const respuestaIA = await this.aiService.generarRespuesta(
+                    mensajeUnificado,
+                    historial,
+                    codigoEmpresa,
+                    lead.uuid,
+                    from // Número de teléfono del lead
+                );
+
+                this.logger.log(`Respuesta IA generada: ${respuestaIA}`);
+
+                if (!respuestaIA) {
+                    this.logger.log('Bot pausado o sin respuesta. No se enviará mensaje.');
+                    return;
+                }
+
+                // 5. Smart Split & Envío
+                const mensajesSplit = await this.smartSplitService.splitMessage(respuestaIA);
+
+                let conversacionFacturable = 0;
+
+                const ultimoMensajeBot = await this.mensajeRepo.findOne({
+                    where: {
+                        leadUuid: lead.uuid,
+                        codigoEmpresa,
+                        idEmisorTipo: 2
+                    },
+                    order: { fechaCreacion: 'DESC' }
+                });
+
+                if (!ultimoMensajeBot) {
+                    conversacionFacturable = 1;
+                    this.logger.log(`[Stats] Nueva sesión facturable: Primer mensaje del bot para lead ${lead.uuid}`);
+                } else {
+                    const ahora = new Date();
+                    const fechaUltimo = new Date(ultimoMensajeBot.fechaCreacion);
+                    const diffMs = ahora.getTime() - fechaUltimo.getTime();
+                    const diffHoras = diffMs / (1000 * 60 * 60);
+
+                    if (diffHoras > 24) {
+                        conversacionFacturable = 1;     
+                        this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje hace ${diffHoras.toFixed(2)}h (>24h) para lead ${lead.uuid}`);
+                    } else {
+                        this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje hace ${diffHoras.toFixed(2)}h (<24h) para lead ${lead.uuid}`);
+                    }
+                }
+                // ------------------------------------------------------------
+
+                for (let i = 0; i < mensajesSplit.length; i++) {
+                    const msgFragment = mensajesSplit[i];
+
+                    // Solo el primer mensaje del bloque lleva el flag de facturable (si aplica)
+                    // Y solo si conversacionFacturable era 1.
+                    // Ajuste: si ya mandamos uno facturable en este loop, los siguientes son 0.
+                    // Pero espera, conversacionFacturable se calculó en base al ULTIMO mensaje en BD.
+                    // Al insertar el primero de este loop, ya se actualiza "último".
+                    // Asi que para el batch actual:
+                    const isFacturable = (i === 0 && conversacionFacturable === 1) ? 1 : 0;
+
+                    if (isFacturable) {
+                        this.logger.log(`[Stats] Marcando mensaje actual como FACTURABLE (inicio de sesión).`);
+                    }
+
+                    // a. Guardar Respuesta Parcial en BD
+                    const mensajeBot = this.mensajeRepo.create({
+                        codigoEmpresa,
+                        leadUuid: lead.uuid,
+                        idEmisorTipo: 2, // 2 = Bot
+                        contenido: msgFragment,
+                        numeroTelefono: from,
+                        fechaRecibido: null,
+                        fechaEnvio: new Date(),
+                        fechaCreacion: new Date(),
+                        estadoMensaje: 'enviado',
+                        leido: 1,
+                        conversacionFacturable: isFacturable
+                    });
+                    const mensajeBotGuardado = await this.mensajeRepo.save(mensajeBot);
+
+                    // Notificar respuesta del bot en tiempo real
+                    this.inboxGateway.notifyNewMessage(codigoEmpresa, lead.uuid, {
+                        tipo: 'mensaje',
+                        id: mensajeBotGuardado.id,
+                        contenido: mensajeBotGuardado.contenido,
+                        fechaCreacion: mensajeBotGuardado.fechaCreacion,
+                        fechaEnvio: mensajeBotGuardado.fechaEnvio,
+                        idEmisorTipo: mensajeBotGuardado.idEmisorTipo,
+                        tipoEmisor: 'Bot',
+                        urlMultimedia: null,
+                        tipoMultimedia: null,
+                        estadoMensaje: mensajeBotGuardado.estadoMensaje,
+                        leido: mensajeBotGuardado.leido,
+                    });
+
+                    // b. Enviar Fragmento por WhatsApp
+                    await this.wapiService.sendMessage(codigoEmpresa, from, msgFragment);
+                }
+
+                // Notificar actualización de conversaciones después de que el bot responde
+                this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
+
+            } catch (error) {
+                this.logger.error(`Error procesando buffer IA para lead ${lead.uuid}: ${error.message}`);
+            }
+
+        }, delayMs);
+
+        // Guardar referencia del timeout
+        this.timeouts.set(lead.uuid, timeoutId);
+    }
+
+    private async handleStatusUpdate(status: any) {
+        const wamid = status.id;
+        const newState = status.status; // sent, delivered, read
+
+        await this.mensajeRepo.update(
+            { wamidMsg: wamid },
+            { estadoMensaje: newState }
+        );
+
+        this.logger.log(`Estado mensaje actualizado: ${wamid} -> ${newState}`);
+    }
+}

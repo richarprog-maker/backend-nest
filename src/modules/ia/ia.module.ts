@@ -1,0 +1,39 @@
+import { Module, forwardRef } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AiService } from './ia.service';
+import { PromptService } from './prompt.service';
+import { ToolsExecutionService } from './tools/tools-execution.service';
+import { HistorialChatService } from './historial-chat.service';
+import { QdrantVectorService } from './qdrant-vector.service';
+import { AgentService } from './agent.service';
+import { ProjectsSearchService } from './projects-search.service';
+import { HistorialChatAi } from './entities/historial-chat-ai.entity';
+import { SesionConversacion } from './entities/sesion-conversacion.entity';
+import { Bot } from './entities/bot.entity';
+import { ContextoLead } from './entities/contexto-lead.entity';
+import { CitasModule } from '../citas/citas.module';
+import { RedisModule } from '../common/redis/redis.module';
+import { InboxModule } from '../inbox/inbox.module';
+
+@Module({
+    imports: [
+        ConfigModule,
+        CitasModule,
+        RedisModule,
+        forwardRef(() => import('../webhook_meta/webhook.module').then(m => m.WebhookModule)),
+        forwardRef(() => InboxModule),
+        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, ContextoLead])
+    ],
+    providers: [
+        AiService,
+        PromptService,
+        ToolsExecutionService,
+        HistorialChatService,
+        QdrantVectorService,
+        AgentService,
+        ProjectsSearchService
+    ],
+    exports: [AiService, HistorialChatService, QdrantVectorService, AgentService, ProjectsSearchService],
+})
+export class AiModule { }

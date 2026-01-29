@@ -1,0 +1,37 @@
+{
+    "info": {
+        "_postman_id": "c8e268d8-7b98-4f0e-9f37-123456789abc",
+        "name": "Sperant Project API",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Listar Proyectos",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Authorization",
+                        "value": "Bearer aRTM3ZC7bx3iXPRTz0GmL3a8EhjK99q9bJdx9Gk8",
+                        "type": "text",
+                        "description": "Token de autorización. Si falla, intente agregar el prefijo 'Bearer ' antes del token."
+                    }
+                ],
+                "url": {
+                    "raw": "https://api.eterniasoft.com/v3/projects",
+                    "protocol": "https",
+                    "host": [
+                        "api",
+                        "eterniasoft",
+                        "com"
+                    ],
+                    "path": [
+                        "v3",
+                        "projects"
+                    ]
+                }
+            },
+            "response": []
+        }
+    ]
+}
