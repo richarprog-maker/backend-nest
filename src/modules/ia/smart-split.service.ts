@@ -27,8 +27,8 @@ Formato de respuesta (JSON):
 json
 {
   "messages": [
-    "Hola [nombre], claro que sí. 👋",
-    "Aquí tienes las opciones de 2 dormitorios:\n1. Unidad 101 - $100k\n2. Unidad 202 - $110k",
+    "Claro, te muestro las opciones. 👍",
+    "Estas son las opciones de 2 dormitorios:\n1. Unidad 101 - $100k\n2. Unidad 202 - $110k",
     "¿Cuál de estas te interesa más?"
   ]
 }

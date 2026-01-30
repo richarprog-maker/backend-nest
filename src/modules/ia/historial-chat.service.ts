@@ -36,7 +36,7 @@ export class HistorialChatService {
                 role: data.role,
                 tknInput: data.tknInput || 0,
                 tknOutput: data.tknOutput || 0,
-                nombreModelo: data.nombreModelo || 'gpt-4o-mini',
+                nombreModelo: data.nombreModelo,
                 metadatos: data.metadatos || null,
             });
 
@@ -52,24 +52,24 @@ export class HistorialChatService {
 
     /**
      * Obtener últimos N mensajes de una conversación
+     * IMPORTANTE: Siempre omitimos mensajes 'function'/'tool' porque OpenAI requiere
+     * que los ToolMessage estén precedidos por un AIMessage con tool_calls,
+     * y esa información se pierde al serializar/deserializar de la BD.
      */
     async obtenerUltimosMensajes(
         leadUuid: string,
         codigoEmpresa: number,
         limite: number = 12,
-        omitirFunciones: boolean = false
+        omitirFunciones: boolean = true // Por defecto true para evitar errores de OpenAI
     ): Promise<BaseMessage[]> {
         try {
             const queryBuilder = this.historialRepo
                 .createQueryBuilder('historial')
                 .where('historial.leadUuid = :leadUuid', { leadUuid })
                 .andWhere('historial.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
+                .andWhere("historial.role NOT IN ('function', 'tool')")
                 .orderBy('historial.id', 'DESC')
                 .limit(limite);
-
-            if (omitirFunciones) {
-                queryBuilder.andWhere("historial.role != 'function'");
-            }
 
             const mensajes = await queryBuilder.getMany();
 

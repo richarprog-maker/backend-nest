@@ -5,6 +5,7 @@ import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { ToolsExecutionService } from './tools/tools-execution.service';
+import { HistorialChatService } from './historial-chat.service';
 import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 
 /**
@@ -23,12 +24,11 @@ export class AgentService {
   constructor(
     private configService: ConfigService,
     private toolsExecutionService: ToolsExecutionService,
+    private historialChatService: HistorialChatService,
   ) {
-    // LLM con function calling (GPT-4)
-    const modelName = this.configService.get<string>('IA_MODEL_NAME') || 'o4-mini';
-    const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.startsWith('o');
+    const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
+    const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    // Modelos de razonamiento (o1, o3, etc) no soportan temperature 0 (o tienen fixed temp)
     const temperature = isReasoningModel ? 1 : 0;
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
@@ -57,6 +57,10 @@ export class AgentService {
         hora_cita: z.string().describe('Hora en formato HH:MM (24h)'),
         nombre_proyecto: z.string().describe('Nombre del proyecto a visitar'),
         tipo_cita: z.enum(['presencial', 'virtual']).describe('Tipo de visita'),
+        unidad_interes: z.string().optional().describe('Número de unidad que le interesó (Ej: 1702)'),
+        dormitorios: z.number().optional().describe('Cantidad de dormitorios de interés'),
+        precio_referencial: z.string().optional().describe('Precio referencial de la unidad'),
+        area: z.string().optional().describe('Area de la unidad'),
       }),
       func: async (input, config) => {
         // Metadata se pasa via config.metadata desde AgentExecutor
@@ -66,17 +70,17 @@ export class AgentService {
       },
     });
 
-    // 2️    Buscar Información (RAG con Qdrant)
-    const buscarInformacionTool = new DynamicStructuredTool({
-      name: 'buscar_informacion',
-      description: 'Busca información detallada sobre proyectos, precios, características, ubicaciones en la base de conocimientos.',
+    // 2️    Buscar Preguntas Frecuentes (FAQs)
+    const buscarPreguntasFrecuentesTool = new DynamicStructuredTool({
+      name: 'buscar_preguntas_frecuentes',
+      description: 'Responde preguntas generales sobre el proyecto buscando en la base de FAQs y documentos. Úsala para preguntas como: "¿tienen desembolso postergado?", "¿qué acabados tiene?", "¿aceptan mascotas?", "¿dónde queda?". NO la uses para buscar stock de departamentos.',
       schema: z.object({
-        queries_de_busqueda: z.array(z.string()).describe('Lista de consultas específicas para buscar'),
-        nombre_proyecto: z.string().describe('Nombre del proyecto para filtrar resultados'),
+        queries_de_busqueda: z.array(z.string()).describe('Lista de preguntas o palabras clave'),
+        nombre_proyecto: z.string().describe('Nombre del proyecto'),
       }),
       func: async (input) => {
-        const result = await this.toolsExecutionService.buscarInformacion(input);
-        return result; // Ya es un string, no necesita JSON.stringify
+        const result = await this.toolsExecutionService.buscarPreguntasFrecuentes(input);
+        return result;
       },
     });
 
@@ -114,17 +118,22 @@ export class AgentService {
       },
     });
 
-    // 5️    Enviar Brochure
+    // 5️   Enviar Brochure
     const enviarBrochureTool = new DynamicStructuredTool({
       name: 'enviar_brochure',
       description: 'Envía el brochure digital del proyecto al WhatsApp del cliente.',
       schema: z.object({
         nombre_proyecto: z.string().describe('Nombre del proyecto'),
-        formato: z.enum(['pdf', 'imagen']).describe('Formato del brochure'),
       }),
-      func: async (input) => {
-        const result = await this.toolsExecutionService.enviarBrochure(input);
-        return result; // Ya es string, no necesita JSON.stringify
+      func: async (input, config) => {
+        const { codigoEmpresa, leadUuid, phoneNumber } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.enviarBrochure({
+          nombre_proyecto: input.nombre_proyecto,
+          phoneNumber: phoneNumber,
+          codigoEmpresa: codigoEmpresa,
+          leadUuid: leadUuid,
+        });
+        return result;
       },
     });
 
@@ -162,7 +171,7 @@ export class AgentService {
       },
     });
 
-    // 🔥 HERRAMIENTA UNIVERSAL: Busca departamentos por CUALQUIER criterio
+    // HERRAMIENTA UNIVERSAL: Busca departamentos por CUALQUIER criterio
     const buscarDepartamentoUniversalTool = new DynamicStructuredTool({
       name: 'buscar_departamento',
       description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant) por CUALQUIER criterio. USA ESTA HERRAMIENTA PARA TODO lo relacionado con búsqueda de departamentos: unidad específica, dormitorios, piso, precio, cuota mensual, vista, tipología, área. Ejemplos: "unidad 1003", "2 dormitorios", "piso 5", "cuota de S/5000", "vista exterior", "departamentos disponibles". Retorna información COMPLETA y REAL del inventario.',
@@ -172,18 +181,12 @@ export class AgentService {
         piso: z.number().optional().describe('Piso específico (1-17)'),
         precio_max: z.number().optional().describe('Precio máximo en soles'),
         precio_min: z.number().optional().describe('Precio mínimo en soles'),
-        cuota_mensual: z.number().optional().describe('Cuota mensual que puede pagar (se calcula precio_max = cuota * 200)'),
         vista: z.string().optional().describe('Vista: "exterior" o "interior"'),
         tipologia: z.string().optional().describe('Tipología: "Tipo 1", "Tipo 2", etc.'),
         area_min: z.number().optional().describe('Área mínima en m²'),
       }),
       func: async (input, config) => {
         const metadata = (config as any)?.metadata || {};
-
-        // Si viene cuota_mensual, calcular precio_max
-        if (input.cuota_mensual && !input.precio_max) {
-          input.precio_max = input.cuota_mensual * 200; // Fórmula aproximada
-        }
 
         const paramsWithContext = {
           ...input,
@@ -199,7 +202,7 @@ export class AgentService {
     this.tools = [
       buscarDepartamentoUniversalTool,  //ÚNICA herramienta para TODAS las búsquedas de departamentos
       agendarCitaTool,
-      buscarInformacionTool,            // Para FAQs, características, amenidades
+      buscarPreguntasFrecuentesTool,            // Para FAQs, características, amenidades
       validarDniTool,
       generarProformaTool,
       enviarBrochureTool,
@@ -212,7 +215,7 @@ export class AgentService {
 
   /**
    * Ejecuta el agente con loop automático de tools
-   * Versión simplificada sin AgentExecutor (compatible con todas las versiones de LangChain)
+   * Versión robusta que maneja múltiples llamadas a tools
    * 
    * @param systemPrompt - Instrucciones del sistema
    * @param mensajeUsuario - Mensaje actual del usuario
@@ -244,28 +247,49 @@ export class AgentService {
 
       const modelWithTools = this.llm.bindTools(this.tools);
 
-      // 2️    Construir mensajes iniciales
-      const messages: BaseMessage[] = [
-        ...historial,
-      ];
+      // Construir mensajes iniciales
+      const messages: BaseMessage[] = [...historial];
 
-      // 3️    Loop de ejecución de tools (máximo 5 iteraciones)
-      let iteracion = 0;
+      // Generar Contexto Temporal (Fecha Actual)
+      const fechaActual = new Date().toLocaleString('es-PE', {
+        timeZone: 'America/Lima',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      const timeContext = `
+=== CONTEXTO TEMPORAL DEL SERVIDOR ===
+HOY ES: ${fechaActual}
+IMPORTANTE:
+- Todas las fechas relativas ("mañana", "el viernes") se calculan basándose en HOY.
+- NO puedes agendar citas anteriores a esta fecha y hora.
+- Si el usuario pide "mañana", calcula la fecha exacta sumando 1 día a HOY.
+======================================
+`;
+
+      const finalSystemPrompt = `${timeContext}\n\n${systemPrompt}`;
+
+      // Control de herramientas ejecutadas para evitar duplicados
+      const accionesEjecutadas = new Set<string>();
+      
+      // Máximo de iteraciones para evitar loops infinitos
       const maxIteraciones = 5;
-      let respuestaFinal: AIMessage | null = null;
+      let iteracion = 0;
 
       while (iteracion < maxIteraciones) {
         iteracion++;
         this.logger.log(`Iteración ${iteracion}/${maxIteraciones}`);
 
-        // Invocar modelo
-        const response = await modelWithTools.invoke(
-          [
-            { role: 'system', content: systemPrompt },
-            ...messages,
-            { role: 'user', content: mensajeUsuario }
-          ]
-        );
+        // Invocar modelo con tools
+        const response = await modelWithTools.invoke([
+          { role: 'system', content: finalSystemPrompt },
+          ...messages,
+          { role: 'user', content: mensajeUsuario }
+        ]);
 
         // Acumular tokens
         const tokens = this.extraerTokens(response);
@@ -274,72 +298,109 @@ export class AgentService {
           tokensAcumulados.output += tokens.output;
         }
 
-        // Agregar respuesta a mensajes
+        // Si NO hay tool_calls, esta es la respuesta final
+        if (!response.tool_calls || response.tool_calls.length === 0) {
+          this.logger.log('Respuesta sin tool_calls - Finalizando');
+          
+          const output = response.content?.toString() || "No pude generar una respuesta.";
+          
+          this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ') || 'ninguno'}`);
+          
+          return {
+            output,
+            tokensUsados: tokensAcumulados,
+            toolsEjecutados,
+          };
+        }
+
+        // HAY tool_calls - Procesarlos
+        this.logger.log(`Procesando ${response.tool_calls.length} tool_calls`);
+        
+        // Agregar respuesta del modelo a mensajes
         messages.push(response);
 
-        if (!response.tool_calls || response.tool_calls.length === 0) {
-
-          respuestaFinal = response;
-          break;
-        }
-
-        // Ejecutar tools
+        // Ejecutar TODOS los tool_calls y agregar sus respuestas
         for (const toolCall of response.tool_calls) {
           this.logger.log(`Ejecutando tool: ${toolCall.name}`);
-          toolsEjecutados.push(toolCall.name);
+          
+          let toolResult: string;
 
-          try {
-            // Encontrar tool
-            const tool = this.tools.find(t => t.name === toolCall.name);
+          // Verificar si la tool ya fue ejecutada en esta sesión
+          if (accionesEjecutadas.has(toolCall.name)) {
+            this.logger.warn(`Tool ${toolCall.name} ya fue ejecutada, enviando mensaje de bloqueo`);
+            toolResult = `[BLOQUEADO] La herramienta ${toolCall.name} ya fue ejecutada. Genera tu respuesta final con la información que ya tienes.`;
+          } else {
+            try {
+              // Encontrar tool
+              const tool = this.tools.find(t => t.name === toolCall.name);
 
-            if (!tool) {
-              throw new Error(`Tool '${toolCall.name}' no encontrada`);
+              if (!tool) {
+                throw new Error(`Tool '${toolCall.name}' no encontrada`);
+              }
+
+              // Ejecutar tool
+              toolResult = await tool.func(toolCall.args, { metadata } as any);
+              
+              // Marcar como ejecutada
+              accionesEjecutadas.add(toolCall.name);
+              toolsEjecutados.push(toolCall.name);
+              
+              // Guardar en historial
+              try {
+                await this.historialChatService.guardarMensaje({
+                  leadUuid: metadata.leadUuid,
+                  codigoEmpresa: metadata.codigoEmpresa,
+                  mensaje: { role: 'function', content: `[${toolCall.name}] ${toolResult}` },
+                  role: 'function',
+                  metadatos: { toolName: toolCall.name, args: toolCall.args }
+                });
+              } catch (histError) {
+                this.logger.warn(`No se pudo guardar tool en historial: ${histError.message}`);
+              }
+
+            } catch (error) {
+              this.logger.error(`Error ejecutando tool ${toolCall.name}: ${error.message}`);
+              toolResult = `Error ejecutando ${toolCall.name}: ${error.message}`;
             }
-
-            // Ejecutar tool (pasando metadata via config)
-            const toolResult = await tool.func(toolCall.args, {
-              metadata,
-            } as any);
-
-            // Agregar resultado como ToolMessage
-            messages.push(
-              new ToolMessage({
-                tool_call_id: toolCall.id,
-                content: toolResult,
-              })
-            );
-
-          } catch (error) {
-            this.logger.error(` Error ejecutando tool ${toolCall.name}: ${error.message}`);
-            // Agregar error como resultado
-            messages.push(
-              new ToolMessage({
-                tool_call_id: toolCall.id,
-                content: `Error: ${error.message}`,
-              })
-            );
           }
+
+          // SIEMPRE agregar ToolMessage para cada tool_call
+          messages.push(
+            new ToolMessage({
+              tool_call_id: toolCall.id,
+              content: toolResult,
+            })
+          );
         }
 
-        // Continuar al siguiente loop para generar respuesta final
+        // Continuar al siguiente loop - el modelo generará respuesta o pedirá más tools
       }
 
-      if (iteracion >= maxIteraciones) {
-        this.logger.warn(`Agente alcanzó máximo de iteraciones (${maxIteraciones})`);
+      // Si llegamos aquí, alcanzamos max iteraciones
+      this.logger.warn(`Agente alcanzó máximo de iteraciones (${maxIteraciones})`);
+      
+      // Hacer una llamada final SIN tools para forzar respuesta de texto
+      try {
+        const finalResponse = await this.llm.invoke([
+          { role: 'system', content: finalSystemPrompt + '\n\nGENERA TU RESPUESTA FINAL AHORA. No llames más herramientas.' },
+          ...messages,
+        ]);
+        
+        const output = finalResponse.content?.toString() || "No pude generar una respuesta.";
+        
+        return {
+          output,
+          tokensUsados: tokensAcumulados,
+          toolsEjecutados,
+        };
+      } catch (finalError) {
+        this.logger.error(`Error generando respuesta final: ${finalError.message}`);
+        return {
+          output: "Hubo un problema procesando tu solicitud. Por favor intenta de nuevo.",
+          tokensUsados: tokensAcumulados,
+          toolsEjecutados,
+        };
       }
-
-      // Extraer respuesta final
-      const output = respuestaFinal?.content?.toString() ||
-        messages[messages.length - 1]?.content?.toString() ||
-        "No pude generar una respuesta.";
-
-      this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ') || 'ninguno'}`);
-
-      return {
-        output,
-        tokensUsados: tokensAcumulados,
-        toolsEjecutados,
-      };
 
     } catch (error) {
       this.logger.error(`Error en agente: ${error.message}`);

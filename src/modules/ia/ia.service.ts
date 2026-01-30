@@ -45,24 +45,26 @@ export class AiService {
             let historialFormateado: BaseMessage[] = [];
 
             if (!historial || historial.length === 0) {
-                this.logger.log(`Cargando últimos 12 mensajes desde BD...`);
-                // Usar obtenerUltimosMensajes que retorna BaseMessage[] directamente
+                this.logger.log(`Cargando últimos 20 mensajes desde BD...`);
                 historialFormateado = await this.historialChatService.obtenerUltimosMensajes(
                     leadUuid,
                     codigoEmpresa,
-                    12,
-                    true // Omitir mensajes de function
+                    20,
+                    true 
                 );
             } else {
                 // Convertir historial a BaseMessage[] si es necesario
                 historialFormateado = historial as BaseMessage[];
             }
 
+            const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
+
             await this.historialChatService.guardarMensaje({
                 leadUuid,
                 codigoEmpresa,
                 mensaje: { role: 'user', content: mensajeUsuario },
                 role: 'user',
+                nombreModelo: modelName,
                 metadatos: {
                     codigoEmpresa,
                     leadUuid,
@@ -82,11 +84,15 @@ export class AiService {
             }];
             const resumenProyectosMock = "Residencial Los Lirios: Departamentos de 1, 2 y 3 dormitorios en preventa.";
 
+            // Detectar si hay historial previo para controlar saludo
+            const tieneHistorial = historialFormateado.length > 0;
+
             const systemPrompt = this.promptService.buildSystemPrompt(
                 botName,
                 botGender,
                 metadatosEmpresaMock,
-                resumenProyectosMock
+                resumenProyectosMock,
+                tieneHistorial
             );
 
             const resultado = await this.agentService.ejecutarAgente(
@@ -108,7 +114,7 @@ export class AiService {
                 role: 'assistant',
                 tknInput: resultado.tokensUsados?.input || 0,
                 tknOutput: resultado.tokensUsados?.output || 0,
-                nombreModelo: 'gpt-4o-mini',
+                nombreModelo: modelName,
                 metadatos: {
                     codigoEmpresa,
                     leadUuid,

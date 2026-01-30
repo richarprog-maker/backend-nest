@@ -225,132 +225,183 @@ export class WebhookService implements OnModuleInit {
 
         // Configurar nuevo timeout
         const timeoutId = setTimeout(async () => {
-            this.logger.log(`Procesando buffer de mensajes para Lead: ${lead.uuid} tras ${bufferSeconds}s de silencio.`);
-            this.timeouts.delete(lead.uuid); // Limpiar referencia local
+            await this.procesarBuffer(lead.uuid, codigoEmpresa, from, bufferSeconds);
+        }, delayMs);
 
-            try {
-                // Recuperar y limpiar buffer desde Redis
-                const mensajesBuffered = await this.redisService.getAndClearBuffer(lead.uuid);
+        // Guardar referencia del timeout
+        this.timeouts.set(lead.uuid, timeoutId);
+    }
+
+    // Mapa para saber si un lead está siendo procesado actualmente
+    private procesandoLead = new Set<string>();
+
+    /**
+     * Procesa el buffer de mensajes.
+     * Si llegan más mensajes mientras procesa, se agregan al buffer y se procesan después.
+     * NO usa locks ni reintentos - solo acumula mensajes.
+     */
+    private async procesarBuffer(
+        leadUuid: string,
+        codigoEmpresa: number,
+        from: string,
+        bufferSeconds: number
+    ) {
+        this.logger.log(`Procesando buffer de mensajes para Lead: ${leadUuid} tras ${bufferSeconds}s de silencio.`);
+        this.timeouts.delete(leadUuid); // Limpiar referencia local
+
+        // Si ya está procesando este lead, los mensajes se acumularán en el buffer
+        // y se procesarán cuando termine el ciclo actual
+        if (this.procesandoLead.has(leadUuid)) {
+            this.logger.log(`Lead ${leadUuid} ya está siendo procesado. Los mensajes se acumularán en el buffer.`);
+            return;
+        }
+
+        // Marcar que estamos procesando este lead
+        this.procesandoLead.add(leadUuid);
+
+        try {
+            // Loop: mientras haya mensajes en el buffer, procesarlos
+            let continuar = true;
+            while (continuar) {
+                // Recuperar y limpiar buffer desde Redis (atómico)
+                const mensajesBuffered = await this.redisService.getAndClearBuffer(leadUuid);
 
                 if (!mensajesBuffered || mensajesBuffered.length === 0) {
-                    return;
+                    continuar = false;
+                    break;
                 }
 
-                // Unir mensajes
+                // Unir todos los mensajes como uno solo
                 const mensajeUnificado = mensajesBuffered.join('\n');
-                this.logger.log(`Mensaje unificado para IA: "${mensajeUnificado}"`);
+                this.logger.log(`Mensaje unificado para IA (${mensajesBuffered.length} msgs): "${mensajeUnificado}"`);
 
-                // 4. Generar Respuesta con IA
-                const historial = []; // Historial se gestiona internamente en AiService si está vacío
+                // Generar Respuesta con IA
+                const historial = [];
 
                 const respuestaIA = await this.aiService.generarRespuesta(
                     mensajeUnificado,
                     historial,
                     codigoEmpresa,
-                    lead.uuid,
-                    from // Número de teléfono del lead
+                    leadUuid,
+                    from
                 );
 
                 this.logger.log(`Respuesta IA generada: ${respuestaIA}`);
 
                 if (!respuestaIA) {
                     this.logger.log('Bot pausado o sin respuesta. No se enviará mensaje.');
-                    return;
+                    // Verificar si llegaron más mensajes mientras procesábamos
+                    const hayMas = await this.redisService.getBufferLength(leadUuid);
+                    continuar = hayMas > 0;
+                    continue;
                 }
 
-                // 5. Smart Split & Envío
-                const mensajesSplit = await this.smartSplitService.splitMessage(respuestaIA);
+                // Enviar respuesta (código existente)
+                await this.enviarRespuestaIA(respuestaIA, codigoEmpresa, leadUuid, from);
 
-                let conversacionFacturable = 0;
-
-                const ultimoMensajeBot = await this.mensajeRepo.findOne({
-                    where: {
-                        leadUuid: lead.uuid,
-                        codigoEmpresa,
-                        idEmisorTipo: 2
-                    },
-                    order: { fechaCreacion: 'DESC' }
-                });
-
-                if (!ultimoMensajeBot) {
-                    conversacionFacturable = 1;
-                    this.logger.log(`[Stats] Nueva sesión facturable: Primer mensaje del bot para lead ${lead.uuid}`);
+                // Verificar si llegaron más mensajes mientras procesábamos
+                const hayMasMensajes = await this.redisService.getBufferLength(leadUuid);
+                if (hayMasMensajes > 0) {
+                    this.logger.log(`Hay ${hayMasMensajes} mensajes nuevos en buffer. Procesando...`);
+                    continuar = true;
                 } else {
-                    const ahora = new Date();
-                    const fechaUltimo = new Date(ultimoMensajeBot.fechaCreacion);
-                    const diffMs = ahora.getTime() - fechaUltimo.getTime();
-                    const diffHoras = diffMs / (1000 * 60 * 60);
-
-                    if (diffHoras > 24) {
-                        conversacionFacturable = 1;     
-                        this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje hace ${diffHoras.toFixed(2)}h (>24h) para lead ${lead.uuid}`);
-                    } else {
-                        this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje hace ${diffHoras.toFixed(2)}h (<24h) para lead ${lead.uuid}`);
-                    }
+                    continuar = false;
                 }
-                // ------------------------------------------------------------
-
-                for (let i = 0; i < mensajesSplit.length; i++) {
-                    const msgFragment = mensajesSplit[i];
-
-                    // Solo el primer mensaje del bloque lleva el flag de facturable (si aplica)
-                    // Y solo si conversacionFacturable era 1.
-                    // Ajuste: si ya mandamos uno facturable en este loop, los siguientes son 0.
-                    // Pero espera, conversacionFacturable se calculó en base al ULTIMO mensaje en BD.
-                    // Al insertar el primero de este loop, ya se actualiza "último".
-                    // Asi que para el batch actual:
-                    const isFacturable = (i === 0 && conversacionFacturable === 1) ? 1 : 0;
-
-                    if (isFacturable) {
-                        this.logger.log(`[Stats] Marcando mensaje actual como FACTURABLE (inicio de sesión).`);
-                    }
-
-                    // a. Guardar Respuesta Parcial en BD
-                    const mensajeBot = this.mensajeRepo.create({
-                        codigoEmpresa,
-                        leadUuid: lead.uuid,
-                        idEmisorTipo: 2, // 2 = Bot
-                        contenido: msgFragment,
-                        numeroTelefono: from,
-                        fechaRecibido: null,
-                        fechaEnvio: new Date(),
-                        fechaCreacion: new Date(),
-                        estadoMensaje: 'enviado',
-                        leido: 1,
-                        conversacionFacturable: isFacturable
-                    });
-                    const mensajeBotGuardado = await this.mensajeRepo.save(mensajeBot);
-
-                    // Notificar respuesta del bot en tiempo real
-                    this.inboxGateway.notifyNewMessage(codigoEmpresa, lead.uuid, {
-                        tipo: 'mensaje',
-                        id: mensajeBotGuardado.id,
-                        contenido: mensajeBotGuardado.contenido,
-                        fechaCreacion: mensajeBotGuardado.fechaCreacion,
-                        fechaEnvio: mensajeBotGuardado.fechaEnvio,
-                        idEmisorTipo: mensajeBotGuardado.idEmisorTipo,
-                        tipoEmisor: 'Bot',
-                        urlMultimedia: null,
-                        tipoMultimedia: null,
-                        estadoMensaje: mensajeBotGuardado.estadoMensaje,
-                        leido: mensajeBotGuardado.leido,
-                    });
-
-                    // b. Enviar Fragmento por WhatsApp
-                    await this.wapiService.sendMessage(codigoEmpresa, from, msgFragment);
-                }
-
-                // Notificar actualización de conversaciones después de que el bot responde
-                this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
-
-            } catch (error) {
-                this.logger.error(`Error procesando buffer IA para lead ${lead.uuid}: ${error.message}`);
             }
 
-        }, delayMs);
+        } catch (error) {
+            this.logger.error(`Error procesando buffer IA para lead ${leadUuid}: ${error.message}`);
+        } finally {
+            // Liberar el lead para futuros procesamientos
+            this.procesandoLead.delete(leadUuid);
+        }
+    }
 
-        // Guardar referencia del timeout
-        this.timeouts.set(lead.uuid, timeoutId);
+    /**
+     * Envía la respuesta de IA al usuario
+     */
+    private async enviarRespuestaIA(
+        respuestaIA: string,
+        codigoEmpresa: number,
+        leadUuid: string,
+        from: string
+    ) {
+        // Smart Split & Envío
+        const mensajesSplit = await this.smartSplitService.splitMessage(respuestaIA);
+
+        let conversacionFacturable = 0;
+
+        const ultimoMensajeBot = await this.mensajeRepo.findOne({
+            where: {
+                leadUuid: leadUuid,
+                codigoEmpresa,
+                idEmisorTipo: 2
+            },
+            order: { fechaCreacion: 'DESC' }
+        });
+
+        if (!ultimoMensajeBot) {
+            conversacionFacturable = 1;
+            this.logger.log(`[Stats] Nueva sesión facturable: Primer mensaje del bot para lead ${leadUuid}`);
+        } else {
+            const ahora = new Date();
+            const fechaUltimo = new Date(ultimoMensajeBot.fechaCreacion);
+            const diffMs = ahora.getTime() - fechaUltimo.getTime();
+            const diffHoras = diffMs / (1000 * 60 * 60);
+
+            if (diffHoras > 24) {
+                conversacionFacturable = 1;     
+                this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje hace ${diffHoras.toFixed(2)}h (>24h) para lead ${leadUuid}`);
+            } else {
+                this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje hace ${diffHoras.toFixed(2)}h (<24h) para lead ${leadUuid}`);
+            }
+        }
+
+        for (let i = 0; i < mensajesSplit.length; i++) {
+            const msgFragment = mensajesSplit[i];
+            const isFacturable = (i === 0 && conversacionFacturable === 1) ? 1 : 0;
+
+            if (isFacturable) {
+                this.logger.log(`[Stats] Marcando mensaje actual como FACTURABLE (inicio de sesión).`);
+            }
+
+            // a. Guardar Respuesta Parcial en BD
+            const mensajeBot = this.mensajeRepo.create({
+                codigoEmpresa,
+                leadUuid: leadUuid,
+                idEmisorTipo: 2, // 2 = Bot
+                contenido: msgFragment,
+                numeroTelefono: from,
+                fechaRecibido: null,
+                fechaEnvio: new Date(),
+                fechaCreacion: new Date(),
+                estadoMensaje: 'enviado',
+                leido: 1,
+                conversacionFacturable: isFacturable
+            });
+            const mensajeBotGuardado = await this.mensajeRepo.save(mensajeBot);
+
+            // Notificar respuesta del bot en tiempo real
+            this.inboxGateway.notifyNewMessage(codigoEmpresa, leadUuid, {
+                tipo: 'mensaje',
+                id: mensajeBotGuardado.id,
+                contenido: mensajeBotGuardado.contenido,
+                fechaCreacion: mensajeBotGuardado.fechaCreacion,
+                fechaEnvio: mensajeBotGuardado.fechaEnvio,
+                idEmisorTipo: mensajeBotGuardado.idEmisorTipo,
+                tipoEmisor: 'Bot',
+                urlMultimedia: null,
+                tipoMultimedia: null,
+                estadoMensaje: mensajeBotGuardado.estadoMensaje,
+                leido: mensajeBotGuardado.leido,
+            });
+
+            // b. Enviar Fragmento por WhatsApp
+            await this.wapiService.sendMessage(codigoEmpresa, from, msgFragment);
+        }
+
+        // Notificar actualización de conversaciones después de que el bot responde
+        this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
     }
 
     private async handleStatusUpdate(status: any) {

@@ -148,14 +148,17 @@ export class InboxService {
 
     async getHistorialChat(leadUuid: string, codigoEmpresa: number, limit: number = 200) {
         try {
+            this.logger.log(`getHistorialChat - Buscando mensajes para Lead: ${leadUuid}, Empresa: ${codigoEmpresa}`);
+
             const mensajes = await this.mensajeRepo.find({
                 where: {
                     leadUuid,
                     codigoEmpresa
                 },
-                order: { fechaCreacion: 'ASC' },
-                take: limit
+                order: { fechaCreacion: 'ASC' }
             });
+
+            this.logger.log(`getHistorialChat - Encontrados ${mensajes.length} mensajes para lead ${leadUuid}`);
 
             // Marcar mensajes del prospecto como leídos
             const resultado = await this.mensajeRepo.update(

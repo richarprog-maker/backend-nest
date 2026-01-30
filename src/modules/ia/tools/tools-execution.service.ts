@@ -69,26 +69,26 @@ export class ToolsExecutionService {
             const { results, filters_applied } = resultado;
 
             if (results.length === 0) {
-                return "Lo siento, no encontré propiedades con esas características específicas. ¿Te gustaría ver otras opciones similares?";
+                return "[ACCION_COMPLETADA] No encontre propiedades con esas caracteristicas especificas. Pregunta si quiere ver otras opciones similares.";
             }
 
             // Formatear respuesta para el LLM final
             const contextText = results.map((d: any, i: number) => {
                 const m = d.metadata;
-                return `OPCIÓN ${i + 1}:
+                return `OPCION ${i + 1}:
 - Proyecto: ${m.project_name}
 - Unidad: ${m.unit_number} (${m.type || 'Depa'})
 - Precio: ${m.currency} ${m.price_promo} (Antes: ${m.price_list})
 - Dormitorios: ${m.bedrooms}
 - Piso: ${m.floor} (${m.view})
-- Área: ${m.area_total}m2
+- Area: ${m.area_total}m2
 - Disponibilidad: ${m.availability}
 - Link Plano: ${m.url_plano}
-- Ubicación: ${m.url_ubicacion}
+- Ubicacion: ${m.url_ubicacion}
 `;
             }).join('\n');
 
-            return `Encontré estas opciones que coinciden con tu búsqueda (Filtros: ${JSON.stringify(filters_applied)}):\n\n${contextText}`;
+            return `[ACCION_COMPLETADA] Encontre estas opciones que coinciden con tu busqueda (Filtros: ${JSON.stringify(filters_applied)}):\n\n${contextText}`;
 
         } catch (error) {
             this.logger.error(`Error en búsqueda inteligente: ${error.message}`);
@@ -99,7 +99,7 @@ export class ToolsExecutionService {
     async agendarCita(params: any, codigoEmpresa: number, leadUuid: string) {
         this.logger.log(`Intentando agendar cita: ${JSON.stringify(params)}`);
 
-        const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita } = params;
+        const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, unidad_interes, dormitorios, precio_referencial } = params;
 
         // 1. Validar disponibilidad (básico)
         const ocupado = await this.citasService.existeCitaEnHorario(fecha_cita, hora_cita, codigoEmpresa);
@@ -111,6 +111,12 @@ export class ToolsExecutionService {
             };
         }
 
+        // Construir observación detallada
+        let observacion = `Proyecto interés: ${nombre_proyecto}`;
+        if (unidad_interes) observacion += ` | Unidad: ${unidad_interes}`;
+        if (dormitorios) observacion += ` | Dorms: ${dormitorios}`;
+        if (precio_referencial) observacion += ` | Precio: S/${precio_referencial}`;
+
         // 2. Crear Cita
         await this.citasService.crearCita({
             codigoEmpresa,
@@ -118,13 +124,13 @@ export class ToolsExecutionService {
             fechaCita: fecha_cita,
             horaCita: hora_cita,
             tipoCita: tipo_cita || 'presencial',
-            observacion: `Proyecto interés: ${nombre_proyecto}`,
+            observacion: observacion,
             estadoCita: 'pendiente'
         });
 
         return {
             success: true,
-            mensaje: `¡Excelente! He agendado tu visita para el proyecto ${nombre_proyecto} el día ${fecha_cita} a las ${hora_cita}.`
+            mensaje: `[ACCION_COMPLETADA] Cita agendada exitosamente para el proyecto ${nombre_proyecto} el día ${fecha_cita} a las ${hora_cita}. NO repitas esta herramienta.`
         };
     }
 
@@ -134,51 +140,58 @@ export class ToolsExecutionService {
      * - Logs integrados
      * - Compatible con cualquier VectorStore (no solo Qdrant)
      */
-    async buscarInformacion(params: any) {
+    /**
+     * Gestión de Preguntas Frecuentes (FAQs) y Datos Generales del Proyecto
+     * Busca en la colección de documentos/FAQs (NO en inventario de departamentos)
+     */
+    async buscarPreguntasFrecuentes(params: any) {
         try {
             const { queries_de_busqueda, nombre_proyecto } = params;
-            this.logger.log(`Buscando: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto}`);
+            this.logger.log(`Buscando FAQ: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto}`);
 
             const queryPrincipal = queries_de_busqueda[0];
+            // Colección de Documentos/FAQs (texto)
             const collectionName = this.configService.get<string>('QDRANT_COLLECTION_NAME', 'checor-los-lirios-e2c76d6a');
 
+            // Threshold más alto para evitar ruido
             const docs = await this.qdrantVectorService.similaritySearch(collectionName, queryPrincipal, 3);
 
             const contexto = docs.map(d => {
                 const meta = d.metadata || {};
-                if (meta.pregunta && meta.respuesta) {
-                    return `P: ${meta.pregunta}\nR: ${meta.respuesta}`;
-                }
-                if (meta.content) {
-                    return meta.content;
-                }
-                return d.pageContent || meta.text || '';
-            }).filter(c => c.trim()).join("\n\n");
 
-            this.logger.log(`RAG - Documentos: ${docs.length}, Contexto: ${contexto.length} chars`);
-            this.logger.debug(`Contexto completo: ${contexto}`);
+                // Prioridad 1: Formato FAQ explícito
+                if (meta.pregunta && meta.respuesta) {
+                    return `PREGUNTA FRECUENTE (Oficial):\nP: ${meta.pregunta}\nR: ${meta.respuesta}\n(Prioridad Alta)`;
+                }
+
+                // Contenido general
+                if (meta.content) return meta.content;
+                return d.pageContent || meta.text || '';
+            }).filter(c => c.trim()).join("\n\n---\n\n");
+
+            this.logger.log(`FAQ RAG - Docs encontrados: ${docs.length}`);
+            this.logger.debug(`Contexto FAQ: ${contexto}`);
 
             if (!contexto.trim()) {
-                return "Lo siento, no tengo esa información en mi base de datos.";
+                return "Lo siento, no tengo esa información específica en mi base de datos de preguntas frecuentes.";
             }
 
             const promptTemplate = ChatPromptTemplate.fromTemplate(`
-Eres un asistente que responde SOLO con información exacta del contexto.
+Eres el asistente oficial del proyecto inmobiliario. Tu única fuente de verdad es el siguiente CONTEXTO.
 
-CONTEXTO:
+CONTEXTO RECUPERADO DE BASE DE DATOS:
 {context}
 
-PREGUNTA: {question}
+PREGUNTA DEL USUARIO: {question}
 
-INSTRUCCIONES CRÍTICAS:
-- Responde ÚNICAMENTE con la información del contexto
-- Copia los números, precios y cuotas EXACTAMENTE como aparecen
-- NO reformules ni agregues información
-- Si hay múltiples respuestas similares, usa la más específica
-- Sé breve y directo
+INSTRUCCIONES OBLIGATORIAS:
+1. Responde SOLO basándote en el Contexto.
+2. Si el contexto dice "No contamos con...", tu respuesta debe ser "No contamos con...". NO inventes que sí hay.
+3. Si hay una sección marcada como "PREGUNTA FRECUENTE (Oficial)", esa es la respuesta definitiva.
+4. No menciones "según la base de datos", responde natural como si tú supieras.
+5. Si no hay información en el contexto, di "No tengo información sobre eso".
 
-RESPUESTA (solo información del contexto):`);
-
+RESPUESTA PRECISA:`);
 
             const chain = RunnableSequence.from([
                 promptTemplate,
@@ -191,17 +204,17 @@ RESPUESTA (solo información del contexto):`);
                 question: queryPrincipal,
             });
 
-            this.logger.debug(`Respuesta LLM: ${resultado}`);
+            this.logger.debug(`Respuesta LLM FAQ: ${resultado}`);
 
-            if (!resultado || resultado.includes("No encontré")) {
-                return "Lo siento, no tengo esa información en mi base de datos.";
+            if (!resultado || resultado.toLowerCase().includes("no encontré") || resultado.toLowerCase().includes("no tengo información")) {
+                return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. Continua la conversacion.";
             }
 
-            return resultado;
+            return `[ACCION_COMPLETADA] ${resultado}`;
 
         } catch (error) {
-            this.logger.error(`Error en RAG: ${error.message}`);
-            return "Hubo un error técnico. Por favor pregunta de otra forma.";
+            this.logger.error(`Error en buscarPreguntasFrecuentes: ${error.message}`);
+            return "Hubo un error consultando las preguntas frecuentes.";
         }
     }
 
@@ -218,10 +231,10 @@ RESPUESTA (solo información del contexto):`);
         }
 
         if (dni === '00000000' || dni.startsWith('00')) {
-            return { success: false, mensaje: "DNI inválido. Por favor verifica el número." };
+            return { success: false, mensaje: "DNI invalido. Por favor verifica el numero." };
         }
 
-        return { success: true, mensaje: "DNI validado correctamente." };
+        return { success: true, mensaje: "[ACCION_COMPLETADA] DNI validado correctamente. Continua con el siguiente paso." };
     }
 
     async buscarPorCuota(params: { cuota_mensual: number }) {
@@ -328,7 +341,7 @@ RESPUESTA (solo información del contexto):`);
 
             if (resultados.length === 0) {
                 this.logger.warn(`No se encontraron resultados para dormitorios: ${params.dormitorios}`);
-                return "Lo siento, no encontre departamentos disponibles con esas caracteristicas. Te gustaria ver otras opciones?";
+                return "[ACCION_COMPLETADA] No encontre departamentos disponibles con esas caracteristicas. Pregunta si quiere ver otras opciones.";
             }
 
             const lista = resultados.map((r, idx) => {
@@ -342,7 +355,7 @@ RESPUESTA (solo información del contexto):`);
                 return `${idx + 1}. Unidad ${m.unit_number} - Piso ${m.floor}, ${dormitoriosText}, ${m.area_total}m2 - ${precioMostrar}`;
             }).join('\n\n');
 
-            const respuesta = `Hay ${resultados.length} departamento${resultados.length > 1 ? 's' : ''} disponible${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\nTe gustaria agendar una visita para conocerlo${resultados.length > 1 ? 's' : ''}?`;
+            const respuesta = `[ACCION_COMPLETADA] Hay ${resultados.length} departamento${resultados.length > 1 ? 's' : ''} disponible${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\nPregunta si quiere agendar visita.`;
 
             return respuesta;
 
@@ -367,24 +380,22 @@ RESPUESTA (solo información del contexto):`);
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
 
             // Construir resumen formateado
-            const resumen = `
-📋 *RESUMEN DE TU COTIZACIÓN*
+            const resumen = `[ACCION_COMPLETADA] RESUMEN DE TU COTIZACION
 
 DATOS DEL CLIENTE:
-• Nombre: ${params.nombre_cliente || 'N/A'}
-• DNI: ${params.dni || 'N/A'}
-• Ocupación: ${params.ocupacion || 'N/A'}
-• Ingresos: ${params.ingresos || 'N/A'}
+Nombre: ${params.nombre_cliente || 'N/A'}
+DNI: ${params.dni || 'N/A'}
+Ocupacion: ${params.ocupacion || 'N/A'}
+Ingresos: ${params.ingresos || 'N/A'}
 
 DETALLES DEL DEPARTAMENTO:
-• Unidad: ${params.unidad || 'N/A'}
-• Dormitorios: ${params.dormitorios || 'N/A'}
-• Área: ${params.area || 'N/A'}
-• Piso: ${params.piso || 'N/A'}
-• Precio: ${params.precio || 'N/A'}
+Unidad: ${params.unidad || 'N/A'}
+Dormitorios: ${params.dormitorios || 'N/A'}
+Area: ${params.area || 'N/A'}
+Piso: ${params.piso || 'N/A'}
+Precio: ${params.precio || 'N/A'}
 
-Tu proforma está siendo generada con estos datos.
-            `.trim();
+Proforma generada. NO repitas esta herramienta.`.trim();
 
             return resumen;
 
@@ -496,27 +507,24 @@ Tu proforma está siendo generada con estos datos.
                     }
 
                     let respuesta = `**Unidad ${m.unit_number}** - ${m.unit_type}\n` +
-                        `📍 Piso ${m.floor}\n` +
-                        `🛏️ ${dormitoriosText}\n` +
-                        `👁️ Vista ${m.view}\n` +
-                        `📐 Área total: ${m.area_total}m²\n` +
-                        `💰 Precio: ${precioMostrar}\n` +
-                        `📋 Tipología: ${m.typology}\n` +
-                        `✅ Disponibilidad: ${m.availability}\n`;
+                        `Piso ${m.floor}\n` +
+                        `${dormitoriosText}\n` +
+                        `Vista ${m.view}\n` +
+                        `Area total: ${m.area_total}m²\n` +
+                        `Precio: ${precioMostrar}\n` +
+                        `Tipologia: ${m.typology}\n` +
+                        `Disponibilidad: ${m.availability}\n`;
 
-                    // Agregar link del plano
-                    if (m.url_floor_plan) {
-                        respuesta += `\n🗺️ **Plano enviado por imagen**\n`;
-                    }
-                    if (m.url_location) {
-                        respuesta += `📍 Ubicación: ${m.url_location}\n`;
+                    // Agregar info del plano
+                    if (m.url_floor_plan && phoneNumber) {
+                        respuesta += `\nPLANO ENVIADO: Se envio el plano de la unidad por imagen.\n`;
                     }
 
-                    respuesta += `\n¿Te gustaría agendar una visita para conocer esta unidad?`;
-                    return respuesta;
+                    respuesta += `\nPara asegurarte este precio y hacerte la proforma formal, indicame tu nombre completo y DNI.`;
+                    return `[ACCION_COMPLETADA] ${respuesta}`;
                 }
 
-                return `No encontré información de la unidad ${params.unidad}. ¿Quieres ver otras opciones disponibles?`;
+                return `[ACCION_COMPLETADA] No encontre informacion de la unidad ${params.unidad}. Pregunta si quiere ver otras opciones.`;
             }
 
             // Búsqueda general por otros criterios
@@ -528,7 +536,7 @@ Tu proforma está siendo generada con estos datos.
             );
 
             if (resultados.length === 0) {
-                return "No encontré departamentos con esas características. ¿Te gustaría ver otras opciones?";
+                return "[ACCION_COMPLETADA] No encontre departamentos con esas caracteristicas. Pregunta si quiere ver otras opciones.";
             }
 
             // Mostrar lista de resultados
@@ -540,10 +548,10 @@ Tu proforma está siendo generada con estos datos.
 
                 const dormitoriosText = m.bedrooms === 0 ? 'Monoambiente' : `${m.bedrooms} dormitorio${m.bedrooms > 1 ? 's' : ''}`;
 
-                return `${idx + 1}. **Unidad ${m.unit_number}** - Piso ${m.floor}, ${dormitoriosText}, ${m.area_total}m² - ${precioMostrar}`;
-            }).join('\n\n');
+                return `${idx + 1}. Unidad ${m.unit_number} - ${dormitoriosText}, ${m.area_total}m² - Precio: ${precioMostrar}`;
+            }).join('\n');
 
-            return `Encontré ${resultados.length} departamento${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\n¿Te gustaría más detalles de alguna unidad?`;
+            return `[ACCION_COMPLETADA] Encontre ${resultados.length} departamento${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\nSi el cliente elige una unidad, ejecuta buscar_departamento con el numero de unidad para enviar el plano.`;
 
         } catch (error) {
             this.logger.error(`Error en buscarDepartamentoUniversal: ${error.message}`, error.stack);
@@ -555,8 +563,47 @@ Tu proforma está siendo generada con estos datos.
         return this.mostrarDepartamentos({ dormitorios: params.dormitorios });
     }
 
-    async enviarBrochure(params: { nombre_proyecto: string }) {
-        return `Te envié el brochure del proyecto ${params.nombre_proyecto} a tu WhatsApp 📄`;
+    async enviarBrochure(params: { 
+        nombre_proyecto: string;
+        phoneNumber?: string;
+        codigoEmpresa?: number;
+        leadUuid?: string;
+    }) {
+        try {
+            const path = require('path');
+            const brochurePath = path.join(process.cwd(), 'storage', 'multimedia', 'brochure-los-lirios.pdf');
+            
+            if (!params.phoneNumber || !params.leadUuid) {
+                return `Aqui esta el brochure del proyecto ${params.nombre_proyecto}`;
+            }
+
+            const codigoEmpresa = params.codigoEmpresa || 1;
+
+            // Enviar el PDF por WhatsApp
+            await this.wapiService.sendDocument(
+                codigoEmpresa,
+                params.phoneNumber,
+                brochurePath,
+                `Brochure del proyecto ${params.nombre_proyecto}`
+            );
+
+            this.logger.log(`Brochure enviado a ${params.phoneNumber}`);
+
+            // Guardar el mensaje en la base de datos para el inbox
+            await this.inboxService.guardarMensajeBot({
+                leadUuid: params.leadUuid,
+                codigoEmpresa: codigoEmpresa,
+                contenido: `Brochure del proyecto ${params.nombre_proyecto}`,
+                tipoMultimedia: 'document',
+                urlMultimedia: brochurePath
+            });
+
+            return `[ACCION_COMPLETADA] Brochure del proyecto ${params.nombre_proyecto} enviado exitosamente al cliente. NO vuelvas a ejecutar esta herramienta. Continua con tu mensaje de seguimiento.`;
+
+        } catch (error) {
+            this.logger.error(`Error enviando brochure: ${error.message}`);
+            return `Hubo un error al enviar el brochure. Por favor intenta de nuevo.`;
+        }
     }
 
     async enviarMapa(params: {
@@ -618,10 +665,10 @@ Tu proforma está siendo generada con estos datos.
                             }
                         }
 
-                        return `Te envié el plano del departamento ${params.unidad_id} 🗺️`;
+                        return `[ACCION_COMPLETADA] Plano del departamento ${params.unidad_id} enviado exitosamente. NO repitas esta herramienta.`;
                     } catch (error) {
                         this.logger.error(`Error enviando plano: ${error.message}`);
-                        return `Tuve un problema enviando el plano. Aquí está el link: ${metadata.url_floor_plan}`;
+                        return `[ACCION_COMPLETADA] Tuve un problema enviando el plano. Aqui esta el link: ${metadata.url_floor_plan}`;
                     }
                 }
             }
@@ -659,10 +706,10 @@ Tu proforma está siendo generada con estos datos.
             const urlLocation = resultados[0].document.metadata.url_location;
 
             if (!urlLocation) {
-                return `El proyecto Los Lirios está ubicado en Av. Petit Thouars 1737, Lince, Lima.`;
+                return `[ACCION_COMPLETADA] El proyecto Los Lirios esta ubicado en Av. Petit Thouars 1737, Lince, Lima.`;
             }
 
-            return `📍 **Ubicación del proyecto Los Lirios:**\n${urlLocation}\n\nEstamos en Av. Petit Thouars 1737, Lince, Lima.`;
+            return `[ACCION_COMPLETADA] Ubicacion del proyecto Los Lirios: ${urlLocation} - Estamos en Av. Petit Thouars 1737, Lince, Lima.`;
 
         } catch (error) {
             this.logger.error(`Error en enviarUbicacionGoogleMaps: ${error.message}`);
