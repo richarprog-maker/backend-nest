@@ -350,7 +350,7 @@ export class WebhookService implements OnModuleInit {
             const diffHoras = diffMs / (1000 * 60 * 60);
 
             if (diffHoras > 24) {
-                conversacionFacturable = 1;     
+                conversacionFacturable = 1;
                 this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje hace ${diffHoras.toFixed(2)}h (>24h) para lead ${leadUuid}`);
             } else {
                 this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje hace ${diffHoras.toFixed(2)}h (<24h) para lead ${leadUuid}`);
@@ -397,7 +397,30 @@ export class WebhookService implements OnModuleInit {
             });
 
             // b. Enviar Fragmento por WhatsApp
-            await this.wapiService.sendMessage(codigoEmpresa, from, msgFragment);
+            const response: any = await this.wapiService.sendMessage(codigoEmpresa, from, msgFragment);
+
+            // Actualizar estado en BD basado en respuesta WAPI
+            let nuevoEstado = 'enviado';
+            let wamid = null;
+            let errorDetails = null;
+
+            if (response && response.error) {
+                nuevoEstado = 'fallido';
+                errorDetails = response.details;
+                this.logger.warn(`Error enviando fragmento IA: ${JSON.stringify(errorDetails)}`);
+            } else {
+                wamid = response?.messages?.[0]?.id || response?.id || null;
+            }
+
+            // Actualizar el mensaje guardado previously
+            await this.mensajeRepo.update(
+                { id: mensajeBotGuardado.id },
+                {
+                    wamidMsg: wamid ? String(wamid) : null,
+                    estadoMensaje: nuevoEstado,
+                    errorWapi: errorDetails
+                }
+            );
         }
 
         // Notificar actualización de conversaciones después de que el bot responde

@@ -180,7 +180,21 @@ export class OrquestadorImportacionService {
                                     const response: any = await this.wapiService.sendMessage(codigoEmpresa, telefonoEnvio, mensajeContenido);
                                     this.logger.log(`[Importacion] Respuesta WAPI: ${JSON.stringify(response)}`);
 
-                                    const wamid = response?.messages?.[0]?.id || response?.id || null;
+                                    let wamid = null;
+                                    let estado = 'enviado';
+                                    let errorDetails = null;
+
+                                    if (response && response.error) {
+                                        estado = 'fallido';
+                                        errorDetails = response.details;
+                                        this.logger.warn(`[Importacion] WAPI devolvió error: ${JSON.stringify(errorDetails)}`);
+                                    } else {
+                                        wamid = response?.messages?.[0]?.id || response?.id || null;
+                                        if (!wamid) {
+                                            // Si no hay error explícito pero tampoco ID, algo raro pasó
+                                            this.logger.warn(`[Importacion] WAPI no devolvió ID ni error explícito.`);
+                                        }
+                                    }
 
                                     // Registrar en tbl_mensajes
                                     const nuevoMensaje = this.mensajeRepo.create({
@@ -191,8 +205,9 @@ export class OrquestadorImportacionService {
                                         contenido: mensajeContenido,
                                         numeroTelefono: telefonoEnvio,
                                         tipoMultimedia: 'text',
-                                        estadoMensaje: 'enviado',
+                                        estadoMensaje: estado,
                                         wamidMsg: wamid ? String(wamid) : null,
+                                        errorWapi: errorDetails, // Guardar el error de Meta
                                         leido: 0,
                                         conversacionFacturable: 0,
                                         fechaEnvio: new Date(),
@@ -200,9 +215,10 @@ export class OrquestadorImportacionService {
                                     });
                                     await this.mensajeRepo.save(nuevoMensaje);
 
-                                    this.logger.log(`[Importacion] Mensaje guardado en BD. ID: ${nuevoMensaje.id}, WAMID: ${wamid}`);
+                                    this.logger.log(`[Importacion] Mensaje guardado en BD. ID: ${nuevoMensaje.id}, Estado: ${estado}`);
 
-                                    // Registrar en tbl_historial_chat_ai como 'assistant'
+                                    // Registrar en tbl_historial_chat_ai solo si se envió (opcional, o registrar el intento fallido también?)
+                                    // Usuario pidió contexto del bot, así que lo guardamos igual
                                     const historialAi = this.historialAiRepo.create({
                                         leadUuid: lead.uuid,
                                         codigoEmpresa: codigoEmpresa,
@@ -212,7 +228,9 @@ export class OrquestadorImportacionService {
                                         metadatos: {
                                             origen: 'importacion_excel',
                                             wamid: wamid,
-                                            mensaje_id: nuevoMensaje.id
+                                            mensaje_id: nuevoMensaje.id,
+                                            status: estado,
+                                            error: errorDetails
                                         }
                                     });
                                     await this.historialAiRepo.save(historialAi);

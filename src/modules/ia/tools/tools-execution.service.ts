@@ -397,16 +397,31 @@ RESPUESTA PRECISA:`);
                 `. Precio: ${params.precio || 'N/A'}\n\n`;
 
             // Enviar mensaje por WhatsApp si hay teléfono
+            // Enviar mensaje por WhatsApp si hay teléfono
             if (params.phoneNumber && params.codigoEmpresa) {
-                await this.wapiService.sendMessage(params.codigoEmpresa, params.phoneNumber, resumen);
+                const response: any = await this.wapiService.sendMessage(params.codigoEmpresa, params.phoneNumber, resumen);
                 this.logger.log(`Proforma enviada a ${params.phoneNumber}`);
+
+                let wamid = null;
+                let estado = 'enviado';
+                let errorDetails = null;
+
+                if (response && response.error) {
+                    estado = 'fallido';
+                    errorDetails = response.details;
+                } else {
+                    wamid = response?.messages?.[0]?.id || response?.id || null;
+                }
 
                 // Guardar en Inbox si hay UUID
                 if (params.leadUuid) {
                     await this.inboxService.guardarMensajeBot({
                         leadUuid: params.leadUuid,
                         codigoEmpresa: params.codigoEmpresa,
-                        contenido: resumen
+                        contenido: resumen,
+                        wamid: wamid,
+                        estadoMensaje: estado,
+                        errorWapi: errorDetails
                     });
                 }
             }
@@ -507,7 +522,9 @@ RESPUESTA PRECISA:`);
                                             codigoEmpresa: codigoEmpresa,
                                             contenido: `Plano de la unidad ${m.unit_number}`,
                                             tipoMultimedia: 'image',
-                                            urlMultimedia: imageUrl
+                                            urlMultimedia: imageUrl,
+                                            // Nota: sendImageByUrl no devuelve ID reliablemente en la v actual, pendiente mejora
+                                            estadoMensaje: 'enviado'
                                         });
                                         this.logger.log(`💾 Mensaje con imagen guardado en BD - Unidad ${m.unit_number}`);
                                     } catch (dbError) {
@@ -594,7 +611,7 @@ RESPUESTA PRECISA:`);
             const codigoEmpresa = params.codigoEmpresa || 1;
 
             // Enviar el PDF por WhatsApp
-            await this.wapiService.sendDocument(
+            const response: any = await this.wapiService.sendDocument(
                 codigoEmpresa,
                 params.phoneNumber,
                 brochurePath,
@@ -603,13 +620,27 @@ RESPUESTA PRECISA:`);
 
             this.logger.log(`Brochure enviado a ${params.phoneNumber}`);
 
+            let wamid = null;
+            let estado = 'enviado';
+            let errorDetails = null;
+
+            if (response && response.error) {
+                estado = 'fallido';
+                errorDetails = response.details;
+            } else {
+                wamid = response?.messages?.[0]?.id || response?.id || null;
+            }
+
             // Guardar el mensaje en la base de datos para el inbox
             await this.inboxService.guardarMensajeBot({
                 leadUuid: params.leadUuid,
                 codigoEmpresa: codigoEmpresa,
                 contenido: `Brochure del proyecto ${params.nombre_proyecto}`,
                 tipoMultimedia: 'document',
-                urlMultimedia: brochurePath
+                urlMultimedia: brochurePath,
+                wamid: wamid,
+                estadoMensaje: estado,
+                errorWapi: errorDetails
             });
 
             return `[ACCION_COMPLETADA] Brochure del proyecto ${params.nombre_proyecto} enviado exitosamente al cliente. NO vuelvas a ejecutar esta herramienta. Continua con tu mensaje de seguimiento.`;
@@ -655,13 +686,21 @@ RESPUESTA PRECISA:`);
                 const codigoEmpresa = params.codigoEmpresa || 1;
                 if (imageUrl) {
                     try {
-                        await this.wapiService.sendImageByUrl(
+                        const response: any = await this.wapiService.sendImageByUrl(
                             codigoEmpresa,
                             params.phoneNumber,
                             imageUrl,
                             `Plano de la unidad ${params.unidad_id}`
                         );
                         this.logger.log(`✅ Plano enviado para unidad ${params.unidad_id}`);
+
+                        let estado = 'enviado';
+                        let errorDetails = null;
+
+                        if (response && response.error) {
+                            estado = 'fallido';
+                            errorDetails = response.details;
+                        }
 
                         // Guardar mensaje en BD si tenemos leadUuid
                         if (params.leadUuid) {
@@ -671,7 +710,9 @@ RESPUESTA PRECISA:`);
                                     codigoEmpresa: codigoEmpresa,
                                     contenido: `Plano de la unidad ${params.unidad_id}`,
                                     tipoMultimedia: 'image',
-                                    urlMultimedia: imageUrl
+                                    urlMultimedia: imageUrl,
+                                    estadoMensaje: estado,
+                                    errorWapi: errorDetails
                                 });
                                 this.logger.log(`💾 Mensaje con imagen guardado en BD - Unidad ${params.unidad_id}`);
                             } catch (dbError) {

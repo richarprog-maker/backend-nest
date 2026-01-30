@@ -315,6 +315,7 @@ export class InboxService {
             // Enviar mensaje por WhatsApp según el tipo
             try {
                 const numeroCompleto = lead.telefono.startsWith('51') ? lead.telefono : `51${lead.telefono}`;
+                let response: any = null;
 
                 if (dto.tipoMultimedia && dto.urlMultimedia) {
                     // Convertir ruta relativa a absoluta
@@ -324,27 +325,60 @@ export class InboxService {
 
                     switch (dto.tipoMultimedia) {
                         case 'image':
-                            await this.wapiService.sendImage(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta, dto.contenido);
+                            response = await this.wapiService.sendImage(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta, dto.contenido);
                             break;
                         case 'document':
                         case 'application':
-                            await this.wapiService.sendDocument(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta, dto.contenido);
+                            response = await this.wapiService.sendDocument(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta, dto.contenido);
                             break;
                         case 'video':
-                            await this.wapiService.sendVideo(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta, dto.contenido);
+                            response = await this.wapiService.sendVideo(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta, dto.contenido);
                             break;
                         case 'audio':
-                            await this.wapiService.sendAudio(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta);
+                            response = await this.wapiService.sendAudio(dto.codigoEmpresa, numeroCompleto, rutaAbsoluta);
                             break;
                     }
                 } else if (dto.contenido) {
                     // Enviar solo texto
-                    await this.wapiService.sendMessage(dto.codigoEmpresa, numeroCompleto, dto.contenido);
+                    response = await this.wapiService.sendMessage(dto.codigoEmpresa, numeroCompleto, dto.contenido);
                 }
 
                 this.logger.log(`Mensaje enviado por WhatsApp - Lead: ${dto.leadUuid}, Telefono: ${numeroCompleto}`);
+
+                // Actualizar BD con resultado
+                let nuevoEstado = 'enviado';
+                let wamid = null;
+                let errorDetails = null;
+
+                if (response && response.error) {
+                    nuevoEstado = 'fallido';
+                    errorDetails = response.details;
+                    this.logger.warn(`Error WAPI en InboxService: ${JSON.stringify(errorDetails)}`);
+                } else {
+                    wamid = response?.messages?.[0]?.id || response?.id || null;
+                }
+
+                await this.mensajeRepo.update(
+                    { id: mensajeGuardado.id },
+                    {
+                        wamidMsg: wamid ? String(wamid) : null,
+                        estadoMensaje: nuevoEstado,
+                        errorWapi: errorDetails
+                    }
+                );
+
+                // Actualizamos el objeto en memoria para devolverlo actualizado
+                mensajeGuardado.estadoMensaje = nuevoEstado;
+                mensajeGuardado.wamidMsg = wamid;
+                mensajeGuardado.errorWapi = errorDetails;
+
             } catch (wapiError) {
-                this.logger.error(`Error enviando por WhatsApp: ${wapiError.message}`, wapiError.stack);
+                // Esto solo ocurriría si WapiService lanza una excepción no controlada
+                this.logger.error(`Error crítico enviando por WhatsApp: ${wapiError.message}`, wapiError.stack);
+                await this.mensajeRepo.update(
+                    { id: mensajeGuardado.id },
+                    { estadoMensaje: 'fallido', errorWapi: { message: wapiError.message, stack: wapiError.stack } }
+                );
             }
 
             this.logger.log(`Mensaje guardado en BD - Lead: ${dto.leadUuid}, ID: ${mensajeGuardado.id}`);
@@ -387,6 +421,9 @@ export class InboxService {
         contenido: string;
         tipoMultimedia?: string;
         urlMultimedia?: string;
+        wamid?: string;
+        estadoMensaje?: string;
+        errorWapi?: any;
     }) {
         try {
             const lead = await this.leadRepo.findOne({
@@ -405,10 +442,12 @@ export class InboxService {
                 idEmisorTipo: 2, // Bot
                 numeroTelefono: lead.telefono,
                 fechaEnvio: new Date(),
-                estadoMensaje: 'enviado',
+                estadoMensaje: dto.estadoMensaje || 'enviado',
                 leido: 1,
                 tipoMultimedia: dto.tipoMultimedia,
-                urlMultimedia: dto.urlMultimedia
+                urlMultimedia: dto.urlMultimedia,
+                wamidMsg: dto.wamid,
+                errorWapi: dto.errorWapi
             });
 
             const mensajeGuardado = await this.mensajeRepo.save(nuevoMensaje);

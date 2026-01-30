@@ -50,4 +50,7 @@ export class Mensaje {
 
     @Column({ name: 'conversacion_facturable', type: 'tinyint', default: 0 })
     conversacionFacturable: number;
+
+    @Column({ name: 'error_wapi', type: 'json', nullable: true })
+    errorWapi: any;
 }

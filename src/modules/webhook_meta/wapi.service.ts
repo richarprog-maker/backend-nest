@@ -101,10 +101,12 @@ export class WapiService {
                 image: { id: mediaId, caption: caption }
             };
 
-            await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+            const response = await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
             this.logger.log(`Imagen enviada a ${to}`);
+            return response.data;
         } catch (error) {
             this.handleError(error);
+            return { error: true, details: error.response?.data || error.message };
         }
     }
 
@@ -156,10 +158,12 @@ export class WapiService {
                 document: { id: mediaId, filename: filename, caption: caption }
             };
 
-            await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+            const response = await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
             this.logger.log(`Documento enviado a ${to}`);
+            return response.data;
         } catch (error) {
             this.handleError(error);
+            return { error: true, details: error.response?.data || error.message };
         }
     }
 
@@ -178,10 +182,12 @@ export class WapiService {
                 video: { id: mediaId, caption: caption }
             };
 
-            await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+            const response = await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
             this.logger.log(`Video enviado a ${to}`);
+            return response.data;
         } catch (error) {
             this.handleError(error);
+            return { error: true, details: error.response?.data || error.message };
         }
     }
 
@@ -200,10 +206,12 @@ export class WapiService {
                 audio: { id: mediaId }
             };
 
-            await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+            const response = await axios.post(url, payload, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
             this.logger.log(`Audio enviado a ${to}`);
+            return response.data;
         } catch (error) {
             this.handleError(error);
+            return { error: true, details: error.response?.data || error.message };
         }
     }
 
@@ -239,6 +247,10 @@ export class WapiService {
 
         } catch (error) {
             this.handleError(error);
+            return {
+                error: true,
+                details: error.response?.data || error.message
+            };
         }
     }
 
