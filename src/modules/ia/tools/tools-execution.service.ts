@@ -375,29 +375,43 @@ RESPUESTA PRECISA:`);
         dormitorios?: number;
         area?: string;
         piso?: number;
+        phoneNumber?: string;
+        codigoEmpresa?: number;
+        leadUuid?: string;
     }) {
         try {
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
 
             // Construir resumen formateado
-            const resumen = `[ACCION_COMPLETADA] RESUMEN DE TU COTIZACION
+            const resumen = `📝 RESUMEN DE TU COTIZACIÓN\n\n` +
+                `DATOS DEL CLIENTE:\n` +
+                `. Nombre: ${params.nombre_cliente || 'N/A'}\n` +
+                `. DNI: ${params.dni || 'N/A'}\n` +
+                `. Ocupación: ${params.ocupacion || 'N/A'}\n` +
+                `. Ingresos: ${params.ingresos || 'N/A'}\n\n` +
+                `DETALLES DEL DEPARTAMENTO:\n` +
+                `. Unidad: ${params.unidad || 'N/A'}\n` +
+                `. Dormitorios: ${params.dormitorios || 'N/A'}\n` +
+                `. Área: ${params.area || 'N/A'}\n` +
+                `. Piso: ${params.piso || 'N/A'}\n` +
+                `. Precio: ${params.precio || 'N/A'}\n\n`;
 
-DATOS DEL CLIENTE:
-Nombre: ${params.nombre_cliente || 'N/A'}
-DNI: ${params.dni || 'N/A'}
-Ocupacion: ${params.ocupacion || 'N/A'}
-Ingresos: ${params.ingresos || 'N/A'}
+            // Enviar mensaje por WhatsApp si hay teléfono
+            if (params.phoneNumber && params.codigoEmpresa) {
+                await this.wapiService.sendMessage(params.codigoEmpresa, params.phoneNumber, resumen);
+                this.logger.log(`Proforma enviada a ${params.phoneNumber}`);
 
-DETALLES DEL DEPARTAMENTO:
-Unidad: ${params.unidad || 'N/A'}
-Dormitorios: ${params.dormitorios || 'N/A'}
-Area: ${params.area || 'N/A'}
-Piso: ${params.piso || 'N/A'}
-Precio: ${params.precio || 'N/A'}
+                // Guardar en Inbox si hay UUID
+                if (params.leadUuid) {
+                    await this.inboxService.guardarMensajeBot({
+                        leadUuid: params.leadUuid,
+                        codigoEmpresa: params.codigoEmpresa,
+                        contenido: resumen
+                    });
+                }
+            }
 
-Proforma generada. NO repitas esta herramienta.`.trim();
-
-            return resumen;
+            return `[ACCION_COMPLETADA] Proforma generada y ENVIADA al cliente por WhatsApp. Dile que ya se la enviaste y pregunta si quiere ver el recorrido virtual.`;
 
         } catch (error) {
             this.logger.error(`Error generando proforma: ${error.message}`);
@@ -563,7 +577,7 @@ Proforma generada. NO repitas esta herramienta.`.trim();
         return this.mostrarDepartamentos({ dormitorios: params.dormitorios });
     }
 
-    async enviarBrochure(params: { 
+    async enviarBrochure(params: {
         nombre_proyecto: string;
         phoneNumber?: string;
         codigoEmpresa?: number;
@@ -572,7 +586,7 @@ Proforma generada. NO repitas esta herramienta.`.trim();
         try {
             const path = require('path');
             const brochurePath = path.join(process.cwd(), 'storage', 'multimedia', 'brochure-los-lirios.pdf');
-            
+
             if (!params.phoneNumber || !params.leadUuid) {
                 return `Aqui esta el brochure del proyecto ${params.nombre_proyecto}`;
             }

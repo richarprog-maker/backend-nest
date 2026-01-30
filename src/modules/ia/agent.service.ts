@@ -73,7 +73,7 @@ export class AgentService {
     // 2️    Buscar Preguntas Frecuentes (FAQs)
     const buscarPreguntasFrecuentesTool = new DynamicStructuredTool({
       name: 'buscar_preguntas_frecuentes',
-      description: 'Responde preguntas generales sobre el proyecto buscando en la base de FAQs y documentos. Úsala para preguntas como: "¿tienen desembolso postergado?", "¿qué acabados tiene?", "¿aceptan mascotas?", "¿dónde queda?". NO la uses para buscar stock de departamentos.',
+      description: 'MOTOR DE INFORMACIÓN: Úsala para CUALQUIER pregunta sobre: Ubicación/Entorno, Financiamiento/Bancos, Acabados, Áreas Comunes, Fechas de Entrega/Obra, Tipos de dpto (general) y Requisitos. Si no encuentras la respuesta aquí, NO la inventes.',
       schema: z.object({
         queries_de_busqueda: z.array(z.string()).describe('Lista de preguntas o palabras clave'),
         nombre_proyecto: z.string().describe('Nombre del proyecto'),
@@ -112,8 +112,15 @@ export class AgentService {
         area: z.string().optional().describe('Área total en m²'),
         piso: z.number().optional().describe('Número de piso'),
       }),
-      func: async (input) => {
-        const result = await this.toolsExecutionService.generarProforma(input);
+      func: async (input, config) => {
+        const metadata = (config as any)?.metadata || {};
+        const paramsWithContext = {
+          ...input,
+          phoneNumber: metadata.phoneNumber,
+          codigoEmpresa: metadata.codigoEmpresa,
+          leadUuid: metadata.leadUuid
+        };
+        const result = await this.toolsExecutionService.generarProforma(paramsWithContext);
         return result; // Ya es string, no necesita JSON.stringify
       },
     });
