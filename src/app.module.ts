@@ -16,6 +16,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { databaseConfig } from './config/database.config';
 import { PlantillasModule } from './modules/plantillas/plantillas.module';
 import { HistorialEnviosModule } from './modules/historial-envios/historial-envios.module';
+import { TasksModule } from './modules/tasks/tasks.module';
 
 @Module({
     imports: [
@@ -45,6 +46,7 @@ import { HistorialEnviosModule } from './modules/historial-envios/historial-envi
         DashboardModule,
         PlantillasModule,
         HistorialEnviosModule,
+        TasksModule,
     ],
     controllers: [],
     providers: [],
