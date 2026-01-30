@@ -153,8 +153,7 @@ export class OrquestadorImportacionService {
 
                 // 5. Envio de Primer Mensaje (Fuera de transaccion principal para no bloquear)
                 try {
-                    // Verificar si ya se envio mensaje de primer contacto (ahora en tbl_mensajes)
-                    // Buscamos si existe algun mensaje enviado a este lead recien creado
+                   
                     const yaEnviado = await this.mensajeRepo.findOne({
                         where: { leadUuid: lead.uuid }
                     });
