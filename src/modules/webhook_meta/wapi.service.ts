@@ -121,17 +121,17 @@ export class WapiService {
                 messaging_product: 'whatsapp',
                 to: to,
                 type: 'image',
-                image: { 
+                image: {
                     link: imageUrl,
-                    caption: caption 
+                    caption: caption
                 }
             };
 
-            await axios.post(url, payload, { 
-                headers: { 
-                    'Authorization': `Bearer ${token}`, 
-                    'Content-Type': 'application/json' 
-                } 
+            await axios.post(url, payload, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
             });
             this.logger.log(`Imagen por URL enviada a ${to}: ${imageUrl}`);
         } catch (error) {
@@ -227,7 +227,7 @@ export class WapiService {
                 type: 'text'
             };
 
-            await axios.post(url, payload, {
+            const response = await axios.post(url, payload, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json'
@@ -235,6 +235,7 @@ export class WapiService {
             });
 
             this.logger.log(`Mensaje enviado a ${to}: ${text.substring(0, 20)}...`);
+            return response.data;
 
         } catch (error) {
             this.handleError(error);

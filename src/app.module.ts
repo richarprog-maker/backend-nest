@@ -14,6 +14,8 @@ import { BotsModule } from './modules/bots/bots.module';
 import { PreguntasFrecuentesModule } from './modules/preguntas-frecuentes/preguntas-frecuentes.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { databaseConfig } from './config/database.config';
+import { PlantillasModule } from './modules/plantillas/plantillas.module';
+import { HistorialEnviosModule } from './modules/historial-envios/historial-envios.module';
 
 @Module({
     imports: [
@@ -41,6 +43,8 @@ import { databaseConfig } from './config/database.config';
         BotsModule,
         PreguntasFrecuentesModule,
         DashboardModule,
+        PlantillasModule,
+        HistorialEnviosModule,
     ],
     controllers: [],
     providers: [],

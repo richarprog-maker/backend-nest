@@ -7,6 +7,13 @@ import { ContextoLead } from '../../ia/entities/contexto-lead.entity';
 import { OrigenDato } from '../../inbox/entities/origen-dato.entity';
 import { SesionConversacion } from '../../ia/entities/sesion-conversacion.entity';
 import { ServicioExcel } from './excel.service';
+import { WapiService } from '../../webhook_meta/wapi.service';
+import { PlantillasService } from '../../plantillas/services/plantillas.service';
+import { HistorialEnviosService } from '../../historial-envios/services/historial-envios.service';
+import { TipoPlantilla } from '../../plantillas/entities/plantilla.entity';
+
+import { Mensaje } from '../../inbox/entities/mensaje.entity';
+import { HistorialChatAi } from '../../ia/entities/historial-chat-ai.entity';
 
 @Injectable()
 export class OrquestadorImportacionService {
@@ -20,6 +27,11 @@ export class OrquestadorImportacionService {
         @InjectRepository(ContextoLead) private contextoRepo: Repository<ContextoLead>,
         @InjectRepository(OrigenDato) private origenRepo: Repository<OrigenDato>,
         @InjectRepository(SesionConversacion) private sesionRepo: Repository<SesionConversacion>,
+        private readonly wapiService: WapiService,
+        private readonly plantillasService: PlantillasService,
+        private readonly historialService: HistorialEnviosService,
+        @InjectRepository(Mensaje) private mensajeRepo: Repository<Mensaje>,
+        @InjectRepository(HistorialChatAi) private historialAiRepo: Repository<HistorialChatAi>,
     ) { }
 
     async procesarArchivoExcel(buffer: Buffer, codigoEmpresa: number, proposito: string, nombreBd: string) {
@@ -38,6 +50,11 @@ export class OrquestadorImportacionService {
             await this.origenRepo.save(origenExcel);
         }
 
+        const plantillaPrimerContacto = await this.plantillasService.obtenerPlantillaPorTipo(TipoPlantilla.PRIMER_CONTACTO, codigoEmpresa);
+        if (!plantillaPrimerContacto) {
+            this.logger.warn(`[Importacion] No se encontro plantilla PRIMER_CONTACTO para empresa ${codigoEmpresa}. Los mensajes no se enviarán.`);
+        }
+
         for (const [index, fila] of datosCrudos.entries()) {
             const queryRunner = this.dataSource.createQueryRunner();
             await queryRunner.connect();
@@ -47,6 +64,7 @@ export class OrquestadorImportacionService {
                 // 1. Extraer Identidad (Lead)
                 const telefono = this.limpiarTelefono(fila.phone || fila.celular || fila.telefono);
                 const email = fila.email || fila.correo;
+                this.logger.debug(`[Importacion] procesando fila ${index}: Tel Extrahido: ${telefono}, Email: ${email}`);
 
                 if (!telefono && !email) {
                     throw new Error(`Fila ${index + 1}: Falta teléfono o email.`);
@@ -132,6 +150,88 @@ export class OrquestadorImportacionService {
 
                 await queryRunner.commitTransaction();
                 resultados.exitosos++;
+
+                // 5. Envio de Primer Mensaje (Fuera de transaccion principal para no bloquear)
+                try {
+                    // Verificar si ya se envio mensaje de primer contacto (ahora en tbl_mensajes)
+                    // Buscamos si existe algun mensaje enviado a este lead recien creado
+                    const yaEnviado = await this.mensajeRepo.findOne({
+                        where: { leadUuid: lead.uuid }
+                    });
+
+                    // if (!yaEnviado) {
+                    if (true) {
+                        const plantilla = await this.plantillasService.obtenerPlantillaPorTipo(TipoPlantilla.PRIMER_CONTACTO, codigoEmpresa);
+                        if (plantilla) {
+                            let mensajeContenido = plantilla.contenido;
+                            if (plantilla.parametros && plantilla.parametros.includes('name')) {
+                                const nombreCliente = lead.nombre || 'Cliente';
+                                mensajeContenido = mensajeContenido.replace('{{name}}', nombreCliente);
+                            }
+
+                            // Enviar Mensaje
+                            const telefonoEnvio = lead.telefono;
+                            this.logger.log(`[Importacion] Intentando enviar primer mensaje a Lead ID: ${lead.id}, Telefono: ${telefonoEnvio}`);
+
+                            if (telefonoEnvio) {
+                                try {
+                                    // WapiService.sendMessage might be void or return object. Adjusting to safe call.
+                                    this.logger.log(`[Importacion] Enviando a WAPI... CodigoEmpresa: ${codigoEmpresa}, Destino: ${telefonoEnvio}`);
+                                    const response: any = await this.wapiService.sendMessage(codigoEmpresa, telefonoEnvio, mensajeContenido);
+                                    this.logger.log(`[Importacion] Respuesta WAPI: ${JSON.stringify(response)}`);
+
+                                    const wamid = response?.messages?.[0]?.id || response?.id || null;
+
+                                    // Registrar en tbl_mensajes
+                                    const nuevoMensaje = this.mensajeRepo.create({
+                                        codigoEmpresa: codigoEmpresa,
+                                        leadUuid: lead.uuid,
+                                        idUsuario: null, // Sistema/Bot
+                                        idEmisorTipo: 2, // 2 = Bot
+                                        contenido: mensajeContenido,
+                                        numeroTelefono: telefonoEnvio,
+                                        tipoMultimedia: 'text',
+                                        estadoMensaje: 'enviado',
+                                        wamidMsg: wamid ? String(wamid) : null,
+                                        leido: 0,
+                                        conversacionFacturable: 0,
+                                        fechaEnvio: new Date(),
+                                        fechaCreacion: new Date()
+                                    });
+                                    await this.mensajeRepo.save(nuevoMensaje);
+
+                                    this.logger.log(`[Importacion] Mensaje guardado en BD. ID: ${nuevoMensaje.id}, WAMID: ${wamid}`);
+
+                                    // Registrar en tbl_historial_chat_ai como 'assistant'
+                                    const historialAi = this.historialAiRepo.create({
+                                        leadUuid: lead.uuid,
+                                        codigoEmpresa: codigoEmpresa,
+                                        input: { role: 'assistant', content: mensajeContenido },
+                                        role: 'assistant',
+                                        nombreModelo: 'importacion-sistema',
+                                        metadatos: {
+                                            origen: 'importacion_excel',
+                                            wamid: wamid,
+                                            mensaje_id: nuevoMensaje.id
+                                        }
+                                    });
+                                    await this.historialAiRepo.save(historialAi);
+                                    this.logger.log(`[Importacion] Contexto AI guardado.`);
+                                } catch (innerError) {
+                                    this.logger.error(`[Importacion] Fallo al enviar/guardar mensaje a ${telefonoEnvio}: ${innerError.message}`, innerError.stack);
+                                }
+                            } else {
+                                this.logger.warn(`[Importacion] No se pudo enviar mensaje: Telefono invalido o vacio para Lead ID ${lead.id}`);
+                            }
+                        } else {
+                            this.logger.warn(`[Importacion] No se encontro plantilla de PRIMER_CONTACTO para empresa ${codigoEmpresa}`);
+                        }
+                    } else {
+                        this.logger.log(`[Importacion] Lead ${lead.id} ya tiene mensaje de primer contacto registrado.`);
+                    }
+                } catch (msgError) {
+                    this.logger.error(`[Importacion] Error general en bloque de envio mensaje a ${lead.telefono}: ${msgError.message}`, msgError.stack);
+                }
 
             } catch (err) {
                 await queryRunner.rollbackTransaction();
