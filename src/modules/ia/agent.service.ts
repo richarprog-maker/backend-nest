@@ -29,7 +29,7 @@ export class AgentService {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    const temperature = isReasoningModel ? 1 : 0;
+    const temperature = isReasoningModel ? 1 : 0.7; // 0.7 para que sea más amigable y creativo (no frío)
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
@@ -275,7 +275,7 @@ IMPORTANTE:
 
       // Control de herramientas ejecutadas para evitar duplicados
       const accionesEjecutadas = new Set<string>();
-      
+
       // Máximo de iteraciones para evitar loops infinitos
       const maxIteraciones = 5;
       let iteracion = 0;
@@ -301,11 +301,11 @@ IMPORTANTE:
         // Si NO hay tool_calls, esta es la respuesta final
         if (!response.tool_calls || response.tool_calls.length === 0) {
           this.logger.log('Respuesta sin tool_calls - Finalizando');
-          
+
           const output = response.content?.toString() || "No pude generar una respuesta.";
-          
+
           this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ') || 'ninguno'}`);
-          
+
           return {
             output,
             tokensUsados: tokensAcumulados,
@@ -315,14 +315,14 @@ IMPORTANTE:
 
         // HAY tool_calls - Procesarlos
         this.logger.log(`Procesando ${response.tool_calls.length} tool_calls`);
-        
+
         // Agregar respuesta del modelo a mensajes
         messages.push(response);
 
         // Ejecutar TODOS los tool_calls y agregar sus respuestas
         for (const toolCall of response.tool_calls) {
           this.logger.log(`Ejecutando tool: ${toolCall.name}`);
-          
+
           let toolResult: string;
 
           // Verificar si la tool ya fue ejecutada en esta sesión
@@ -340,11 +340,11 @@ IMPORTANTE:
 
               // Ejecutar tool
               toolResult = await tool.func(toolCall.args, { metadata } as any);
-              
+
               // Marcar como ejecutada
               accionesEjecutadas.add(toolCall.name);
               toolsEjecutados.push(toolCall.name);
-              
+
               // Guardar en historial
               try {
                 await this.historialChatService.guardarMensaje({
@@ -378,16 +378,16 @@ IMPORTANTE:
 
       // Si llegamos aquí, alcanzamos max iteraciones
       this.logger.warn(`Agente alcanzó máximo de iteraciones (${maxIteraciones})`);
-      
+
       // Hacer una llamada final SIN tools para forzar respuesta de texto
       try {
         const finalResponse = await this.llm.invoke([
           { role: 'system', content: finalSystemPrompt + '\n\nGENERA TU RESPUESTA FINAL AHORA. No llames más herramientas.' },
           ...messages,
         ]);
-        
+
         const output = finalResponse.content?.toString() || "No pude generar una respuesta.";
-        
+
         return {
           output,
           tokensUsados: tokensAcumulados,
