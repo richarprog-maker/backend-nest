@@ -1,5 +1,5 @@
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not } from 'typeorm';
@@ -8,6 +8,10 @@ import { PlantillaMensaje, TipoPlantilla } from '../../plantillas/entities/plant
 import { WapiService } from '../../webhook_meta/wapi.service';
 import { Lead } from '../../inbox/entities/lead.entity';
 import { HistorialPlantillas } from '../../plantillas/entities/historial-plantilla.entity';
+import { Mensaje } from '../../inbox/entities/mensaje.entity';
+import { HistorialChatAi } from '../../ia/entities/historial-chat-ai.entity';
+import { InboxGateway } from '../../inbox/inbox.gateway';
+import { TimeUtils } from '../../../common/utils/time.utils';
 
 @Injectable()
 export class RecoveryTasksService {
@@ -31,11 +35,23 @@ export class RecoveryTasksService {
         private leadRepo: Repository<Lead>,
         @InjectRepository(HistorialPlantillas)
         private historialRepo: Repository<HistorialPlantillas>,
+        @InjectRepository(Mensaje)
+        private mensajeRepo: Repository<Mensaje>,
+        @InjectRepository(HistorialChatAi)
+        private historialAiRepo: Repository<HistorialChatAi>,
+        @Inject(forwardRef(() => InboxGateway))
+        private inboxGateway: InboxGateway,
         private wapiService: WapiService,
     ) { }
 
     @Cron(CronExpression.EVERY_MINUTE)
     async handleRecoveryMessages() {
+        // VALIDACION DE HORARIO (BLOCKING)
+        if (!TimeUtils.isWithinOperatingHours()) {
+            this.logger.debug('Fuera de horario operativo (10am-7pm). Cron pausado.');
+            return;
+        }
+
         this.logger.log('Verificando sesiones para recuperación...');
 
         try {
@@ -146,15 +162,100 @@ export class RecoveryTasksService {
             // Actualizar estado para la siguiente recuperación
             sesion.proximoMensajeMinutos = nextMinutes;
 
-
+            // ACTULIZAMOS la fecha de último mensaje
             sesion.fechaHoraUltimoMsj = new Date();
 
             await this.sesionRepo.save(sesion);
+
+            // LOGICA DE REGISTRO EN TBL_MENSAJES
+            try {
+                const wamid = resultado?.messages?.[0]?.id || resultado?.id || null;
+                const nuevoMensaje = this.mensajeRepo.create({
+                    codigoEmpresa: sesion.codigoEmpresa,
+                    leadUuid: lead.uuid,
+                    idUsuario: null, // Bot/Sistema
+                    idEmisorTipo: 2, // 2 = Bot
+                    contenido: contenido,
+                    numeroTelefono: lead.telefono,
+                    tipoMultimedia: 'text',
+                    estadoMensaje: 'enviado',
+                    wamidMsg: wamid ? String(wamid) : null,
+                    errorWapi: null,
+                    leido: 0,
+                    conversacionFacturable: 0,
+                    fechaEnvio: new Date(),
+                    fechaCreacion: new Date()
+                });
+                await this.mensajeRepo.save(nuevoMensaje);
+                this.logger.debug(`[Recovery] Mensaje guardado en BD. ID: ${nuevoMensaje.id}`);
+
+                // NOTIFICAR POR WEBSOCKET (Real-Time)
+                this.inboxGateway.notifyNewMessage(sesion.codigoEmpresa, lead.uuid, {
+                    tipo: 'mensaje',
+                    id: nuevoMensaje.id,
+                    contenido: nuevoMensaje.contenido,
+                    fechaCreacion: nuevoMensaje.fechaCreacion,
+                    fechaEnvio: nuevoMensaje.fechaEnvio,
+                    idEmisorTipo: nuevoMensaje.idEmisorTipo,
+                    tipoEmisor: 'Bot',
+                    urlMultimedia: null,
+                    tipoMultimedia: null,
+                    estadoMensaje: nuevoMensaje.estadoMensaje,
+                    leido: nuevoMensaje.leido,
+                });
+
+                this.inboxGateway.notifyConversationsUpdate(sesion.codigoEmpresa);
+
+                // LOGICA DE REGISTRO EN HISTORIAL_CHAT_AI
+                const historialAi = this.historialAiRepo.create({
+                    leadUuid: lead.uuid,
+                    codigoEmpresa: sesion.codigoEmpresa,
+                    input: { role: 'assistant', content: contenido },
+                    role: 'assistant',
+                    nombreModelo: 'recovery-system',
+                    metadatos: {
+                        origen: 'recovery_task',
+                        wamid: wamid,
+                        mensaje_id: nuevoMensaje.id,
+                        tipo_plantilla: tipoPlantilla
+                    }
+                });
+                await this.historialAiRepo.save(historialAi);
+                this.logger.debug(`[Recovery] Contexto AI guardado.`);
+
+            } catch (logError) {
+                this.logger.error('Error registrando mensaje/chat en base de datos', logError);
+            }
+
         } else {
             this.logger.error(`Error enviando recuperación a ${lead.telefono}: ${JSON.stringify(resultado)}`);
 
             historial.estado = 'FALLIDO';
             historial.metadata = resultado;
+
+            // Registrar fallo en tbl_mensajes tambien? User pidio registrar "una vez que se envia".
+            // Si falla, el usuario pidio "error_wapi json". Asi que registraremos el fallo.
+            try {
+                const nuevoMensaje = this.mensajeRepo.create({
+                    codigoEmpresa: sesion.codigoEmpresa,
+                    leadUuid: lead.uuid,
+                    idUsuario: null,
+                    idEmisorTipo: 2,
+                    contenido: contenido,
+                    numeroTelefono: lead.telefono,
+                    tipoMultimedia: 'text',
+                    estadoMensaje: 'fallido',
+                    wamidMsg: null,
+                    errorWapi: resultado, // Guardamos el error
+                    leido: 0,
+                    conversacionFacturable: 0,
+                    fechaEnvio: new Date(),
+                    fechaCreacion: new Date()
+                });
+                await this.mensajeRepo.save(nuevoMensaje);
+            } catch (logError) {
+                this.logger.error('Error registrando mensaje fallido', logError);
+            }
         }
 
         try {
