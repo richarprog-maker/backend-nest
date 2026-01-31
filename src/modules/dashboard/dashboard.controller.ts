@@ -39,4 +39,15 @@ export class DashboardController {
         const empresaId = user?.empresaId || 1;
         return this.dashboardService.saveLimit(empresaId, body.limite);
     }
+
+    @Get('resumen')
+    async getEstadisticasResumen(
+        @Req() req,
+        @Query('fechaDesde') fechaDesde: string,
+        @Query('fechaHasta') fechaHasta: string
+    ) {
+        const user = req.user;
+        const empresaId = user?.empresaId || 1;
+        return this.dashboardService.getEstadisticasResumen(empresaId, fechaDesde, fechaHasta);
+    }
 }
