@@ -9,6 +9,10 @@ import { RunnableSequence } from '@langchain/core/runnables';
 import { ProjectsSearchService } from '../projects-search.service';
 import { WapiService } from '../../webhook_meta/wapi.service';
 import { InboxService } from '../../inbox/inbox.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SesionConversacion } from '../entities/sesion-conversacion.entity';
+import { HistorialClasificacionLead } from '../../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 
 @Injectable()
 export class ToolsExecutionService {
@@ -21,7 +25,9 @@ export class ToolsExecutionService {
         private qdrantVectorService: QdrantVectorService,
         private projectsSearchService: ProjectsSearchService,
         private wapiService: WapiService,
-        private inboxService: InboxService
+        private inboxService: InboxService,
+        @InjectRepository(SesionConversacion) private sesionRepo: Repository<SesionConversacion>,
+        @InjectRepository(HistorialClasificacionLead) private clasificacionRepo: Repository<HistorialClasificacionLead>
     ) {
         // LLM para el RAG Chain
         this.llm = new ChatOpenAI({
@@ -148,6 +154,28 @@ export class ToolsExecutionService {
             observacion: observacion,
             estadoCita: 'pendiente'
         });
+
+        // 3. Actualizar Estado Sesion y Clasificacion
+        try {
+            const sesion = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
+            if (sesion) {
+                // Actualizar a estado 2 (convertido/cita)
+                sesion.idEstado = 2; // TODO: Usar Enum si existe
+                await this.sesionRepo.save(sesion);
+
+                // Insertar Historial Clasificacion
+                const historial = this.clasificacionRepo.create({
+                    idSesion: sesion.id,
+                    clasificacion: 'alto',
+                    razon: 'Agendó cita satisfactoriamente',
+                });
+                await this.clasificacionRepo.save(historial);
+                this.logger.log(`[AgendarCita] Lead clasificado como ALTO y Sesion actualizada a estado 2`);
+            }
+        } catch (err) {
+            this.logger.error(`[AgendarCita] Error actualizando clasificacion: ${err.message}`);
+            // No bloqueamos el retorno de exito de la cita
+        }
 
         return {
             success: true,

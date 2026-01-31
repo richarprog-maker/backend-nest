@@ -141,10 +141,7 @@ export class OrquestadorImportacionService {
                     sesion.leadUuid = lead.uuid;
                     sesion.codigoEmpresa = codigoEmpresa;
                     sesion.proximoMensajeMinutos = 60;
-                    sesion.metadatos = {
-                        origen: 'importacion_excel',
-                        importado_en: new Date().toISOString()
-                    };
+
                     await queryRunner.manager.save(sesion);
                 }
 
@@ -153,7 +150,7 @@ export class OrquestadorImportacionService {
 
                 // 5. Envio de Primer Mensaje (Fuera de transaccion principal para no bloquear)
                 try {
-                   
+
                     const yaEnviado = await this.mensajeRepo.findOne({
                         where: { leadUuid: lead.uuid }
                     });

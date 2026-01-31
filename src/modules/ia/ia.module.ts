@@ -15,6 +15,7 @@ import { ContextoLead } from './entities/contexto-lead.entity';
 import { CitasModule } from '../citas/citas.module';
 import { RedisModule } from '../common/redis/redis.module';
 import { InboxModule } from '../inbox/inbox.module';
+import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-leads.module';
 
 @Module({
     imports: [
@@ -23,7 +24,8 @@ import { InboxModule } from '../inbox/inbox.module';
         RedisModule,
         forwardRef(() => import('../webhook_meta/webhook.module').then(m => m.WebhookModule)),
         forwardRef(() => InboxModule),
-        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, ContextoLead])
+        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, ContextoLead]),
+        ClasificacionLeadsModule
     ],
     providers: [
         AiService,

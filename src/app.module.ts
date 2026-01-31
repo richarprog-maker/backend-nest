@@ -17,6 +17,7 @@ import { databaseConfig } from './config/database.config';
 import { PlantillasModule } from './modules/plantillas/plantillas.module';
 import { HistorialEnviosModule } from './modules/historial-envios/historial-envios.module';
 import { TasksModule } from './modules/tasks/tasks.module';
+import { ClasificacionLeadsModule } from './modules/clasificacion-leads/clasificacion-leads.module';
 
 @Module({
     imports: [
@@ -47,6 +48,7 @@ import { TasksModule } from './modules/tasks/tasks.module';
         PlantillasModule,
         HistorialEnviosModule,
         TasksModule,
+        ClasificacionLeadsModule,
     ],
     controllers: [],
     providers: [],

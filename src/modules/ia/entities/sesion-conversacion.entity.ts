@@ -22,8 +22,8 @@ export class SesionConversacion {
     @Column({ name: 'proximo_mensaje_minutos', type: 'int', default: 60 })
     proximoMensajeMinutos: number;
 
-    @Column({ type: 'json', nullable: true })
-    metadatos: any;
+    @Column({ name: 'id_estado', type: 'int', default: 1 })
+    idEstado: number;
 
     @CreateDateColumn({ name: 'created_at' })
     createdAt: Date;
