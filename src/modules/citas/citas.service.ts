@@ -39,4 +39,18 @@ export class CitasService {
             order: { fechaCita: 'DESC', horaCita: 'ASC' }
         });
     }
+
+    async obtenerUltimaCitaPorLead(leadUuid: string, codigoEmpresa: number): Promise<Cita | null> {
+        return this.citaRepo.findOne({
+            where: {
+                leadUuid,
+                codigoEmpresa
+            },
+            order: {
+                fechaCita: 'DESC',
+                horaCita: 'DESC',
+                id: 'DESC' // Asegurar orden estable en caso de empate
+            }
+        });
+    }
 }

@@ -101,6 +101,27 @@ export class ToolsExecutionService {
 
         const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, unidad_interes, dormitorios, precio_referencial } = params;
 
+        // 0. Validar si ya tiene una cita ACTIVA
+        const ultimaCita = await this.citasService.obtenerUltimaCitaPorLead(leadUuid, codigoEmpresa);
+
+        if (ultimaCita) {
+            // Verificar si la cita es futura y está pendiente o confirmada
+            const fechaCitaExistente = new Date(`${ultimaCita.fechaCita}T${ultimaCita.horaCita}`);
+            const ahora = new Date();
+
+            // Si la fecha de la cita existente es MAYOR a la fecha actual (futuro)
+            // Y su estado NO es cancelada ni realizada
+            const citaEsFutura = fechaCitaExistente > ahora;
+            const citaEsActiva = ultimaCita.estadoCita === 'pendiente' || ultimaCita.estadoCita === 'confirmada';
+
+            if (citaEsActiva && citaEsFutura) {
+                return {
+                    success: false,
+                    mensaje: `Ya tienes una cita programada para el ${ultimaCita.fechaCita} a las ${ultimaCita.horaCita}. Si deseas reagendarla, primero debemos cancelar la anterior o coordinar el cambio.`
+                };
+            }
+        }
+
         // 1. Validar disponibilidad (básico)
         const ocupado = await this.citasService.existeCitaEnHorario(fecha_cita, hora_cita, codigoEmpresa);
 
@@ -343,17 +364,25 @@ RESPUESTA PRECISA:`);
                 this.logger.warn(`No se encontraron resultados para dormitorios: ${params.dormitorios}`);
                 return "[ACCION_COMPLETADA] No encontre departamentos disponibles con esas caracteristicas. Pregunta si quiere ver otras opciones.";
             }
-
+            // Mostrar lista de resultados
             const lista = resultados.map((r, idx) => {
                 const m = r.document.metadata;
-                const precioMostrar = m.price_promo && parseFloat(m.price_promo) < parseFloat(m.price_list)
-                    ? `S/ ${parseFloat(m.price_promo).toLocaleString('es-PE')}`
-                    : `S/ ${parseFloat(m.price_list).toLocaleString('es-PE')}`;
+
+                // Formatear precios
+                const pList = m.price_list ? parseFloat(m.price_list) : 0;
+                const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+
+                let precioMostrar = '';
+                if (pPromo && pPromo < pList) {
+                    precioMostrar = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
+                } else {
+                    precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
+                }
 
                 const dormitoriosText = m.bedrooms === 0 ? 'Monoambiente' : `${m.bedrooms} dormitorio${m.bedrooms > 1 ? 's' : ''}`;
 
-                return `${idx + 1}. Unidad ${m.unit_number} - Piso ${m.floor}, ${dormitoriosText}, ${m.area_total}m2 - ${precioMostrar}`;
-            }).join('\n\n');
+                return `${idx + 1}. Unidad ${m.unit_number} - ${dormitoriosText}, ${m.area_total}m² - Precio: ${precioMostrar}`;
+            }).join('\n');
 
             const respuesta = `[ACCION_COMPLETADA] Hay ${resultados.length} departamento${resultados.length > 1 ? 's' : ''} disponible${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\nPregunta si quiere agendar visita.`;
 
@@ -434,159 +463,247 @@ RESPUESTA PRECISA:`);
         }
     }
 
+
     /**
-     * HERRAMIENTA UNIVERSAL: Busca departamentos en Qdrant por CUALQUIER criterio
-     * Puede buscar por: unidad, dormitorios, piso, precio, vista, tipología, área
+     * HERRAMIENTA UNIVERSAL MEJORADA: Busca departamentos con estrategia de FALLBACK (rebote)
+     * Si no encuentra exacto, relaja filtros progresivamente para siempre dar opciones.
      */
     async buscarDepartamentoUniversal(params: {
-        unidad?: string;           // Número de unidad (ej: "1701", "305")
-        dormitorios?: number;      // Cantidad de dormitorios (1, 2, 3)
-        piso?: number;             // Piso específico
-        precio_max?: number;       // Precio máximo
-        precio_min?: number;       // Precio mínimo
-        vista?: string;            // "exterior" o "interior"
-        tipologia?: string;        // "Tipo 1", "Tipo 2", etc.
-        area_min?: number;         // Área mínima en m2
-        phoneNumber?: string;      // Número de teléfono del lead
-        codigoEmpresa?: number;    // Código de empresa
-        leadUuid?: string;         // UUID del lead para guardar mensaje en BD
+        unidad?: string;
+        dormitorios?: number;
+        piso?: number;
+        precio_max?: number;
+        precio_min?: number;
+        vista?: string;
+        tipologia?: string;
+        area_min?: number;
+        phoneNumber?: string;
+        codigoEmpresa?: number;
+        leadUuid?: string;
     }) {
         try {
             const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const logPrefix = `[BusquedaUniversal]`;
 
-            // Construir query text para búsqueda semántica
-            let queryParts = ['departamento disponible'];
-            if (params.unidad) queryParts.push(`unidad ${params.unidad}`);
-            if (params.dormitorios) queryParts.push(`${params.dormitorios} dormitorios`);
-            if (params.piso) queryParts.push(`piso ${params.piso}`);
-            if (params.vista) queryParts.push(`vista ${params.vista}`);
-            const queryText = queryParts.join(' ');
+            this.logger.log(`${logPrefix} Params: ${JSON.stringify(params)}`);
 
-            // Construir filtros
-            const filters: any = {};
-            if (params.dormitorios !== undefined) filters.dormitorios = params.dormitorios;
-            if (params.piso !== undefined) {
-                filters.pisoMin = params.piso;
-                filters.pisoMax = params.piso;
-            }
-            if (params.precio_min !== undefined) filters.precioMin = params.precio_min;
-            if (params.precio_max !== undefined) filters.precioMax = params.precio_max;
-            if (params.vista) filters.vista = params.vista;
-            if (params.tipologia) filters.tipologia = params.tipologia;
-            if (params.area_min !== undefined) filters.areaMin = params.area_min;
-
-            this.logger.log(`Búsqueda universal: unidad=${params.unidad}, dorms=${params.dormitorios}, piso=${params.piso}`);
-
-            // Si busca por unidad específica, usar filtro exacto
+            // --- CASO 1: BÚSQUEDA POR UNIDAD ESPECÍFICA (Prioridad Máxima) ---
             if (params.unidad) {
-                const resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
-                    collectionName,
-                    queryText,
-                    filters,
-                    { limit: 20, threshold: 0.3 } // Threshold bajo para búsqueda por unidad
-                );
+                return this.manejarBusquedaPorUnidad(params, collectionName);
+            }
 
-                // Filtrar por número de unidad exacto
-                const unidadExacta = resultados.find(r =>
-                    r.document.metadata.unit_number?.toString() === params.unidad?.toString()
-                );
+            // --- CASO 2: ESTRATEGIA DE FALLBACK (Búsqueda en cascada) ---
 
-                if (unidadExacta) {
-                    const m = unidadExacta.document.metadata;
-                    const precioMostrar = m.price_promo && parseFloat(m.price_promo) < parseFloat(m.price_list)
-                        ? `S/ ${parseFloat(m.price_promo).toLocaleString('es-PE')}`
-                        : `S/ ${parseFloat(m.price_list).toLocaleString('es-PE')}`;
+            // INTENTO 1: Búsqueda Exacta
+            this.logger.log(`${logPrefix} Intento 1: Filtros exactos`);
+            let resultado = await this.ejecutarBusquedaQdrant(collectionName, params);
 
-                    const dormitoriosText = m.bedrooms === 0 ? 'Monoambiente' : `${m.bedrooms} dormitorio${m.bedrooms > 1 ? 's' : ''}`;
+            if (resultado.ok && resultado.items.length > 0) {
+                return this.formatearRespuestaBusqueda(resultado.items, "Encontré estas opciones exactas para ti:");
+            }
 
-                    // Enviar imagen del plano si existe
-                    const phoneNumber = params.phoneNumber;
-                    const codigoEmpresa = params.codigoEmpresa || 1;
-                    if (phoneNumber && m.url_floor_plan) {
-                        const imageUrl = this.convertGoogleDriveToDirectUrl(m.url_floor_plan);
-                        if (imageUrl) {
-                            try {
-                                await this.wapiService.sendImageByUrl(
-                                    codigoEmpresa,
-                                    phoneNumber,
-                                    imageUrl,
-                                    `Plano de la unidad ${m.unit_number}`
-                                );
-                                this.logger.log(`✅ Imagen del plano enviada para unidad ${m.unit_number}`);
+            // INTENTO 2: Relajar filtros secundarios (Vista y Tipología)
+            this.logger.log(`${logPrefix} Intento 2: Relajando Vista y Tipologia`);
+            const paramsRelaxed1 = { ...params };
+            delete paramsRelaxed1.vista;
+            delete paramsRelaxed1.tipologia;
+            // Si piden area_min, relajamos un 10%
+            if (paramsRelaxed1.area_min) paramsRelaxed1.area_min = paramsRelaxed1.area_min * 0.9;
 
-                                // Guardar mensaje en BD si tenemos leadUuid
-                                if (params.leadUuid) {
-                                    try {
-                                        await this.inboxService.guardarMensajeBot({
-                                            leadUuid: params.leadUuid,
-                                            codigoEmpresa: codigoEmpresa,
-                                            contenido: `Plano de la unidad ${m.unit_number}`,
-                                            tipoMultimedia: 'image',
-                                            urlMultimedia: imageUrl,
-                                            // Nota: sendImageByUrl no devuelve ID reliablemente en la v actual, pendiente mejora
-                                            estadoMensaje: 'enviado'
-                                        });
-                                        this.logger.log(`💾 Mensaje con imagen guardado en BD - Unidad ${m.unit_number}`);
-                                    } catch (dbError) {
-                                        this.logger.error(`Error guardando mensaje en BD: ${dbError.message}`);
-                                    }
-                                }
-                            } catch (error) {
-                                this.logger.error(`Error enviando imagen del plano: ${error.message}`);
-                            }
-                        }
-                    }
+            resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsRelaxed1);
 
-                    let respuesta = `**Unidad ${m.unit_number}** - ${m.unit_type}\n` +
-                        `Piso ${m.floor}\n` +
-                        `${dormitoriosText}\n` +
-                        `Vista ${m.view}\n` +
-                        `Area total: ${m.area_total}m²\n` +
-                        `Precio: ${precioMostrar}\n` +
-                        `Tipologia: ${m.typology}\n` +
-                        `Disponibilidad: ${m.availability}\n`;
+            if (resultado.ok && resultado.items.length > 0) {
+                return this.formatearRespuestaBusqueda(resultado.items,
+                    "No encontré opciones exactas con esa vista/tipo específicados, pero garanticé los dormitorios y presupuesto. Mira estas alternativas:");
+            }
 
-                    // Agregar info del plano
-                    if (m.url_floor_plan && phoneNumber) {
-                        respuesta += `\nPLANO ENVIADO: Se envio el plano de la unidad por imagen.\n`;
-                    }
+            // INTENTO 3: Relajar Presupuesto (Smart Range +/- 20%)
+            this.logger.log(`${logPrefix} Intento 3: Relajando Presupuesto`);
+            const paramsRelaxed2 = { ...paramsRelaxed1 };
+            if (paramsRelaxed2.precio_max) paramsRelaxed2.precio_max = paramsRelaxed2.precio_max * 1.2; // +20%
+            if (paramsRelaxed2.precio_min) paramsRelaxed2.precio_min = paramsRelaxed2.precio_min * 0.8; // -20%
 
-                    respuesta += `\nPara asegurarte este precio y hacerte la proforma formal, indicame tu nombre completo y DNI.`;
-                    return `[ACCION_COMPLETADA] ${respuesta}`;
+            resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsRelaxed2);
+
+            if (resultado.ok && resultado.items.length > 0) {
+                return this.formatearRespuestaBusqueda(resultado.items,
+                    "No encontré en el rango exacto de precio, pero estas opciones están muy cerca y valen la pena revisar:");
+            }
+
+            // INTENTO 4: Fallback Final - Solo Dormitorios (Lo más importante)
+            if (params.dormitorios) {
+                this.logger.log(`${logPrefix} Intento 4: Solo Dormitorios`);
+                const paramsFinal = { dormitorios: params.dormitorios };
+                resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsFinal);
+
+                if (resultado.ok && resultado.items.length > 0) {
+                    return this.formatearRespuestaBusqueda(resultado.items,
+                        `Actualmente no tengo coincidencias exactas con todos los filtros, pero aquí están TODOS los departamentos disponibles de ${params.dormitorios} dormitorios:`);
                 }
-
-                return `[ACCION_COMPLETADA] No encontre informacion de la unidad ${params.unidad}. Pregunta si quiere ver otras opciones.`;
             }
 
-            // Búsqueda general por otros criterios
-            const resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
-                collectionName,
-                queryText,
-                filters,
-                { limit: 10, threshold: 0.5 }
-            );
-
-            if (resultados.length === 0) {
-                return "[ACCION_COMPLETADA] No encontre departamentos con esas caracteristicas. Pregunta si quiere ver otras opciones.";
-            }
-
-            // Mostrar lista de resultados
-            const lista = resultados.map((r, idx) => {
-                const m = r.document.metadata;
-                const precioMostrar = m.price_promo && parseFloat(m.price_promo) < parseFloat(m.price_list)
-                    ? `S/ ${parseFloat(m.price_promo).toLocaleString('es-PE')}`
-                    : `S/ ${parseFloat(m.price_list).toLocaleString('es-PE')}`;
-
-                const dormitoriosText = m.bedrooms === 0 ? 'Monoambiente' : `${m.bedrooms} dormitorio${m.bedrooms > 1 ? 's' : ''}`;
-
-                return `${idx + 1}. Unidad ${m.unit_number} - ${dormitoriosText}, ${m.area_total}m² - Precio: ${precioMostrar}`;
-            }).join('\n');
-
-            return `[ACCION_COMPLETADA] Encontre ${resultados.length} departamento${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\nSi el cliente elige una unidad, ejecuta buscar_departamento con el numero de unidad para enviar el plano.`;
+            return "[ACCION_COMPLETADA] Lo siento, realmente no encontré nada disponible ni siquiera relajando la búsqueda. Pregúntale si quiere ver departamentos de otra cantidad de dormitorios.";
 
         } catch (error) {
             this.logger.error(`Error en buscarDepartamentoUniversal: ${error.message}`, error.stack);
-            return "Ocurrió un error al buscar. Por favor intenta de nuevo.";
+            return "Ocurrió un error técnico al buscar. Por favor intenta de nuevo.";
+        }
+    }
+
+    // --- MÉTODOS PRIVADOS DE AYUDA ---
+
+    private async manejarBusquedaPorUnidad(params: any, collectionName: string) {
+        const queryText = `unidad ${params.unidad}`;
+        const resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
+            collectionName,
+            queryText,
+            {},
+            { limit: 20, threshold: 0.3 }
+        );
+
+        const unidadExacta = resultados.find(r =>
+            r.document.metadata.unit_number?.toString() === params.unidad?.toString()
+        );
+
+        if (unidadExacta) {
+            const m = unidadExacta.document.metadata;
+            await this.enviarPlanoSiCorresponde(m, params);
+            return this.formatearDetalleUnidad(m);
+        }
+
+        return `[ACCION_COMPLETADA] No encontré la unidad ${params.unidad}. Revisa si el número es correcto.`;
+    }
+
+    private async ejecutarBusquedaQdrant(collectionName: string, params: any) {
+        // Construir query text
+        const queryParts = ['departamento disponible'];
+        if (params.dormitorios) queryParts.push(`${params.dormitorios} dormitorios`);
+        if (params.vista) queryParts.push(`vista ${params.vista}`);
+        const queryText = queryParts.join(' ');
+
+        // Construir filtros
+        const filters: any = {};
+        if (params.dormitorios !== undefined) filters.dormitorios = params.dormitorios;
+        if (params.piso !== undefined) {
+            filters.pisoMin = params.piso;
+            filters.pisoMax = params.piso;
+        }
+        if (params.precio_min !== undefined) filters.precioMin = params.precio_min;
+        if (params.precio_max !== undefined) filters.precioMax = params.precio_max;
+        if (params.vista) filters.vista = params.vista;
+        if (params.tipologia) filters.tipologia = params.tipologia;
+        if (params.area_min !== undefined) filters.areaMin = params.area_min;
+
+        // Aumentamos límite para poder reordenar en memoria por precio
+        const resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
+            collectionName,
+            queryText,
+            filters,
+            { limit: 20, threshold: 0.4 }
+        );
+
+        // LÓGICA DE ORDENAMIENTO POR PRECIO
+        // Si el usuario especificó precio (max o min), ordenamos por cercanía a ese precio
+        if (params.precio_max || params.precio_min) {
+            const precioObjetivo = params.precio_max || params.precio_min;
+
+            resultados.sort((a, b) => {
+                const getPrecio = (item: any) => {
+                    const m = item.document.metadata;
+                    // Usar precio promo si existe y es menor, sino precio lista
+                    const pPromo = m.price_promo ? parseFloat(m.price_promo) : null;
+                    const pList = m.price_list ? parseFloat(m.price_list) : 0;
+                    return (pPromo && pPromo < pList) ? pPromo : pList;
+                };
+
+                const precioA = getPrecio(a);
+                const precioB = getPrecio(b);
+
+                const distA = Math.abs(precioA - precioObjetivo);
+                const distB = Math.abs(precioB - precioObjetivo);
+
+                return distA - distB; // Menor distancia primero
+            });
+
+            this.logger.log(`[BusquedaUniversal] Resultados reordenados por cercanía a precio: ${precioObjetivo}`);
+        }
+
+        // Devolvemos solo los top 6 después de ordenar
+        return { ok: true, items: resultados.slice(0, 6) };
+    }
+
+    private formatearRespuestaBusqueda(items: any[], mensajeIntro: string) {
+        const lista = items.map((r, idx) => {
+            const m = r.document.metadata;
+
+            const pList = m.price_list ? parseFloat(m.price_list) : 0;
+            const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+
+            let precioMostrar = '';
+            if (pPromo && pPromo < pList) {
+                // Mostrar ambos precios para que el cliente vea que SI existe el de lista
+                precioMostrar = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
+            } else {
+                precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
+            }
+
+            const area = m.area_total ? `${m.area_total}m²` : '';
+            const piso = m.floor ? `Piso ${m.floor}` : '';
+            const vista = m.view ? `Vista ${m.view}` : '';
+            const dorms = m.bedrooms ? `${m.bedrooms} dorm` : '';
+
+            // Construir línea resumen compacta
+            // Ej: 1. Unidad 1704 - 2 dorm, 65m2, Vista Calle - S/450,000
+            const detalles = [dorms, area, vista, piso].filter(Boolean).join(', ');
+            return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
+        }).join('\n');
+
+        return `[ACCION_COMPLETADA] ${mensajeIntro}\n\n${lista}\n\nRecomienda una opcion y pregunta si quiere ver el plano o agendar visita.`;
+    }
+
+    private formatearDetalleUnidad(m: any) {
+        const precio = m.price_promo && parseFloat(m.price_promo) < parseFloat(m.price_list)
+            ? `S/ ${parseFloat(m.price_promo).toLocaleString('es-PE')}`
+            : `S/ ${parseFloat(m.price_list).toLocaleString('es-PE')}`;
+
+        return `[ACCION_COMPLETADA] **Unidad ${m.unit_number}**\n` +
+            `- Tipo: ${m.unit_type} (${m.typology || 'Standard'})\n` +
+            `- Piso: ${m.floor}\n` +
+            `- Dormitorios: ${m.bedrooms}\n` +
+            `- Área: ${m.area_total}m²\n` +
+            `- Vista: ${m.view}\n` +
+            `- Precio: ${precio}\n` +
+            `- Disponibilidad: ${m.availability}\n\n` +
+            `Para separar esta unidad, necesito tu DNI y nombre completo.`;
+    }
+
+    private async enviarPlanoSiCorresponde(m: any, params: any) {
+        if (!params.phoneNumber || !m.url_floor_plan) return;
+
+        const imageUrl = this.convertGoogleDriveToDirectUrl(m.url_floor_plan);
+        if (!imageUrl) return;
+
+        try {
+            await this.wapiService.sendImageByUrl(
+                params.codigoEmpresa || 1,
+                params.phoneNumber,
+                imageUrl,
+                `Plano Unidad ${m.unit_number}`
+            );
+
+            // Logear en inbox si es posible
+            if (params.leadUuid) {
+                await this.inboxService.guardarMensajeBot({
+                    leadUuid: params.leadUuid,
+                    codigoEmpresa: params.codigoEmpresa || 1,
+                    contenido: `Plano Unidad ${m.unit_number}`,
+                    tipoMultimedia: 'image',
+                    urlMultimedia: imageUrl,
+                    estadoMensaje: 'enviado'
+                }).catch(e => this.logger.error(e));
+            }
+        } catch (e) {
+            this.logger.error("Error enviando plano", e);
         }
     }
 

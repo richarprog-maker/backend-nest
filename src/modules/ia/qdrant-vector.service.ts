@@ -296,12 +296,26 @@ export class QdrantVectorService {
     }
 
     if (filters.precioMin !== undefined || filters.precioMax !== undefined) {
-      const priceRange: any = {};
-      if (filters.precioMin) priceRange.gte = filters.precioMin;
-      if (filters.precioMax) priceRange.lte = filters.precioMax;
+      const priceOrConditions: any[] = [];
+
+      // Condición 1: El precio de lista está en el rango
+      const listRange: any = {};
+      if (filters.precioMin) listRange.gte = filters.precioMin;
+      if (filters.precioMax) listRange.lte = filters.precioMax;
+      priceOrConditions.push({ key: 'metadata.price_list', range: listRange });
+
+      // Condición 2: El precio de promoción está en el rango
+      const promoRange: any = {};
+      if (filters.precioMin) promoRange.gte = filters.precioMin;
+      if (filters.precioMax) promoRange.lte = filters.precioMax;
+      priceOrConditions.push({ key: 'metadata.price_promo', range: promoRange });
+
+      // Agregamos como condición SHOULD (OR) anidada dentro del MUST principal
+      // Significa: (price_list in range OR price_promo in range)
       conditions.push({
-        key: 'metadata.price_list',
-        range: priceRange
+        filter: {
+          should: priceOrConditions
+        }
       });
     }
 
@@ -354,7 +368,7 @@ export class QdrantVectorService {
     filter?: any
   ): Promise<Array<{ document: Document; score: number; breakdown: any }>> {
     const vector = await this.embeddings.embedQuery(query);
-    
+
     const searchResult = await this.qdrantClient.search(collectionName, {
       vector: vector,
       limit: limit,
@@ -362,7 +376,7 @@ export class QdrantVectorService {
       with_payload: true,
       score_threshold: threshold,
     });
-    
+
     if (searchResult.length > 0) {
       this.logger.debug(`Qdrant: ${searchResult.length} resultados, score: ${searchResult[0].score.toFixed(3)}`);
     }
@@ -370,13 +384,13 @@ export class QdrantVectorService {
     return searchResult.map(result => {
       const payload: any = result.payload || {};
       const similarityScore = result.score || 0;
-      
+
       // Extract metadata from payload (Qdrant stores it as payload.metadata)
       const metadata = payload.metadata || {};
-      
+
       const priceScore = this.calculatePriceScore(metadata);
       const featureScore = this.calculateFeatureScore(metadata);
-      
+
       const combinedScore = (similarityScore * 0.70) + (priceScore * 0.15) + (featureScore * 0.15);
 
       const document = new Document({
@@ -399,9 +413,9 @@ export class QdrantVectorService {
 
   private calculatePriceScore(payload: any): number {
     if (!payload.price_promo || !payload.price_list) return 0.5;
-    
+
     const discount = (payload.price_list - payload.price_promo) / payload.price_list;
-    
+
     if (discount >= 0.10) return 1.0;
     if (discount >= 0.05) return 0.8;
     if (discount > 0) return 0.6;
@@ -410,11 +424,11 @@ export class QdrantVectorService {
 
   private calculateFeatureScore(payload: any): number {
     let score = 0.5;
-    
+
     if (payload.view === 'exterior') score += 0.2;
     if (payload.floor >= 7) score += 0.15;
     if (payload.area_total >= 50) score += 0.15;
-    
+
     return Math.min(score, 1.0);
   }
 
@@ -430,9 +444,9 @@ export class QdrantVectorService {
       delete relaxedFilters.vista;
       delete relaxedFilters.pisoMin;
       delete relaxedFilters.pisoMax;
-      
+
       const relaxedQdrantFilter = this.buildQdrantFilter(relaxedFilters);
-      
+
       return await this.searchWithScoring(
         collectionName,
         query,
@@ -442,16 +456,16 @@ export class QdrantVectorService {
       );
     } else if (strategy === 'expand') {
       const expandedFilters = { ...originalFilters };
-      
+
       if (expandedFilters.precioMax) {
         expandedFilters.precioMax = expandedFilters.precioMax * 1.15;
       }
       if (expandedFilters.precioMin) {
         expandedFilters.precioMin = expandedFilters.precioMin * 0.85;
       }
-      
+
       const expandedQdrantFilter = this.buildQdrantFilter(expandedFilters);
-      
+
       return await this.searchWithScoring(
         collectionName,
         query,
