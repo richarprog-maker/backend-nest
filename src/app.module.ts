@@ -19,6 +19,8 @@ import { HistorialEnviosModule } from './modules/historial-envios/historial-envi
 import { TasksModule } from './modules/tasks/tasks.module';
 import { ClasificacionLeadsModule } from './modules/clasificacion-leads/clasificacion-leads.module';
 
+import { BullModule } from '@nestjs/bullmq';
+
 @Module({
     imports: [
         // Configuración de Variables de Entorno
@@ -30,6 +32,18 @@ import { ClasificacionLeadsModule } from './modules/clasificacion-leads/clasific
         TypeOrmModule.forRootAsync({
             inject: [ConfigService],
             useFactory: (configService: ConfigService) => databaseConfig(configService),
+        }),
+
+        // Configuración de Colas (BullMQ)
+        BullModule.forRootAsync({
+            inject: [ConfigService],
+            useFactory: (configService: ConfigService) => ({
+                connection: {
+                    host: configService.get('REDIS_HOST') || 'localhost',
+                    port: parseInt(configService.get('REDIS_PORT')) || 6379,
+                    db: parseInt(configService.get('REDIS_DB_BULL')) || 1, // Usar DB diferente para evitar colisiones
+                },
+            }),
         }),
 
         // Módulos de la Aplicación
