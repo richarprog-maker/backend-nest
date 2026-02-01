@@ -57,3 +57,7 @@ export const mostrarDepartamentosSchema = z.object({
     dormitorios: z.number().optional().describe("Cantidad de dormitorios filtrados"),
     piso: z.number().optional(),
 });
+
+export const enviarVideosProyectoSchema = z.object({
+    nombre_proyecto: z.string().describe("Nombre del proyecto inmobiliario"),
+});

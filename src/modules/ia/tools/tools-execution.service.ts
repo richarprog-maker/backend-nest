@@ -916,4 +916,101 @@ RESPUESTA PRECISA:`);
             return `El proyecto está ubicado en Av. Petit Thouars 1737, Lince.`;
         }
     }
+
+    /**
+     * Envía los videos promocionales del proyecto por WhatsApp.
+     * Envía automáticamente AMBOS videos disponibles en storage/videos.
+     */
+    async enviarVideosProyecto(params: {
+        nombre_proyecto: string;
+        phoneNumber?: string;
+        codigoEmpresa?: number;
+        leadUuid?: string;
+    }) {
+        try {
+            const path = require('path');
+            const fs = require('fs');
+
+            // Rutas de los videos del proyecto
+            const videosDir = path.join(process.cwd(), 'storage', 'videos');
+            const videosDisponibles = [
+                { archivo: 'LIRIOS_TIPOLOGIAS_6_final.mp4', descripcion: 'Video de tipologías del proyecto' },
+                { archivo: 'lirios_tipo_3_final.mp4', descripcion: 'Video promocional del proyecto' }
+            ];
+
+            // Validar parámetros mínimos para enviar
+            if (!params.phoneNumber || !params.leadUuid) {
+                return `[ACCION_COMPLETADA] Los videos del proyecto ${params.nombre_proyecto} están disponibles. Proporciona tu número para enviártelos.`;
+            }
+
+            const codigoEmpresa = params.codigoEmpresa || 1;
+            const videosEnviados: string[] = [];
+            const erroresEnvio: string[] = [];
+
+            // Enviar cada video secuencialmente
+            for (const video of videosDisponibles) {
+                const rutaVideo = path.join(videosDir, video.archivo);
+
+                // Verificar que el archivo existe
+                if (!fs.existsSync(rutaVideo)) {
+                    this.logger.warn(`[EnviarVideos] Archivo no encontrado: ${rutaVideo}`);
+                    erroresEnvio.push(video.archivo);
+                    continue;
+                }
+
+                try {
+                    const response: any = await this.wapiService.sendVideo(
+                        codigoEmpresa,
+                        params.phoneNumber,
+                        rutaVideo,
+                        video.descripcion
+                    );
+
+                    let wamid = null;
+                    let estado = 'enviado';
+                    let errorDetails = null;
+
+                    if (response && response.error) {
+                        estado = 'fallido';
+                        errorDetails = response.details;
+                        erroresEnvio.push(video.archivo);
+                    } else {
+                        wamid = response?.messages?.[0]?.id || response?.id || null;
+                        videosEnviados.push(video.archivo);
+                    }
+
+                    // Registrar en inbox
+                    await this.inboxService.guardarMensajeBot({
+                        leadUuid: params.leadUuid,
+                        codigoEmpresa: codigoEmpresa,
+                        contenido: video.descripcion,
+                        tipoMultimedia: 'video',
+                        urlMultimedia: rutaVideo,
+                        wamid: wamid,
+                        estadoMensaje: estado,
+                        errorWapi: errorDetails
+                    });
+
+                    this.logger.log(`[EnviarVideos] Video enviado: ${video.archivo}`);
+
+                } catch (videoError) {
+                    this.logger.error(`[EnviarVideos] Error enviando ${video.archivo}: ${videoError.message}`);
+                    erroresEnvio.push(video.archivo);
+                }
+            }
+
+            // Generar respuesta según resultados
+            if (videosEnviados.length === videosDisponibles.length) {
+                return `[ACCION_COMPLETADA] Videos del proyecto ${params.nombre_proyecto} enviados exitosamente. NO vuelvas a ejecutar esta herramienta. Pregunta qué le parecieron los videos.`;
+            } else if (videosEnviados.length > 0) {
+                return `[ACCION_COMPLETADA] Se enviaron ${videosEnviados.length} de ${videosDisponibles.length} videos. Algunos tuvieron problemas, pero ya tienes material para revisar.`;
+            } else {
+                return `Hubo un problema al enviar los videos. Por favor intenta de nuevo más tarde.`;
+            }
+
+        } catch (error) {
+            this.logger.error(`[EnviarVideos] Error general: ${error.message}`);
+            return `Hubo un error al enviar los videos del proyecto. Por favor intenta de nuevo.`;
+        }
+    }
 }

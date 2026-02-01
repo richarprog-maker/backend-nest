@@ -178,6 +178,25 @@ export class AgentService {
       },
     });
 
+    // Enviar VIDEOS del proyecto (archivos MP4)
+    const enviarVideosProyectoTool = new DynamicStructuredTool({
+      name: 'enviar_videos_proyecto',
+      description: 'Envía los VIDEOS promocionales del proyecto por WhatsApp. Usa SOLO cuando el cliente pida: "videos", "recorrido virtual", "tour", "quiero ver videos", "muéstrame videos", "envíame un video". ENVÍA AMBOS VIDEOS AUTOMÁTICAMENTE. NO confundir con brochure (PDF) ni con planos (imágenes).',
+      schema: z.object({
+        nombre_proyecto: z.string().describe('Nombre del proyecto'),
+      }),
+      func: async (input, config) => {
+        const { codigoEmpresa, leadUuid, phoneNumber } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.enviarVideosProyecto({
+          nombre_proyecto: input.nombre_proyecto,
+          phoneNumber: phoneNumber,
+          codigoEmpresa: codigoEmpresa,
+          leadUuid: leadUuid,
+        });
+        return result;
+      },
+    });
+
     // HERRAMIENTA UNIVERSAL: Busca departamentos por CUALQUIER criterio
     const buscarDepartamentoUniversalTool = new DynamicStructuredTool({
       name: 'buscar_departamento',
@@ -215,6 +234,7 @@ export class AgentService {
       enviarBrochureTool,
       enviarPlanoTool,                  // PLANO del departamento (imagen)
       enviarUbicacionTool,              // UBICACIÓN del proyecto (Google Maps)
+      enviarVideosProyectoTool,         // VIDEOS promocionales del proyecto (MP4)
     ];
 
     this.logger.log(`Agente inicializado con ${this.tools.length} herramientas`);
@@ -258,23 +278,30 @@ export class AgentService {
       const messages: BaseMessage[] = [...historial];
 
       // Generar Contexto Temporal (Fecha Actual)
-      const fechaActual = new Date().toLocaleString('es-PE', {
+      const now = new Date();
+      const fechaISO = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      const fechaLegible = now.toLocaleString('es-PE', {
         timeZone: 'America/Lima',
         weekday: 'long',
         year: 'numeric',
         month: 'long',
         day: 'numeric',
         hour: '2-digit',
-        minute: '2-digit'
+        minute: '2-digit',
+        hour12: true
       });
 
       const timeContext = `
 === CONTEXTO TEMPORAL DEL SERVIDOR ===
-HOY ES: ${fechaActual}
-IMPORTANTE:
-- Todas las fechas relativas ("mañana", "el viernes") se calculan basándose en HOY.
-- NO puedes agendar citas anteriores a esta fecha y hora.
-- Si el usuario pide "mañana", calcula la fecha exacta sumando 1 día a HOY.
+DATOS ACTUALES:
+- FECHA ISO: ${fechaISO} (Úsala para comparar)
+- FECHA LEGIBLE: ${fechaLegible}
+
+REGLAS DE TIEMPO (CRÍTICAS):
+1. **SI LA FECHA DE LA CITA ES ${fechaISO} → DEBES DECIR "HOY"**.
+2. Si la fecha de la cita es diferente, calcula si es "mañana" o el día de la semana.
+3. JAMÁS digas "mañana" si la fecha es igual a la FECHA ISO actual.
+4. Tómate un segundo para verificar: ¿Fecha Cita === Fecha Actual? -> Entonces es HOY.
 ======================================
 `;
 
