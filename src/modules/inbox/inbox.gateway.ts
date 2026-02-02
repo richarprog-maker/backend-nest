@@ -78,6 +78,18 @@ export class InboxGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.logger.log(`Cliente ${client.id} salió de conversación ${data.leadUuid}`);
     }
 
+    @SubscribeMessage('markAsRead')
+    async handleMarkAsRead(
+        @MessageBody() data: { leadUuid: string; empresaId: number },
+        @ConnectedSocket() client: Socket,
+    ) {
+        if (data.empresaId && data.leadUuid) {
+            await this.inboxService.marcarComoLeido(data.leadUuid, data.empresaId);
+            this.logger.log(`Mensajes marcados como leídos via WS - Lead: ${data.leadUuid}`);
+        }
+        return { success: true };
+    }
+
     // Emitir nuevo mensaje a todos los usuarios de la empresa
     notifyNewMessage(empresaId: number, leadUuid: string, mensaje: any) {
         this.server.to(`empresa_${empresaId}`).emit('newMessage', {

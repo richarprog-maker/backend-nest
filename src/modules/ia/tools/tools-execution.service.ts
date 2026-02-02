@@ -856,12 +856,14 @@ RESPUESTA PRECISA:`);
             }
 
             // Guardar el mensaje en la base de datos para el inbox
+            // Usar ruta relativa web para que el frontend pueda renderizar
+            const urlRelativa = '/storage/multimedia/brochure-los-lirios.pdf';
             await this.inboxService.guardarMensajeBot({
                 leadUuid: params.leadUuid,
                 codigoEmpresa: codigoEmpresa,
                 contenido: `Brochure del proyecto ${params.nombre_proyecto}`,
                 tipoMultimedia: 'document',
-                urlMultimedia: brochurePath,
+                urlMultimedia: urlRelativa,
                 wamid: wamid,
                 estadoMensaje: estado,
                 errorWapi: errorDetails
@@ -1058,13 +1060,14 @@ RESPUESTA PRECISA:`);
                         videosEnviados.push(video.archivo);
                     }
 
-                    // Registrar en inbox
+                    // Registrar en inbox con ruta relativa web para que el frontend pueda renderizar
+                    const urlRelativaVideo = `/storage/videos/${video.archivo}`;
                     await this.inboxService.guardarMensajeBot({
                         leadUuid: params.leadUuid,
                         codigoEmpresa: codigoEmpresa,
                         contenido: video.descripcion,
                         tipoMultimedia: 'video',
-                        urlMultimedia: rutaVideo,
+                        urlMultimedia: urlRelativaVideo,
                         wamid: wamid,
                         estadoMensaje: estado,
                         errorWapi: errorDetails

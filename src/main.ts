@@ -11,7 +11,8 @@ async function bootstrap() {
     });
 
     // Configuración de archivos estáticos
-    app.useStaticAssets(join(__dirname, '..', 'storage'), {
+    // Usar process.cwd() para que funcione tanto en desarrollo (ts-node) como producción (dist)
+    app.useStaticAssets(join(process.cwd(), 'storage'), {
         prefix: '/storage/',
     });
 
