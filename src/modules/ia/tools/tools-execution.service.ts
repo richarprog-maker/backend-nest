@@ -769,9 +769,17 @@ RESPUESTA PRECISA:`);
     }
 
     private formatearDetalleUnidad(m: any) {
-        const precio = m.price_promo && parseFloat(m.price_promo) < parseFloat(m.price_list)
-            ? `S/ ${parseFloat(m.price_promo).toLocaleString('es-PE')}`
-            : `S/ ${parseFloat(m.price_list).toLocaleString('es-PE')}`;
+        // Formatear precio mostrando lista y promoción si existe
+        const pList = m.price_list ? parseFloat(m.price_list) : 0;
+        const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+
+        let precioTexto = '';
+        if (pPromo && pPromo < pList) {
+            // Mostrar ambos precios: lista tachada y promo destacada
+            precioTexto = `S/${pList.toLocaleString('es-PE')} → **S/${pPromo.toLocaleString('es-PE')}** (Precio de oferta)`;
+        } else {
+            precioTexto = `S/${pList.toLocaleString('es-PE')}`;
+        }
 
         return `[ACCION_COMPLETADA] **Unidad ${m.unit_number}**\n` +
             `- Tipo: ${m.unit_type} (${m.typology || 'Standard'})\n` +
@@ -779,7 +787,7 @@ RESPUESTA PRECISA:`);
             `- Dormitorios: ${m.bedrooms}\n` +
             `- Área: ${m.area_total}m²\n` +
             `- Vista: ${m.view}\n` +
-            `- Precio: ${precio}\n` +
+            `- Precio: ${precioTexto}\n` +
             `- Disponibilidad: ${m.availability}\n\n` +
             `Para separar esta unidad, necesito tu DNI y nombre completo.`;
     }

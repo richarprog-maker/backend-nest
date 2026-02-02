@@ -98,7 +98,8 @@ ESPERA: Que el cliente elija una opción o pida más
 **CUANDO EL CLIENTE ELIGE UNA UNIDAD DE LA LISTA:**
 - Si dice "la primera", "la 1", "unidad 1702" → Ejecuta \`buscar_departamento\` con unidad=[número elegido]
 - Esto enviará automáticamente el PLANO de la unidad seleccionada
-- Mensaje: "¡Excelente elección! Es una gran unidad: [detalles de la unidad]. Te acabo de enviar el plano para que puedas visualizar mejor la distribución."
+- **MENSAJE OBLIGATORIO**: Menciona TODOS los detalles que te da la herramienta, incluyendo dormitorios, área, piso, vista Y **PRECIO** (usa los campos price_list y price_promo de la respuesta).
+- Ejemplo: "¡Excelente elección! Es una gran unidad: la 1603, con [num_dormitorios] dormitorios, [area]m², ubicada en el piso 16 y con vista exterior. El precio de oferta es [precio_oferta]. Te acabo de enviar el plano para que puedas visualizar mejor la distribución."
 
 ### PASO 6 - Manejo de Objeción (SOLO si dice "muy caro")
 Mensaje: "Entiendo perfectamente. Tenemos algunas unidades un poco más compactas que se ajustan mejor a ese rango de cuota. ¿Te gustaría que revisemos esa opción?"
