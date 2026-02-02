@@ -15,6 +15,8 @@ import { WebhookModule } from '../webhook_meta/webhook.module';
 
 import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../ia/entities/historial-chat-ai.entity';
+import { HistorialClasificacionLead } from '../clasificacion-leads/entities/historial-clasificacion-lead.entity';
+import { Cita } from '../citas/entities/cita.entity';
 
 @Module({
     imports: [
@@ -25,7 +27,9 @@ import { HistorialChatAi } from '../ia/entities/historial-chat-ai.entity';
             OrigenDato,
             SesionConversacion,
             Mensaje,
-            HistorialChatAi
+            HistorialChatAi,
+            HistorialClasificacionLead,
+            Cita
         ]),
         PlantillasModule,
         HistorialEnviosModule,

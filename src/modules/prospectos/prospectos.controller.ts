@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Query, UseInterceptors, UploadedFile, Body, Req, BadRequestException, Res } from '@nestjs/common';
+import { Controller, Post, Get, Query, Param, UseInterceptors, UploadedFile, Body, Req, BadRequestException, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ServicioExcel } from './services/excel.service';
@@ -33,6 +33,14 @@ export class ProspectosController {
             success: true,
             data: result
         };
+    }
+
+    /**
+     * Obtiene el detalle completo de un lead: historial de clasificaciones y citas
+     */
+    @Get('detalle-lead/:leadUuid')
+    async getDetalleLeadClasificacion(@Param('leadUuid') leadUuid: string) {
+        return this.prospectosService.getDetalleLeadClasificacion(leadUuid);
     }
 
     @Post('procesar-excel-upload')
