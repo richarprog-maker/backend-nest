@@ -259,14 +259,16 @@ export class QdrantVectorService {
       fallbackStrategy?: 'relax' | 'expand' | 'none';
     } = {}
   ): Promise<Array<{ document: Document; score: number; breakdown: any }>> {
-    const { limit = 5, threshold = 0.75, fallbackStrategy = 'relax' } = options;
+    // Threshold bajo para búsquedas con filtros estrictos, límite más alto para mayor cobertura
+    const { limit = 10, threshold = 0.35, fallbackStrategy = 'relax' } = options;
 
     const qdrantFilter = this.buildQdrantFilter(filters);
 
+    // Buscar con límite más alto para tener margen de filtrado
     let results = await this.searchWithScoring(
       collectionName,
       query,
-      limit * 2,
+      limit * 3, // Aumentar para búsquedas por tipología
       threshold,
       qdrantFilter
     );
@@ -350,10 +352,8 @@ export class QdrantVectorService {
       });
     }
 
-    conditions.push({
-      key: 'metadata.availability',
-      match: { value: 'sí' }
-    });
+    // NOTE: Removido el filtro de availability aquí porque causa problemas de encoding con 'sí'
+    // La disponibilidad se filtra post-búsqueda o mediante el texto semántico
 
     const finalFilter = conditions.length > 0 ? { must: conditions } : undefined;
     this.logger.log(`>>> Filtro Qdrant construido: ${JSON.stringify(finalFilter)}`);
@@ -369,13 +369,21 @@ export class QdrantVectorService {
   ): Promise<Array<{ document: Document; score: number; breakdown: any }>> {
     const vector = await this.embeddings.embedQuery(query);
 
-    const searchResult = await this.qdrantClient.search(collectionName, {
+    // Si hay filtros, no aplicar score_threshold ya que los filtros de metadata
+    // garantizan relevancia. Solo aplicar threshold cuando NO hay filtros.
+    const searchParams: any = {
       vector: vector,
       limit: limit,
       filter: filter,
       with_payload: true,
-      score_threshold: threshold,
-    });
+    };
+
+    // Solo aplicar score_threshold si NO hay filtros de metadata
+    if (!filter || Object.keys(filter).length === 0) {
+      searchParams.score_threshold = threshold;
+    }
+
+    const searchResult = await this.qdrantClient.search(collectionName, searchParams);
 
     if (searchResult.length > 0) {
       this.logger.debug(`Qdrant: ${searchResult.length} resultados, score: ${searchResult[0].score.toFixed(3)}`);
@@ -444,6 +452,8 @@ export class QdrantVectorService {
       delete relaxedFilters.vista;
       delete relaxedFilters.pisoMin;
       delete relaxedFilters.pisoMax;
+      delete relaxedFilters.tipologia;
+      delete relaxedFilters.areaMin;
 
       const relaxedQdrantFilter = this.buildQdrantFilter(relaxedFilters);
 

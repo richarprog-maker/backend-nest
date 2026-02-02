@@ -520,11 +520,19 @@ RESPUESTA PRECISA:`);
                 return this.manejarBusquedaPorUnidad(params, collectionName);
             }
 
-            // --- CASO 2: ESTRATEGIA DE FALLBACK (Búsqueda en cascada) ---
 
             // INTENTO 1: Búsqueda Exacta
             this.logger.log(`${logPrefix} Intento 1: Filtros exactos`);
             let resultado = await this.ejecutarBusquedaQdrant(collectionName, params);
+
+            this.logger.log(`${logPrefix} Intento 1 - Resultados: ${resultado.items.length}`);
+            if (resultado.items.length > 0) {
+                this.logger.debug(`${logPrefix} Primeros resultados: ${JSON.stringify(resultado.items.slice(0, 2).map(i => ({
+                    unit: i.document.metadata.unit_number,
+                    typology: i.document.metadata.typology,
+                    availability: i.document.metadata.availability
+                })))}`);
+            }
 
             if (resultado.ok && resultado.items.length > 0) {
                 return this.formatearRespuestaBusqueda(resultado.items, "Encontré estas opciones exactas para ti:");
@@ -558,6 +566,27 @@ RESPUESTA PRECISA:`);
                     "No encontré en el rango exacto de precio, pero estas opciones están muy cerca y valen la pena revisar:");
             }
 
+            // INTENTO 3.5: Si pidieron tipología que no existe, listar las disponibles
+            if (params.tipologia) {
+                this.logger.log(`${logPrefix} Intento 3.5: Listar tipologías disponibles`);
+                const paramsSinTipologia = { ...params };
+                delete paramsSinTipologia.tipologia;
+                delete paramsSinTipologia.vista;
+                delete paramsSinTipologia.area_min;
+
+                resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsSinTipologia);
+
+                if (resultado.ok && resultado.items.length > 0) {
+                    // Extraer tipologías únicas disponibles
+                    const tipologiasDisponibles = [...new Set(
+                        resultado.items.map(i => i.document.metadata.typology).filter(Boolean)
+                    )];
+
+                    return this.formatearRespuestaBusqueda(resultado.items,
+                        `No encontré exactamente "${params.tipologia}", pero aquí están las opciones disponibles (tipologías: ${tipologiasDisponibles.join(', ')}):`);
+                }
+            }
+
             // INTENTO 4: Fallback Final - Solo Dormitorios (Lo más importante)
             if (params.dormitorios) {
                 this.logger.log(`${logPrefix} Intento 4: Solo Dormitorios`);
@@ -568,6 +597,44 @@ RESPUESTA PRECISA:`);
                     return this.formatearRespuestaBusqueda(resultado.items,
                         `Actualmente no tengo coincidencias exactas con todos los filtros, pero aquí están TODOS los departamentos disponibles de ${params.dormitorios} dormitorios:`);
                 }
+            }
+
+            // INTENTO 5: Ultra-fallback - Listar todo sin filtros específicos (solo semántico)
+            this.logger.log(`${logPrefix} Intento 5: Búsqueda semántica sin filtros estrictos`);
+            const allResults = await this.qdrantVectorService.searchPropertiesWithFilters(
+                collectionName,
+                'departamento disponible',
+                {}, // SIN filtros
+                { limit: 10, threshold: 0.3, fallbackStrategy: 'none' }
+            );
+
+            if (allResults.length > 0) {
+                // Extraer tipologías únicas para informar al usuario
+                const tipologiasDisponibles = [...new Set(
+                    allResults.map(i => i.document.metadata.typology).filter(Boolean)
+                )].sort();
+
+                // Formatear manualmente para este caso especial
+                const lista = allResults.slice(0, 6).map((r, idx) => {
+                    const m = r.document.metadata;
+                    const pList = m.price_list ? parseFloat(m.price_list) : 0;
+                    const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+                    let precioMostrar = '';
+                    if (pPromo && pPromo < pList) {
+                        precioMostrar = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
+                    } else {
+                        precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
+                    }
+                    const detalles = [
+                        m.bedrooms ? `${m.bedrooms} dorm` : '',
+                        m.area_total ? `${m.area_total}m²` : '',
+                        m.view ? `Vista ${m.view}` : '',
+                        m.typology ? `${m.typology}` : ''
+                    ].filter(Boolean).join(', ');
+                    return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
+                }).join('\n');
+
+                return `[ACCION_COMPLETADA] Aquí tienes las opciones de departamentos disponibles (tipologías: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\nPregúntame por una tipología específica o cuántos dormitorios buscas.`;
             }
 
             return "[ACCION_COMPLETADA] Lo siento, realmente no encontré nada disponible ni siquiera relajando la búsqueda. Pregúntale si quiere ver departamentos de otra cantidad de dormitorios.";
@@ -619,7 +686,19 @@ RESPUESTA PRECISA:`);
         if (params.precio_min !== undefined) filters.precioMin = params.precio_min;
         if (params.precio_max !== undefined) filters.precioMax = params.precio_max;
         if (params.vista) filters.vista = params.vista;
-        if (params.tipologia) filters.tipologia = params.tipologia;
+
+        if (params.tipologia) {
+            let tipologiaNormalizada = params.tipologia.toString().trim();
+            if (!tipologiaNormalizada.toLowerCase().startsWith('tipo')) {
+                tipologiaNormalizada = `Tipo ${tipologiaNormalizada}`;
+            } else {
+                // Capitalizar correctamente: "tipo 5" → "Tipo 5" en caso cuando viee solo numero 
+                tipologiaNormalizada = tipologiaNormalizada.replace(/^tipo/i, 'Tipo');
+            }
+            filters.tipologia = tipologiaNormalizada;
+            this.logger.debug(`[Tipología normalizada] "${params.tipologia}" → "${tipologiaNormalizada}"`);
+        }
+
         if (params.area_min !== undefined) filters.areaMin = params.area_min;
 
         // Aumentamos límite para poder reordenar en memoria por precio
