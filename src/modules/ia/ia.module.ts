@@ -11,13 +11,13 @@ import { ProjectsSearchService } from './projects-search.service';
 import { HistorialChatAi } from './entities/historial-chat-ai.entity';
 import { SesionConversacion } from './entities/sesion-conversacion.entity';
 import { Bot } from './entities/bot.entity';
-import { ContextoLead } from './entities/contexto-lead.entity';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
 import { CitasModule } from '../citas/citas.module';
 import { RedisModule } from '../common/redis/redis.module';
 import { InboxModule } from '../inbox/inbox.module';
 import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-leads.module';
+import { ResumenConversacionService } from './resumen-conversacion.service';
 
 @Module({
     imports: [
@@ -26,7 +26,7 @@ import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-l
         RedisModule,
         forwardRef(() => import('../webhook_meta/webhook.module').then(m => m.WebhookModule)),
         forwardRef(() => InboxModule),
-        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, ContextoLead, Lead, Cita]), // Added Cita entity
+        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, Lead, Cita]),
         ClasificacionLeadsModule
     ],
     providers: [
@@ -36,7 +36,8 @@ import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-l
         HistorialChatService,
         QdrantVectorService,
         AgentService,
-        ProjectsSearchService
+        ProjectsSearchService,
+        ResumenConversacionService,
     ],
     exports: [AiService, HistorialChatService, QdrantVectorService, AgentService, ProjectsSearchService],
 })

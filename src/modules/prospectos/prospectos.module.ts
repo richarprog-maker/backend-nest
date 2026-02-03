@@ -6,7 +6,6 @@ import { OrquestadorImportacionService } from './services/orquestador-importacio
 import { ProspectosService } from './services/prospectos.service';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Prospecto } from '../inbox/entities/prospecto.entity';
-import { ContextoLead } from '../ia/entities/contexto-lead.entity';
 import { OrigenDato } from '../inbox/entities/origen-dato.entity';
 import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 import { PlantillasModule } from '../plantillas/plantillas.module';
@@ -23,7 +22,6 @@ import { Cita } from '../citas/entities/cita.entity';
         TypeOrmModule.forFeature([
             Lead,
             Prospecto,
-            ContextoLead,
             OrigenDato,
             SesionConversacion,
             Mensaje,

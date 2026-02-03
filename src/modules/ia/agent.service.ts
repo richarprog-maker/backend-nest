@@ -5,6 +5,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { ToolsExecutionService } from './tools/tools-execution.service';
 import { HistorialChatService } from './historial-chat.service';
+import { ResumenConversacionService } from './resumen-conversacion.service';
 import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 
 /**
@@ -24,6 +25,7 @@ export class AgentService {
     private configService: ConfigService,
     private toolsExecutionService: ToolsExecutionService,
     private historialChatService: HistorialChatService,
+    private resumenService: ResumenConversacionService,
   ) {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
@@ -268,6 +270,9 @@ export class AgentService {
     try {
       this.logger.log(`Ejecutando agente para lead: ${metadata.leadUuid}`);
 
+      // Extraer información del mensaje del usuario y actualizar resumen
+      await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
+
       const toolsEjecutados: string[] = [];
       let tokensAcumulados = { input: 0, output: 0 };
 
@@ -455,5 +460,100 @@ REGLAS DE TIEMPO (CRÍTICAS):
     }
 
     return undefined;
+  }
+
+  /**
+   * Extrae información relevante del mensaje del usuario usando patrones
+   * y la guarda en el resumen de conversación (sin usar LLM extra)
+   */
+  private async extraerYGuardarResumen(
+    mensaje: string,
+    leadUuid: string,
+    codigoEmpresa: number
+  ): Promise<void> {
+    try {
+      const msgLower = mensaje.toLowerCase().trim();
+      const puntos: string[] = [];
+
+      // Patrones para detectar información clave
+
+      // Dormitorios
+      const dormitoriosMatch = msgLower.match(/(\d+)\s*(dormitorio|dorm|cuarto|habitaci[oó]n)/i) ||
+        msgLower.match(/(un|uno|dos|tres|cuatro)\s*(dormitorio|dorm|cuarto)/i) ||
+        msgLower.match(/de\s+(un|uno|dos|tres|cuatro|1|2|3|4)/i);
+      if (dormitoriosMatch) {
+        const numMap: { [key: string]: string } = { 'un': '1', 'uno': '1', 'dos': '2', 'tres': '3', 'cuatro': '4' };
+        const num = numMap[dormitoriosMatch[1]] || dormitoriosMatch[1];
+        puntos.push(`Busca depa de ${num} dormitorio${num !== '1' ? 's' : ''}`);
+      }
+
+      // Para vivir / invertir
+      if (msgLower.includes('vivir') || msgLower.includes('vivo') || msgLower.includes('vivienda')) {
+        puntos.push('Propósito: para vivir');
+      } else if (msgLower.includes('invertir') || msgLower.includes('inversi')) {
+        puntos.push('Propósito: inversión');
+      }
+
+      // Tipo de financiamiento
+      if (msgLower.includes('hipotecario') || msgLower.includes('banco')) {
+        puntos.push('Financiamiento: crédito hipotecario');
+      } else if (msgLower.includes('checor') || msgLower.includes('directo') || msgLower.includes('financiamiento directo')) {
+        puntos.push('Financiamiento: directo con Checor');
+      }
+
+      // Zona/Distrito
+      const distritos = ['surco', 'miraflores', 'san borja', 'san isidro', 'barranco',
+        'jesus maria', 'jesús maría', 'lince', 'magdalena', 'lima',
+        'la molina', 'san miguel', 'pueblo libre', 'chorrillos'];
+      for (const distrito of distritos) {
+        if (msgLower.includes(distrito)) {
+          puntos.push(`Zona preferida: ${distrito.charAt(0).toUpperCase() + distrito.slice(1)}`);
+          break;
+        }
+      }
+
+      // Presupuesto / Cuota mensual
+      const cuotaMatch = msgLower.match(/cuota.*?(\d[\d,\.]*)/i) ||
+        msgLower.match(/(\d[\d,\.]*)\s*(soles|s\/|mensual)/i) ||
+        msgLower.match(/pagar.*?(\d[\d,\.]*)/i);
+      if (cuotaMatch) {
+        const monto = cuotaMatch[1].replace(/[,\.]/g, '');
+        puntos.push(`Cuota mensual: ~S/${parseInt(monto).toLocaleString('es-PE')}`);
+      }
+
+      // Precio máximo
+      const precioMatch = msgLower.match(/presupuesto.*?(\d[\d,\.]*)/i) ||
+        msgLower.match(/(\d{3,}).*?(mil|k)/i);
+      if (precioMatch && !cuotaMatch) {
+        const monto = precioMatch[1].replace(/[,\.]/g, '');
+        puntos.push(`Presupuesto: ~S/${parseInt(monto).toLocaleString('es-PE')}`);
+      }
+
+      // Preguntas específicas (capturar temas de interés)
+      if (msgLower.includes('estacionamiento') || msgLower.includes('parking') || msgLower.includes('cochera')) {
+        puntos.push('Preguntó por estacionamiento');
+      }
+      if (msgLower.includes('mascota') || msgLower.includes('perro') || msgLower.includes('gato')) {
+        puntos.push('Preguntó por política de mascotas');
+      }
+      if (msgLower.includes('entrega') || msgLower.includes('cuando entregan') || msgLower.includes('listo')) {
+        puntos.push('Preguntó por fecha de entrega');
+      }
+      if (msgLower.includes('areas comunes') || msgLower.includes('áreas comunes') || msgLower.includes('amenidades')) {
+        puntos.push('Preguntó por áreas comunes');
+      }
+      if (msgLower.includes('inicial') || msgLower.includes('enganche') || msgLower.includes('cuota inicial')) {
+        puntos.push('Preguntó por cuota inicial');
+      }
+
+      // Solo guardar si hay puntos nuevos
+      if (puntos.length > 0) {
+        await this.resumenService.agregarPuntos(leadUuid, codigoEmpresa, puntos);
+        this.logger.debug(`Resumen actualizado con ${puntos.length} puntos: ${puntos.join(', ')}`);
+      }
+    } catch (error) {
+      this.logger.warn(`Error extrayendo resumen: ${error.message}`);
+      // No lanzamos error para no interrumpir el flujo
+    }
   }
 }

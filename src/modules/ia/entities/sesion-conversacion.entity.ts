@@ -25,6 +25,9 @@ export class SesionConversacion {
     @Column({ name: 'id_estado', type: 'int', default: 1 })
     idEstado: number;
 
+    @Column({ name: 'resumen_conversacion', type: 'text', nullable: true })
+    resumenConversacion: string;
+
     @CreateDateColumn({ name: 'created_at' })
     createdAt: Date;
 

@@ -3,7 +3,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Lead } from '../../inbox/entities/lead.entity';
 import { Prospecto } from '../../inbox/entities/prospecto.entity';
-import { ContextoLead } from '../../ia/entities/contexto-lead.entity';
 import { OrigenDato } from '../../inbox/entities/origen-dato.entity';
 import { SesionConversacion } from '../../ia/entities/sesion-conversacion.entity';
 import { ServicioExcel } from './excel.service';
@@ -24,7 +23,6 @@ export class OrquestadorImportacionService {
         private readonly servicioExcel: ServicioExcel,
         @InjectRepository(Lead) private leadRepo: Repository<Lead>,
         @InjectRepository(Prospecto) private prospectoRepo: Repository<Prospecto>,
-        @InjectRepository(ContextoLead) private contextoRepo: Repository<ContextoLead>,
         @InjectRepository(OrigenDato) private origenRepo: Repository<OrigenDato>,
         @InjectRepository(SesionConversacion) private sesionRepo: Repository<SesionConversacion>,
         private readonly wapiService: WapiService,

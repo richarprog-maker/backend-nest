@@ -14,6 +14,7 @@ import { Repository } from 'typeorm';
 import { SesionConversacion } from '../entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Lead } from '../../inbox/entities/lead.entity';
+import { ResumenConversacionService } from '../resumen-conversacion.service';
 
 @Injectable()
 export class ToolsExecutionService {
@@ -29,7 +30,8 @@ export class ToolsExecutionService {
         private inboxService: InboxService,
         @InjectRepository(SesionConversacion) private sesionRepo: Repository<SesionConversacion>,
         @InjectRepository(HistorialClasificacionLead) private clasificacionRepo: Repository<HistorialClasificacionLead>,
-        @InjectRepository(Lead) private leadRepo: Repository<Lead>
+        @InjectRepository(Lead) private leadRepo: Repository<Lead>,
+        private resumenService: ResumenConversacionService,
     ) {
         // LLM para el RAG Chain
         this.llm = new ChatOpenAI({
@@ -480,6 +482,20 @@ RESPUESTA PRECISA:`);
                 }
             }
 
+            // Capturar datos del cliente en el resumen
+            if (params.leadUuid && params.codigoEmpresa) {
+                const puntos: string[] = [];
+                if (params.ocupacion) puntos.push(`Ocupación: ${params.ocupacion}`);
+                if (params.ingresos) puntos.push(`Ingresos mensuales: ${params.ingresos}`);
+                if (params.unidad && params.precio) {
+                    puntos.push(`Cotizó unidad ${params.unidad} (${params.dormitorios || '?'} dorms, ${params.precio})`);
+                }
+
+                if (puntos.length > 0) {
+                    await this.resumenService.agregarPuntos(params.leadUuid, params.codigoEmpresa, puntos);
+                }
+            }
+
             // Construir resumen formateado
             const resumen = `📝 RESUMEN DE TU COTIZACIÓN\n\n` +
                 `DATOS DEL CLIENTE:\n` +
@@ -556,8 +572,29 @@ RESPUESTA PRECISA:`);
 
             this.logger.log(`${logPrefix} Params: ${JSON.stringify(params)}`);
 
+            // Capturar preferencias del cliente en el resumen
+            if (params.leadUuid && params.codigoEmpresa) {
+                const puntos: string[] = [];
+                if (params.dormitorios) puntos.push(`Busca depa de ${params.dormitorios} dormitorio${params.dormitorios > 1 ? 's' : ''}`);
+                if (params.precio_max) puntos.push(`Presupuesto máximo: S/${params.precio_max.toLocaleString('es-PE')}`);
+                if (params.vista) puntos.push(`Prefiere vista ${params.vista}`);
+                if (params.piso) puntos.push(`Interesado en piso ${params.piso}`);
+
+                if (puntos.length > 0) {
+                    await this.resumenService.agregarPuntos(params.leadUuid, params.codigoEmpresa, puntos);
+                }
+            }
+
             // --- CASO 1: BÚSQUEDA POR UNIDAD ESPECÍFICA (Prioridad Máxima) ---
             if (params.unidad) {
+                // Capturar interés en unidad específica
+                if (params.leadUuid && params.codigoEmpresa) {
+                    await this.resumenService.agregarPunto(
+                        params.leadUuid,
+                        params.codigoEmpresa,
+                        `Interesado en unidad ${params.unidad}`
+                    );
+                }
                 return this.manejarBusquedaPorUnidad(params, collectionName);
             }
 
