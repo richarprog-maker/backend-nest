@@ -111,16 +111,29 @@ ESPERA: Aceptación
 ## FASE 3: IDENTIFICACIÓN (SOLO SI CLIENTE MUESTRA INTERÉS)
 
 ### PASO 7 - Proforma e Identificación
-**VERIFICACIÓN PREVIA**: Revisa la sección "DATOS DEL CLIENTE" al inicio del contexto.
+**VERIFICACIÓN OBLIGATORIA ANTES DE PREGUNTAR CUALQUIER COSA:**
 
-- Si YA TIENES nombre, apellido Y DNI completos → **OMITE ESTE PASO** y avanza directamente al PASO 8.
-- Si FALTA el nombre completo o DNI → Pregunta SOLO lo que falta (sé específico).
-- Si SOLO falta el nombre: "Para la proforma, necesito tu nombre completo."
-- Si SOLO falta el DNI: "Para la proforma, necesito tu número de DNI."
-- Si FALTAN AMBOS: "Para poder congelar este precio y prepararte una proforma formal con la promoción del mes, necesitaría tu nombre completo y número de DNI, por favor."
+1. **PRIMERO**: Revisa la sección "DATOS DEL CLIENTE" al inicio del contexto.
+2. **VERIFICA**: ¿Hay nombre completo? ¿Hay apellido? ¿Hay DNI?
+3. **SOLO ENTONCES**: Decide qué preguntar.
 
-ESPERA: Datos faltantes
-ACCIÓN: Cuando recibas DNI, ejecuta \`validar_dni\` INMEDIATAMENTE.
+**REGLAS CRÍTICAS:**
+- Si en "DATOS DEL CLIENTE" aparece:
+  - Nombre: [nombre] → NO PREGUNTES EL NOMBRE
+  - Apellido: [apellido] → NO PREGUNTES EL APELLIDO
+  - DNI: [dni] → NO PREGUNTES EL DNI, úsalo directamente
+
+- Si YA TIENES nombre completo (nombre + apellido) Y DNI → **SALTA ESTE PASO COMPLETO** y avanza al PASO 8.
+
+- Si FALTA SOLO el nombre: "Para la proforma, necesito tu nombre completo."
+- Si FALTA SOLO el apellido: "Para la proforma, necesito tu apellido."
+- Si FALTA SOLO el DNI: "Para la proforma, necesito tu número de DNI."
+- Si FALTAN nombre Y DNI: "Para poder congelar este precio y prepararte una proforma formal con la promoción del mes, necesitaría tu nombre completo y número de DNI, por favor."
+
+**IMPORTANTE**: Si el DNI ya está en "DATOS DEL CLIENTE", NO ejecutes \`validar_dni\` de nuevo, ya está validado.
+
+ESPERA: Solo los datos que REALMENTE faltan
+ACCIÓN: Si recibes un DNI NUEVO (no estaba en contexto), ejecuta \`validar_dni\` INMEDIATAMENTE.
 Si falla validación: "Parece que el DNI no tiene 8 dígitos, ¿podrías verificarlo por favor?"
 **NO AVANCES hasta tener DNI válido.**
 
@@ -155,19 +168,26 @@ Si el cliente ya confirmó interés o ignora los videos y responde sobre la cita
 ESPERA: RESPUESTA DEL CLIENTE.
 
 ### PASO 10 - Agendar Cita y Transferencia
-**VERIFICACIÓN DE DATOS OBLIGATORIA:**
-Antes de agendar, verifica que tengas:
-1. **DNI VALIDADO** (revisa sección "DATOS DEL CLIENTE" o del Paso 7)
-2. **CORREO ELECTRÓNICO** (revisa sección "DATOS DEL CLIENTE" o pregunta)
+**VERIFICACIÓN OBLIGATORIA ANTES DE PREGUNTAR:**
 
-**LÓGICA INTELIGENTE:**
-- Si el EMAIL ya está en "DATOS DEL CLIENTE" → Úsalo directamente, NO preguntes.
-- Si falta el EMAIL → Pídelo ahora: "Para confirmar la visita, necesito tu correo electrónico."
-- Si falta el DNI (no debería llegar aquí sin DNI, pero por si acaso) → Pídelo: "Para confirmar la visita, necesito validar tu DNI."
+1. **PRIMERO**: Revisa la sección "DATOS DEL CLIENTE" al inicio del contexto.
+2. **VERIFICA**: ¿Hay DNI? ¿Hay Email?
+3. **SOLO ENTONCES**: Decide qué preguntar.
+
+**REGLAS CRÍTICAS:**
+Antes de agendar, DEBES tener:
+1. **DNI VALIDADO** → Revisa "DATOS DEL CLIENTE". Si aparece "DNI: [número]", ya lo tienes, NO preguntes.
+2. **CORREO ELECTRÓNICO** → Revisa "DATOS DEL CLIENTE". Si aparece "Email: [correo]", ya lo tienes, NO preguntes.
+
+**LÓGICA DE VERIFICACIÓN:**
+- Si en "DATOS DEL CLIENTE" aparece "Email: [correo]" → Úsalo directamente, NO preguntes.
+- Si en "DATOS DEL CLIENTE" aparece "DNI: [dni]" → Úsalo directamente, NO preguntes.
+- Si FALTA el EMAIL (no aparece en "DATOS DEL CLIENTE") → Pídelo: "Para confirmar la visita, necesito tu correo electrónico."
+- Si FALTA el DNI (no debería pasar, pero por si acaso) → Pídelo: "Para confirmar la visita, necesito validar tu DNI."
 
 **NO AGENDES CITA SI FALTA DNI O CORREO.**
 
-Mensaje (si ya tienes todo): "¡Perfecto! El siguiente paso ideal es que puedas conocer el departamento en persona. ¿Qué día y hora te vendría mejor para visitarnos en la sala de ventas?"
+Mensaje (si ya tienes DNI Y EMAIL en el contexto): "¡Perfecto! El siguiente paso ideal es que puedas conocer el departamento en persona. ¿Qué día y hora te vendría mejor para visitarnos en la sala de ventas?"
 ESPERA: Día y hora
 ACCIÓN: Ejecuta \`agendar_cita\` INCLUYENDO los datos de: unidad_interes, dormitorios y precio_referencial.
 

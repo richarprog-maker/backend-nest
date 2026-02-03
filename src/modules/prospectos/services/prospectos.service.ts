@@ -306,7 +306,8 @@ export class ProspectosService {
                     totalCitas: citas.length,
                     citasPendientes: citas.filter(c => c.estadoCita === 'pendiente').length,
                     citasConfirmadas: citas.filter(c => c.estadoCita === 'confirmada').length,
-                    citasRealizadas: citas.filter(c => c.estadoCita === 'realizada').length
+                    citasRealizadas: citas.filter(c => c.estadoCita === 'realizada').length,
+                    contenido: sesiones[0]?.resumenConversacion || null
                 }
             }
         };
