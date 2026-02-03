@@ -92,7 +92,7 @@ export class OrquestadorImportacionService {
 
                 lead = await queryRunner.manager.save(lead);
 
-                // 2. Crear Prospecto de Contexto
+                // 2. Crear Prospecto (se permite múltiples prospectos por lead)
                 const prospecto = new Prospecto();
                 prospecto.lead = lead;
                 prospecto.codigoEmpresa = codigoEmpresa;
@@ -109,15 +109,24 @@ export class OrquestadorImportacionService {
 
                 await queryRunner.manager.save(prospecto);
 
-                // 3. Primar Memoria IA (Contexto Lead)
+                // 3. Primar Memoria IA (Contexto Lead) - DESHABILITADO
+                // NOTA: La tabla tbl_contexto_lead tiene estructura diferente a la entidad
+                // Se deshabilita para evitar errores de schema
+                /*
                 let contexto = await queryRunner.manager.findOne(ContextoLead, {
-                    where: { leadUuid: lead.uuid, codigoEmpresa: codigoEmpresa }
+                    where: { 
+                        leadUuid: lead.uuid, 
+                        codigoEmpresa: codigoEmpresa 
+                    }
                 });
 
                 if (!contexto) {
                     contexto = new ContextoLead();
                     contexto.leadUuid = lead.uuid;
                     contexto.codigoEmpresa = codigoEmpresa;
+                    this.logger.debug(`[Importacion] Creando nuevo contexto para lead ${lead.uuid}`);
+                } else {
+                    this.logger.debug(`[Importacion] Contexto existente encontrado para lead ${lead.uuid}`);
                 }
 
                 contexto.nombreCompleto = `${lead.nombre || ''} ${lead.apellido || ''}`.trim();
@@ -130,6 +139,9 @@ export class OrquestadorImportacionService {
                 contexto.proyectosInteres = proyectos;
 
                 await queryRunner.manager.save(contexto);
+                this.logger.debug(`[Importacion] Contexto guardado para lead ${lead.uuid}`);
+                */
+
 
                 // 4. Crear Sesion de Conversacion
                 let sesion = await queryRunner.manager.findOne(SesionConversacion, {

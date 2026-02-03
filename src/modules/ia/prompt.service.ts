@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PROMPT_SYSTEM_MAIN } from './prompts/prompt-main';
+import { Lead } from '../inbox/entities/lead.entity';
+import { Cita } from '../citas/entities/cita.entity';
 
 @Injectable()
 export class PromptService {
@@ -9,7 +11,9 @@ export class PromptService {
         genero: string,
         metadataEmpresa: any[],
         resumenProyectos: string,
-        tieneHistorial: boolean = false
+        tieneHistorial: boolean = false,
+        leadData?: Lead,
+        citaData?: Cita
     ): string {
 
         const listaProyectos = metadataEmpresa
@@ -22,8 +26,9 @@ export class PromptService {
         // Instrucción de saludo basada en historial
         const instruccionSaludo = this.buildInstruccionSaludo(tieneHistorial);
 
-        // Metadatos mínimos del cliente
-        const metadatosCliente = "";
+        // Construir contexto inteligente del lead
+        const metadatosCliente = this.buildMetadatosCliente(leadData);
+        const infoCita = this.buildInfoCita(citaData);
 
         // Construir prompt con reemplazos
         let prompt = PROMPT_SYSTEM_MAIN;
@@ -34,6 +39,7 @@ export class PromptService {
             "{{resumen_proyectos}}": resumenProyectos,
             "{{instruccion_agendamiento}}": instruccionAgendamiento,
             "{{metadatos_cliente}}": metadatosCliente,
+            "{{info_cita}}": infoCita,
             "{{instruccion_saludo}}": instruccionSaludo
         };
 
@@ -58,11 +64,86 @@ export class PromptService {
             - Si el cliente dice "Hola", responde: "Claro, dime" o "En que te ayudo" SIN saludar de vuelta.
             - Cuando des información, empieza directo: "Esta es la info..." o "Aquí están los datos..." SIN "Hola".`;
         }
-        
+
         return `
             ## PRIMER CONTACTO
             - Este es el PRIMER mensaje del cliente.
             - Puedes saludarlo UNA sola vez con tu presentación.
             - Después de este mensaje, NO vuelvas a saludar.`;
+    }
+
+    private buildMetadatosCliente(lead?: Lead): string {
+        if (!lead) return '';
+
+        const campos: string[] = [];
+
+        if (lead.nombre) campos.push(`- Nombre: ${lead.nombre}`);
+        if (lead.apellido) campos.push(`- Apellido: ${lead.apellido}`);
+        if (lead.dni) campos.push(`- DNI: ${lead.dni}`);
+        if (lead.email) campos.push(`- Email: ${lead.email}`);
+        if (lead.ciudad) campos.push(`- Ciudad: ${lead.ciudad}`);
+        if (lead.telefono) campos.push(`- Teléfono: ${lead.telefono}`);
+        if (lead.pais) campos.push(`- País: ${lead.pais}`);
+        if (lead.direccion) campos.push(`- Dirección: ${lead.direccion}`);
+
+        if (campos.length === 0) return '';
+
+        return `
+## DATOS DEL CLIENTE (YA RECOPILADOS)
+Los siguientes datos ya están en nuestro sistema. NO VUELVAS A PEDIRLOS:
+
+${campos.join('\n')}
+
+**IMPORTANTE**: 
+- Si necesitas nombre/DNI/email y YA ESTÁN ARRIBA, úsalos directamente, NO preguntes.
+- Solo pide datos que NO aparecen en esta lista.
+- Si un dato está vacío o no aparece, SÍ puedes preguntarlo.
+`;
+    }
+
+    private buildInfoCita(cita?: Cita): string {
+        if (!cita) return '';
+
+        const fechaCita = new Date(`${cita.fechaCita}T${cita.horaCita}`);
+        const ahora = new Date();
+        const esFutura = fechaCita > ahora;
+
+        if (esFutura) {
+            const opciones: Intl.DateTimeFormatOptions = {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            };
+            const fechaFormateada = fechaCita.toLocaleDateString('es-ES', opciones);
+
+            return `
+## CITA PROGRAMADA
+El cliente YA TIENE UNA CITA AGENDADA:
+- Fecha: ${fechaFormateada}
+- Tipo: ${cita.tipoCita || 'No especificado'}
+- Estado: ${cita.estadoCita}
+${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
+
+**INSTRUCCIÓN CRÍTICA**: 
+- NO OFREZCAS AGENDAR OTRA CITA (ya tiene una programada)
+- Solo responde sus consultas sobre el proyecto o departamento
+- Si pregunta por su cita, confirma la información arriba
+`;
+        } else {
+            const opciones: Intl.DateTimeFormatOptions = {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            };
+            const fechaFormateada = fechaCita.toLocaleDateString('es-ES', opciones);
+
+            return `
+## HISTORIAL DE CITAS
+- La última cita registrada fue el ${fechaFormateada} (ya pasó)
+- Puedes ofrecer agendar una nueva visita si el cliente muestra interés
+`;
+        }
     }
 }

@@ -13,6 +13,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SesionConversacion } from '../entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../../clasificacion-leads/entities/historial-clasificacion-lead.entity';
+import { Lead } from '../../inbox/entities/lead.entity';
 
 @Injectable()
 export class ToolsExecutionService {
@@ -27,7 +28,8 @@ export class ToolsExecutionService {
         private wapiService: WapiService,
         private inboxService: InboxService,
         @InjectRepository(SesionConversacion) private sesionRepo: Repository<SesionConversacion>,
-        @InjectRepository(HistorialClasificacionLead) private clasificacionRepo: Repository<HistorialClasificacionLead>
+        @InjectRepository(HistorialClasificacionLead) private clasificacionRepo: Repository<HistorialClasificacionLead>,
+        @InjectRepository(Lead) private leadRepo: Repository<Lead>
     ) {
         // LLM para el RAG Chain
         this.llm = new ChatOpenAI({
@@ -267,8 +269,8 @@ RESPUESTA PRECISA:`);
         }
     }
 
-    async validarDni(params: { dni: string }) {
-        const { dni } = params;
+    async validarDni(params: { dni: string; leadUuid?: string; codigoEmpresa?: number }) {
+        const { dni, leadUuid, codigoEmpresa } = params;
 
         // Validaciones
         if (!dni || dni.length !== 8) {
@@ -281,6 +283,19 @@ RESPUESTA PRECISA:`);
 
         if (dni === '00000000' || dni.startsWith('00')) {
             return { success: false, mensaje: "DNI invalido. Por favor verifica el numero." };
+        }
+
+        //  Actualizar lead en BD si tenemos contexto
+        if (leadUuid && codigoEmpresa) {
+            try {
+                await this.leadRepo.update(
+                    { uuid: leadUuid, codigoEmpresa: codigoEmpresa },
+                    { dni: dni }
+                );
+                this.logger.log(`DNI actualizado en BD para lead ${leadUuid}`);
+            } catch (error) {
+                this.logger.warn(`No se pudo actualizar DNI en BD: ${error.message}`);
+            }
         }
 
         return { success: true, mensaje: "[ACCION_COMPLETADA] DNI validado correctamente. Continua con el siguiente paso." };
@@ -438,6 +453,32 @@ RESPUESTA PRECISA:`);
     }) {
         try {
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
+
+            // ✅ Actualizar lead en BD con nombre completo
+            if (params.leadUuid && params.codigoEmpresa && params.nombre_cliente) {
+                try {
+                    const updateData: any = {};
+                    const nombreCompleto = params.nombre_cliente.trim();
+                    const partes = nombreCompleto.split(' ');
+
+                    if (partes.length >= 2) {
+                        updateData.nombre = partes[0];
+                        updateData.apellido = partes.slice(1).join(' ');
+                    } else {
+                        updateData.nombre = nombreCompleto;
+                    }
+
+                    if (Object.keys(updateData).length > 0) {
+                        await this.leadRepo.update(
+                            { uuid: params.leadUuid, codigoEmpresa: params.codigoEmpresa },
+                            updateData
+                        );
+                        this.logger.log(`Nombre actualizado en BD para lead ${params.leadUuid}`);
+                    }
+                } catch (error) {
+                    this.logger.warn(`No se pudo actualizar nombre en BD: ${error.message}`);
+                }
+            }
 
             // Construir resumen formateado
             const resumen = `📝 RESUMEN DE TU COTIZACIÓN\n\n` +

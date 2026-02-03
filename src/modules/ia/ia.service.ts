@@ -6,6 +6,8 @@ import { AgentService } from './agent.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bot } from './entities/bot.entity';
+import { Lead } from '../inbox/entities/lead.entity';
+import { Cita } from '../citas/entities/cita.entity';
 import { BaseMessage, HumanMessage } from '@langchain/core/messages';
 import { RedisService } from '../common/redis/redis.service';
 
@@ -14,13 +16,17 @@ export class AiService {
     private readonly logger = new Logger(AiService.name);
 
     constructor(
-        private configService: ConfigService,
-        private promptService: PromptService,
-        private historialChatService: HistorialChatService,
         private agentService: AgentService,
-        private redisService: RedisService,
+        private promptService: PromptService,
         @InjectRepository(Bot)
-        private botRepo: Repository<Bot>
+        private botRepo: Repository<Bot>,
+        @InjectRepository(Lead)
+        private leadRepo: Repository<Lead>,
+        @InjectRepository(Cita)
+        private citaRepo: Repository<Cita>,
+        private configService: ConfigService,
+        private historialChatService: HistorialChatService,
+        private redisService: RedisService,
     ) {
         this.logger.log('AiService inicializado con AgentExecutor');
     }
@@ -42,6 +48,17 @@ export class AiService {
                 return '';
             }
 
+            // Cargar datos del lead para contexto inteligente
+            const leadData = await this.leadRepo.findOne({
+                where: { uuid: leadUuid, codigoEmpresa }
+            });
+
+            // Cargar cita más reciente del lead
+            const citaData = await this.citaRepo.findOne({
+                where: { leadUuid: leadUuid, codigoEmpresa: codigoEmpresa },
+                order: { fechaCita: 'DESC', horaCita: 'DESC' }
+            });
+
             let historialFormateado: BaseMessage[] = [];
 
             if (!historial || historial.length === 0) {
@@ -50,7 +67,7 @@ export class AiService {
                     leadUuid,
                     codigoEmpresa,
                     20,
-                    true 
+                    true
                 );
             } else {
                 // Convertir historial a BaseMessage[] si es necesario
@@ -75,7 +92,7 @@ export class AiService {
             const botConfig = await this.botRepo.findOne({
                 where: { codigoEmpresa, habilitado: 1 }
             });
-            const botName = botConfig?.nombre || 'Sofia';
+            const botName = botConfig?.nombre || 'Checor advisor';
             const botGender = botConfig?.genero || 'female';
 
             const metadatosEmpresaMock = [{
@@ -92,7 +109,9 @@ export class AiService {
                 botGender,
                 metadatosEmpresaMock,
                 resumenProyectosMock,
-                tieneHistorial
+                tieneHistorial,
+                leadData,
+                citaData
             );
 
             const resultado = await this.agentService.ejecutarAgente(
