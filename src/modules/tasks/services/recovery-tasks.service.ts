@@ -17,14 +17,13 @@ import { TimeUtils } from '../../../common/utils/time.utils';
 export class RecoveryTasksService {
     private readonly logger = new Logger(RecoveryTasksService.name);
 
-    // Constantes de tiempo (en minutos)
-    // Constantes de tiempo (en minutos)
-    // 1 hora = 60 min -> 1 min para pruebas
-    // 8 horas = 480 min -> 2 min para pruebas
-    // 24 horas = 1440 min -> 3 min para pruebas
-    private readonly TIEMPO_1H = 1;
-    private readonly TIEMPO_8H = 2;
-    private readonly TIEMPO_24H = 3;
+    // Constantes de tiempo (en minutos) - VALORES DE PRODUCCIÓN
+    // 1 hora = 60 minutos
+    // 8 horas = 480 minutos
+    // 24 horas = 1440 minutos
+    private readonly TIEMPO_1H = 60;
+    private readonly TIEMPO_8H = 480;
+    private readonly TIEMPO_24H = 1440;
 
     constructor(
         @InjectRepository(SesionConversacion)
@@ -56,9 +55,11 @@ export class RecoveryTasksService {
 
         try {
             // Buscar sesiones que tienen un próximo mensaje programado
+            // SOLO si id_estado = 1 (activo), NO enviar si id_estado = 2
             const sesiones = await this.sesionRepo.find({
                 where: {
                     proximoMensajeMinutos: Not(0), // 0 significa que ya terminó el ciclo o no aplica
+                    idEstado: 1, // SOLO sesiones activas (estado 1)
                 }
             });
 
@@ -73,6 +74,12 @@ export class RecoveryTasksService {
 
     private async processSession(sesion: SesionConversacion) {
         if (!sesion.fechaHoraUltimoMsj) return;
+
+        // VALIDACIÓN: Solo procesar si id_estado = 1 (activo)
+        if (sesion.idEstado !== 1) {
+            this.logger.debug(`Sesion ${sesion.id} omitida: id_estado=${sesion.idEstado} (solo se procesan estado=1)`);
+            return;
+        }
 
         const now = new Date();
         const lastMsgTime = new Date(sesion.fechaHoraUltimoMsj);
