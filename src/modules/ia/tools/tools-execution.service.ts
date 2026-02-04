@@ -61,6 +61,87 @@ export class ToolsExecutionService {
         return null;
     }
 
+    /**
+     * Actualiza datos del lead SOLO si los campos están vacíos
+     * Previene sobrescribir información existente
+     * @param leadUuid UUID del lead
+     * @param codigoEmpresa Código de empresa
+     * @param datos Datos a actualizar (solo se actualizan campos vacíos)
+     */
+    private async actualizarLeadSeguro(
+        leadUuid: string,
+        codigoEmpresa: number,
+        datos: {
+            nombre?: string;
+            apellido?: string;
+            dni?: string;
+            email?: string;
+        }
+    ): Promise<void> {
+        try {
+            // 1. Obtener lead actual
+            const lead = await this.leadRepo.findOne({
+                where: { uuid: leadUuid, codigoEmpresa }
+            });
+
+            if (!lead) {
+                this.logger.warn(`Lead no encontrado: ${leadUuid}`);
+                return;
+            }
+
+            // 2. Construir objeto de actualización solo con campos vacíos
+            const updateData: any = {};
+
+            if (datos.nombre && !lead.nombre) {
+                updateData.nombre = datos.nombre.trim();
+            }
+
+            if (datos.apellido && !lead.apellido) {
+                updateData.apellido = datos.apellido.trim();
+            }
+
+            if (datos.dni && !lead.dni) {
+                updateData.dni = datos.dni.trim();
+            }
+
+            if (datos.email && !lead.email) {
+                updateData.email = datos.email.trim().toLowerCase();
+            }
+
+            // 3. Actualizar solo si hay cambios
+            if (Object.keys(updateData).length > 0) {
+                await this.leadRepo.update(
+                    { uuid: leadUuid, codigoEmpresa },
+                    updateData
+                );
+
+                const camposActualizados = Object.keys(updateData).join(', ');
+
+                // 4. Registrar en resumen de conversación
+                const puntosResumen: string[] = [];
+                if (updateData.nombre || updateData.apellido) {
+                    const nombreCompleto = `${updateData.nombre || ''} ${updateData.apellido || ''}`.trim();
+                    puntosResumen.push(`Identificado: ${nombreCompleto}`);
+                }
+                if (updateData.dni) {
+                    puntosResumen.push(`DNI capturado: ${updateData.dni}`);
+                }
+                if (updateData.email) {
+                    puntosResumen.push(`Email registrado: ${updateData.email}`);
+                }
+
+                if (puntosResumen.length > 0) {
+                    await this.resumenService.agregarPuntos(leadUuid, codigoEmpresa, puntosResumen);
+                }
+            } else {
+                this.logger.debug(`ℹ Lead ${leadUuid} ya tiene todos los datos proporcionados, no se actualiza`);
+            }
+        } catch (error) {
+            this.logger.error(`Error actualizando lead seguro: ${error.message}`);
+            // No lanzamos error para no interrumpir el flujo
+        }
+    }
+
     /*
      * Nueva herramienta inteligente para búsqueda de propiedades
      * Integra análisis de requisitos y búsqueda híbrida
@@ -287,17 +368,9 @@ RESPUESTA PRECISA:`);
             return { success: false, mensaje: "DNI invalido. Por favor verifica el numero." };
         }
 
-        //  Actualizar lead en BD si tenemos contexto
+        //  Actualizar lead en BD si tenemos contexto (solo si está vacío)
         if (leadUuid && codigoEmpresa) {
-            try {
-                await this.leadRepo.update(
-                    { uuid: leadUuid, codigoEmpresa: codigoEmpresa },
-                    { dni: dni }
-                );
-                this.logger.log(`DNI actualizado en BD para lead ${leadUuid}`);
-            } catch (error) {
-                this.logger.warn(`No se pudo actualizar DNI en BD: ${error.message}`);
-            }
+            await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { dni });
         }
 
         return { success: true, mensaje: "[ACCION_COMPLETADA] DNI validado correctamente. Continua con el siguiente paso." };
@@ -456,30 +529,20 @@ RESPUESTA PRECISA:`);
         try {
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
 
-            // ✅ Actualizar lead en BD con nombre completo
+            //  Actualizar lead en BD con nombre completo (solo si está vacío)
             if (params.leadUuid && params.codigoEmpresa && params.nombre_cliente) {
-                try {
-                    const updateData: any = {};
-                    const nombreCompleto = params.nombre_cliente.trim();
-                    const partes = nombreCompleto.split(' ');
+                const nombreCompleto = params.nombre_cliente.trim();
+                const partes = nombreCompleto.split(' ');
 
-                    if (partes.length >= 2) {
-                        updateData.nombre = partes[0];
-                        updateData.apellido = partes.slice(1).join(' ');
-                    } else {
-                        updateData.nombre = nombreCompleto;
-                    }
-
-                    if (Object.keys(updateData).length > 0) {
-                        await this.leadRepo.update(
-                            { uuid: params.leadUuid, codigoEmpresa: params.codigoEmpresa },
-                            updateData
-                        );
-                        this.logger.log(`Nombre actualizado en BD para lead ${params.leadUuid}`);
-                    }
-                } catch (error) {
-                    this.logger.warn(`No se pudo actualizar nombre en BD: ${error.message}`);
+                const datos: any = {};
+                if (partes.length >= 2) {
+                    datos.nombre = partes[0];
+                    datos.apellido = partes.slice(1).join(' ');
+                } else {
+                    datos.nombre = nombreCompleto;
                 }
+
+                await this.actualizarLeadSeguro(params.leadUuid, params.codigoEmpresa, datos);
             }
 
             // Capturar datos del cliente en el resumen

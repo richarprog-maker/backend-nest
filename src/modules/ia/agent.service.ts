@@ -30,7 +30,7 @@ export class AgentService {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    const temperature = isReasoningModel ? 1 : 0.7; // 0.7 para que sea más amigable y creativo (no frío)
+    const temperature = isReasoningModel ? 1 : 0.5; // 0.7 para que sea más amigable y creativo (no frío)
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
@@ -475,9 +475,9 @@ REGLAS DE TIEMPO (CRÍTICAS):
       const msgLower = mensaje.toLowerCase().trim();
       const puntos: string[] = [];
 
-      // Patrones para detectar información clave
+      // Patrones para detectar información clave del flujo de descubrimiento
 
-      // Dormitorios
+      // PASO 1: Dormitorios
       const dormitoriosMatch = msgLower.match(/(\d+)\s*(dormitorio|dorm|cuarto|habitaci[oó]n)/i) ||
         msgLower.match(/(un|uno|dos|tres|cuatro)\s*(dormitorio|dorm|cuarto)/i) ||
         msgLower.match(/de\s+(un|uno|dos|tres|cuatro|1|2|3|4)/i);
@@ -487,21 +487,14 @@ REGLAS DE TIEMPO (CRÍTICAS):
         puntos.push(`Busca depa de ${num} dormitorio${num !== '1' ? 's' : ''}`);
       }
 
-      // Para vivir / invertir
+      // PASO 2A: Para vivir / invertir (uso/propósito)
       if (msgLower.includes('vivir') || msgLower.includes('vivo') || msgLower.includes('vivienda')) {
         puntos.push('Propósito: para vivir');
       } else if (msgLower.includes('invertir') || msgLower.includes('inversi')) {
         puntos.push('Propósito: inversión');
       }
 
-      // Tipo de financiamiento
-      if (msgLower.includes('hipotecario') || msgLower.includes('banco')) {
-        puntos.push('Financiamiento: crédito hipotecario');
-      } else if (msgLower.includes('checor') || msgLower.includes('directo') || msgLower.includes('financiamiento directo')) {
-        puntos.push('Financiamiento: directo con Checor');
-      }
-
-      // Zona/Distrito
+      // PASO 2B: Zona/Distrito
       const distritos = ['surco', 'miraflores', 'san borja', 'san isidro', 'barranco',
         'jesus maria', 'jesús maría', 'lince', 'magdalena', 'lima',
         'la molina', 'san miguel', 'pueblo libre', 'chorrillos'];
@@ -512,7 +505,33 @@ REGLAS DE TIEMPO (CRÍTICAS):
         }
       }
 
-      // Presupuesto / Cuota mensual
+      // PASO 3: Tiempo estimado de compra
+      const tiempoCompraPatterns = [
+        // Expresiones específicas de tiempo
+        /(?:en|para|dentro\s+de)\s+(este|el\s+pr[oó]ximo|el)\s+(mes|año|semestre|trimestre)/i,
+        /(?:en|para)\s+(\d{4})/i, // Año específico: "en 2026"
+        /(?:dentro\s+de|en)\s+(\d+)\s+(mes|meses|d[ií]a|d[ií]as|semana|semanas)/i,
+        /(?:lo\s+antes\s+posible|pronto|urgente|ya|inmediato)/i,
+        /(?:este|pr[oó]ximo)\s+(mes|año)/i,
+      ];
+
+      for (const pattern of tiempoCompraPatterns) {
+        const match = mensaje.match(pattern); // Usar mensaje original para conservar capitalización
+        if (match) {
+          const tiempoDescripcion = match[0];
+          puntos.push(`Tiempo de compra: ${tiempoDescripcion}`);
+          break; // Solo el primer match para evitar duplicados
+        }
+      }
+
+      // PASO 4: Tipo de financiamiento
+      if (msgLower.includes('hipotecario') || msgLower.includes('banco') || msgLower.includes('crédito')) {
+        puntos.push('Financiamiento: crédito hipotecario');
+      } else if (msgLower.includes('checor') || msgLower.includes('directo') || msgLower.includes('financiamiento directo')) {
+        puntos.push('Financiamiento: directo con Checor');
+      }
+
+      // PASO 5: Presupuesto / Cuota mensual
       const cuotaMatch = msgLower.match(/cuota.*?(\d[\d,\.]*)/i) ||
         msgLower.match(/(\d[\d,\.]*)\s*(soles|s\/|mensual)/i) ||
         msgLower.match(/pagar.*?(\d[\d,\.]*)/i);
@@ -521,7 +540,7 @@ REGLAS DE TIEMPO (CRÍTICAS):
         puntos.push(`Cuota mensual: ~S/${parseInt(monto).toLocaleString('es-PE')}`);
       }
 
-      // Precio máximo
+      // Precio máximo total (diferente de cuota mensual)
       const precioMatch = msgLower.match(/presupuesto.*?(\d[\d,\.]*)/i) ||
         msgLower.match(/(\d{3,}).*?(mil|k)/i);
       if (precioMatch && !cuotaMatch) {
@@ -529,7 +548,7 @@ REGLAS DE TIEMPO (CRÍTICAS):
         puntos.push(`Presupuesto: ~S/${parseInt(monto).toLocaleString('es-PE')}`);
       }
 
-      // Preguntas específicas (capturar temas de interés)
+      // Preguntas específicas (capturar temas de interés adicionales)
       if (msgLower.includes('estacionamiento') || msgLower.includes('parking') || msgLower.includes('cochera')) {
         puntos.push('Preguntó por estacionamiento');
       }
