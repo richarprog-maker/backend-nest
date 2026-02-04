@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { RecoveryTasksService } from './services/recovery-tasks.service';
 import { RecordatorioCitasService } from './services/recordatorio-citas.service';
 import { ClasificacionFrioTasksService } from './services/clasificacion-frio-tasks.service';
+import { ClasificacionTibioTasksService } from './services/clasificacion-medio-alto-tasks.service';
 import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 import { PlantillaMensaje } from '../plantillas/entities/plantilla.entity';
 import { HistorialPlantillas } from '../plantillas/entities/historial-plantilla.entity';
@@ -23,6 +24,6 @@ import { Cita } from '../citas/entities/cita.entity';
         WebhookModule,
         InboxModule,
     ],
-    providers: [RecoveryTasksService, RecordatorioCitasService, ClasificacionFrioTasksService],
+    providers: [RecoveryTasksService, RecordatorioCitasService, ClasificacionFrioTasksService, ClasificacionTibioTasksService],
 })
 export class TasksModule { }

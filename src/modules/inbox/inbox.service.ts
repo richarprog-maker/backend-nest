@@ -22,7 +22,7 @@ export class InboxService {
         private inboxGateway: InboxGateway,
     ) { }
 
-    async getConversaciones(codigoEmpresa: number, page: number = 1, limit: number = 50, filter: string = 'all') {
+    async getConversaciones(codigoEmpresa: number, page: number = 1, limit: number = 50, filter: string = 'all', search: string = '') {
         try {
             const skip = (page - 1) * limit;
 
@@ -46,6 +46,13 @@ export class InboxService {
 
             if (filter === 'unread') {
                 query.having('noLeidos > 0');
+            }
+
+            if (search) {
+                query.andWhere(
+                    '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
+                    { search: `%${search}%` }
+                );
             }
 
             const conversaciones = await query
@@ -113,21 +120,39 @@ export class InboxService {
 
             if (filter === 'unread') {
                 // Contar cuántos leads tienen al menos un mensaje no leído
-                const totalQuery = await this.mensajeRepo
+                const totalQuery = this.mensajeRepo
                     .createQueryBuilder('mensaje')
                     .select('COUNT(DISTINCT mensaje.leadUuid)', 'total')
+                    .leftJoin(Lead, 'lead', 'lead.uuid = mensaje.leadUuid') // Correct join
                     .where('mensaje.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
                     .andWhere('mensaje.leido = 0')
-                    .andWhere('mensaje.idEmisorTipo = 1') // Solo mensajes de cliente
-                    .getRawOne();
-                total = parseInt(totalQuery.total) || 0;
+                    .andWhere('mensaje.idEmisorTipo = 1'); // Solo mensajes de cliente
+
+                if (search) {
+                    totalQuery.andWhere(
+                        '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
+                        { search: `%${search}%` }
+                    );
+                }
+
+                const result = await totalQuery.getRawOne();
+                total = parseInt(result.total) || 0;
             } else {
-                const totalQuery = await this.mensajeRepo
+                const totalQuery = this.mensajeRepo
                     .createQueryBuilder('mensaje')
                     .select('COUNT(DISTINCT mensaje.leadUuid)', 'total')
-                    .where('mensaje.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
-                    .getRawOne();
-                total = parseInt(totalQuery.total) || 0;
+                    .leftJoin(Lead, 'lead', 'lead.uuid = mensaje.leadUuid') // Correct join
+                    .where('mensaje.codigoEmpresa = :codigoEmpresa', { codigoEmpresa });
+
+                if (search) {
+                    totalQuery.andWhere(
+                        '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
+                        { search: `%${search}%` }
+                    );
+                }
+
+                const result = await totalQuery.getRawOne();
+                total = parseInt(result.total) || 0;
             }
 
             return {

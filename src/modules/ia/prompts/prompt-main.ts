@@ -50,7 +50,8 @@ ESPERA: Motivación (vivir/invertir) y zona
 
 ### PASO 3 - Tiempo estimado de compra
 Pregunta: "¿Para cuándo tienes programada tu compra?"
-ESPERA: Tiempo estimado (ej: "este año", "el proximo mes", "en 2026")
+ESPERA: Tiempo estimado (ej: "este año", "el proximo mes", "en 2026", "más de 90 días")
+**IMPORTANTE**: Identifica si el cliente tiene URGENCIA (menos de 90 días) o NO (más de 90 días).
 **NO AVANCES AL PASO 4 hasta recibir esta respuesta.**
 
 ### PASO 4 - Financiamiento

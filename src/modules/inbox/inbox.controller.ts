@@ -24,18 +24,20 @@ export class InboxController {
     @ApiQuery({ name: 'page', required: false, type: Number })
     @ApiQuery({ name: 'limit', required: false, type: Number })
     @ApiQuery({ name: 'filter', required: false, enum: ['all', 'unread'] })
+    @ApiQuery({ name: 'search', required: false, type: String })
     async getConversations(
         @Query('page') page: number = 1,
         @Query('limit') limit: number = 50,
         @Query('filter') filter: string = 'all',
+        @Query('search') search: string = '',
         @Req() req
     ) {
         const user = req.user;
         const empresaId = user?.empresaId || 91;
 
-        this.logger.log(`GET conversations - User: ${user?.username}, EmpresaId: ${empresaId}, Filter: ${filter}`);
+        this.logger.log(`GET conversations - User: ${user?.username}, EmpresaId: ${empresaId}, Filter: ${filter}, Search: ${search}`);
 
-        return this.inboxService.getConversaciones(empresaId, page, limit, filter);
+        return this.inboxService.getConversaciones(empresaId, page, limit, filter, search);
     }
 
     @Get('messages/:leadUuid')
