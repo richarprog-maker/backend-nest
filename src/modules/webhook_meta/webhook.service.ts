@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { CredencialesWapi } from './entities/credenciales-wapi.entity';
 import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { Lead } from '../inbox/entities/lead.entity';
@@ -331,29 +331,32 @@ export class WebhookService implements OnModuleInit {
 
         let conversacionFacturable = 0;
 
-        const ultimoMensajeBot = await this.mensajeRepo.findOne({
+        // Verificar historial para determinar si es facturable (Ventana de 24h)
+        // Buscamos el último mensaje de cualquier emisor del negocio (Bot=2, Asesor=3, etc.)
+        // Cualquier mensaje del negocio mantiene la sesión abierta.
+        const ultimoMensajeNegocio = await this.mensajeRepo.findOne({
             where: {
                 leadUuid: leadUuid,
                 codigoEmpresa,
-                idEmisorTipo: 2
+                idEmisorTipo: Not(1) // 1 = Lead, diferente de 1 es negocio
             },
             order: { fechaCreacion: 'DESC' }
         });
 
-        if (!ultimoMensajeBot) {
+        if (!ultimoMensajeNegocio) {
             conversacionFacturable = 1;
-            this.logger.log(`[Stats] Nueva sesión facturable: Primer mensaje del bot para lead ${leadUuid}`);
+            this.logger.log(`[Stats] Nueva sesión facturable: Primer mensaje del negocio para lead ${leadUuid}`);
         } else {
             const ahora = new Date();
-            const fechaUltimo = new Date(ultimoMensajeBot.fechaCreacion);
+            const fechaUltimo = new Date(ultimoMensajeNegocio.fechaCreacion);
             const diffMs = ahora.getTime() - fechaUltimo.getTime();
             const diffHoras = diffMs / (1000 * 60 * 60);
 
             if (diffHoras > 24) {
                 conversacionFacturable = 1;
-                this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje hace ${diffHoras.toFixed(2)}h (>24h) para lead ${leadUuid}`);
+                this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje de negocio hace ${diffHoras.toFixed(2)}h (>24h) para lead ${leadUuid}`);
             } else {
-                this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje hace ${diffHoras.toFixed(2)}h (<24h) para lead ${leadUuid}`);
+                this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje de negocio hace ${diffHoras.toFixed(2)}h (<24h) para lead ${leadUuid}`);
             }
         }
 

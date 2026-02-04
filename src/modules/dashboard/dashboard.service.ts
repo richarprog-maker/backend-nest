@@ -17,11 +17,16 @@ export class DashboardService {
             const fechaInicio = `${añoDesde}-${String(mesDesde).padStart(2, '0')}-01`;
 
             // Para fechaHasta, necesitamos el primer día del mes siguiente
-            const fechaFinDate = new Date(Number(añoHasta), Number(mesHasta), 1); // Mes es 0-indexed en JS constructor, pero si pasamos (año, mes), donde mes ya es el siguiente... 
-            // Espera, la logica legacy usa: ultimo mes + 1. 
-            // Si mesHasta es 12 (Diciembre), new Date(2025, 12, 1) crea Enero 2026. Correcto.
+            // Usamos cálculo manual para evitar problemas de Timezone con new Date()
+            let mesFinNum = Number(mesHasta) + 1;
+            let anioFinNum = Number(añoHasta);
 
-            const fechaFin = fechaFinDate.toISOString().split('T')[0];
+            if (mesFinNum > 12) {
+                mesFinNum = 1;
+                anioFinNum++;
+            }
+
+            const fechaFin = `${anioFinNum}-${String(mesFinNum).padStart(2, '0')}-01`;
 
             // 2. Query Raw 
             const query = `
