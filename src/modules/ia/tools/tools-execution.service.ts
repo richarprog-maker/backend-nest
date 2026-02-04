@@ -190,13 +190,16 @@ export class ToolsExecutionService {
     async agendarCita(params: any, codigoEmpresa: number, leadUuid: string) {
         this.logger.log(`Intentando agendar cita: ${JSON.stringify(params)}`);
 
-        const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, unidad_interes, dormitorios, precio_referencial } = params;
+        const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, email, unidad_interes, dormitorios, precio_referencial } = params;
+
+        if (email && leadUuid && codigoEmpresa) {
+            await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { email });
+        }
 
         // 0. Validar si ya tiene una cita ACTIVA
         const ultimaCita = await this.citasService.obtenerUltimaCitaPorLead(leadUuid, codigoEmpresa);
 
         if (ultimaCita) {
-            // Verificar si la cita es futura y está pendiente o confirmada
             const fechaCitaExistente = new Date(`${ultimaCita.fechaCita}T${ultimaCita.horaCita}`);
             const ahora = new Date();
 

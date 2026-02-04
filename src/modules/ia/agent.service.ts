@@ -58,6 +58,7 @@ export class AgentService {
         hora_cita: z.string().describe('Hora en formato HH:MM (24h)'),
         nombre_proyecto: z.string().describe('Nombre del proyecto a visitar'),
         tipo_cita: z.enum(['presencial', 'virtual']).describe('Tipo de visita'),
+        email: z.string().optional().describe('Email del cliente para confirmación'),
         unidad_interes: z.string().optional().describe('Número de unidad que le interesó (Ej: 1702)'),
         dormitorios: z.number().optional().describe('Cantidad de dormitorios de interés'),
         precio_referencial: z.string().optional().describe('Precio referencial de la unidad'),
