@@ -380,7 +380,7 @@ export class WebhookService implements OnModuleInit {
                 fechaEnvio: new Date(),
                 fechaCreacion: new Date(),
                 estadoMensaje: 'enviado',
-                leido: 1,
+                leido: 0,
                 conversacionFacturable: isFacturable
             });
             const mensajeBotGuardado = await this.mensajeRepo.save(mensajeBot);

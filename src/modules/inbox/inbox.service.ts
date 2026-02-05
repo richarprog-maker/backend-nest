@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { Mensaje } from './entities/mensaje.entity';
 import { Lead } from './entities/lead.entity';
 import { Prospecto } from './entities/prospecto.entity';
@@ -26,28 +26,60 @@ export class InboxService {
         try {
             const skip = (page - 1) * limit;
 
-            const query = this.mensajeRepo
-                .createQueryBuilder('mensaje')
+            // 1. Subquery to find the latest message ID for each conversation (most efficient grouping)
+            const subQuery = this.mensajeRepo.createQueryBuilder('m_sub')
+                .select('MAX(m_sub.id)', 'max_id')
+                .where('m_sub.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
+                .groupBy('m_sub.leadUuid');
+
+            // 2. Main query joining the latest message
+            const query = this.mensajeRepo.createQueryBuilder('mensaje')
+                .innerJoin(`(${subQuery.getQuery()})`, 'latest_msg', 'mensaje.id = latest_msg.max_id')
+                .leftJoin('tbl_leads', 'lead', 'lead.uuid = mensaje.lead_uuid')
+                // Select necessary fields
                 .select([
-                    'mensaje.leadUuid AS leadUuid',
+                    'mensaje.lead_uuid AS leadUuid',
                     'lead.telefono AS numeroTelefono',
-                    'MAX(mensaje.fechaCreacion) as ultimaFecha',
-                    'COUNT(CASE WHEN mensaje.leido = 0 AND mensaje.idEmisorTipo = 1 THEN 1 END) as noLeidos',
-                    'MAX(mensaje.contenido) as ultimoMensaje'
+                    'lead.nombre AS nombre',
+                    'lead.apellido AS apellido',
+                    'lead.email AS email',
+                    'mensaje.contenido AS ultimoMensajeContenido',
+                    'mensaje.fecha_creacion AS ultimaFecha',
+                    'mensaje.id_emisor_tipo AS ultimoMensajeTipoEmisor',
+                    'mensaje.tipo_multimedia AS ultimoMensajeTipoMultimedia',
+                    'mensaje.url_multimedia AS ultimoMensajeUrlMultimedia',
                 ])
-                .leftJoin(
-                    Lead,
-                    'lead',
-                    'lead.uuid = mensaje.leadUuid'
-                )
+                // Prospecto Estado (Correlated Subquery)
+                .addSelect(sub => {
+                    return sub.select('p.estado_gestion', 'estadoGestion')
+                        .from('tbl_prospectos', 'p')
+                        .where('p.id_lead = lead.id_lead')
+                        .andWhere('p.codigo_empresa = :codigoEmpresa')
+                        .orderBy('p.fecha_actualizacion', 'DESC')
+                        .limit(1);
+                }, 'estadoGestion')
+                // Prospecto Interes (Correlated Subquery)
+                .addSelect(sub => {
+                    return sub.select('p.interes_nombre', 'interesNombre')
+                        .from('tbl_prospectos', 'p')
+                        .where('p.id_lead = lead.id_lead')
+                        .andWhere('p.codigo_empresa = :codigoEmpresa')
+                        .orderBy('p.fecha_actualizacion', 'DESC')
+                        .limit(1);
+                }, 'interesNombre')
+                // Unread Count (Correlated Subquery) - NOW INCLUDES BOT (2)
+                .addSelect(sub => {
+                    return sub.select('COUNT(*)', 'noLeidos')
+                        .from('tbl_mensajes', 'm_count')
+                        .where('m_count.lead_uuid = mensaje.lead_uuid')
+                        .andWhere('m_count.codigo_empresa = :codigoEmpresa')
+                        .andWhere('m_count.leido = 0')
+                        .andWhere('m_count.id_emisor_tipo IN (1, 2)'); // 1=Lead, 2=Bot
+                }, 'noLeidos')
                 .where('mensaje.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
-                .groupBy('mensaje.leadUuid')
-                .addGroupBy('lead.telefono');
+                .setParameters(subQuery.getParameters());
 
-            if (filter === 'unread') {
-                query.having('noLeidos > 0');
-            }
-
+            // 3. Apply Filters
             if (search) {
                 query.andWhere(
                     '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
@@ -55,111 +87,65 @@ export class InboxService {
                 );
             }
 
-            const conversaciones = await query
-                .orderBy('ultimaFecha', 'DESC')
+            if (filter === 'unread') {
+                query.having('noLeidos > 0');
+            }
+
+            // 4. Execute Main Query
+            const rawResults = await query
+                .orderBy('mensaje.fecha_creacion', 'DESC')
                 .offset(skip)
                 .limit(limit)
                 .getRawMany();
 
-            this.logger.log(`Conversaciones encontradas (${filter}): ${conversaciones.length}`);
+            this.logger.log(`Conversaciones encontradas (${filter}): ${rawResults.length}`);
 
-            const conversacionesConDetalles = await Promise.all(
-                conversaciones.map(async (conv) => {
-                    try {
-                        const lead = await this.leadRepo.findOne({
-                            where: { uuid: conv.leadUuid, codigoEmpresa }
-                        });
+            // 5. Calculate Total for Pagination
+            const totalQuery = this.mensajeRepo.createQueryBuilder('m')
+                .select('COUNT(DISTINCT m.leadUuid)', 'total')
+                .leftJoin('tbl_leads', 'l', 'l.uuid = m.leadUuid')
+                .where('m.codigoEmpresa = :codigoEmpresa', { codigoEmpresa });
 
-                        const prospecto = lead ? await this.prospectoRepo.findOne({
-                            where: { idLead: lead.id, codigoEmpresa },
-                            order: { fechaActualizacion: 'DESC' }
-                        }) : null;
-
-                        const ultimoMensajeCompleto = await this.mensajeRepo.findOne({
-                            where: {
-                                leadUuid: conv.leadUuid,
-                                codigoEmpresa
-                            },
-                            order: { fechaCreacion: 'DESC' }
-                        });
-
-                        const nombre = lead?.nombre || '';
-                        const apellido = lead?.apellido || '';
-                        const nombreCompleto = `${nombre} ${apellido}`.trim() || 'Sin nombre';
-
-                        return {
-                            leadUuid: conv.leadUuid,
-                            numeroTelefono: conv.numeroTelefono,
-                            nombreCompleto: nombreCompleto,
-                            nombre: nombre,
-                            apellido: apellido,
-                            email: lead?.email || '',
-                            estadoGestion: prospecto?.estadoGestion || 'nuevo',
-                            interesNombre: prospecto?.interesNombre || '',
-                            ultimoMensaje: {
-                                contenido: ultimoMensajeCompleto?.contenido || '',
-                                fecha: ultimoMensajeCompleto?.fechaCreacion,
-                                tipoEmisor: ultimoMensajeCompleto?.idEmisorTipo,
-                                tipoMultimedia: ultimoMensajeCompleto?.tipoMultimedia,
-                                urlMultimedia: ultimoMensajeCompleto?.urlMultimedia
-                            },
-                            mensajesNoLeidos: parseInt(conv.noLeidos) || 0,
-                            ultimaActividad: conv.ultimaFecha
-                        };
-                    } catch (error) {
-                        this.logger.error(`Error procesando conversación ${conv.leadUuid}:`, error.message);
-                        return null;
-                    }
-                })
-            );
-
-            const conversacionesValidas = conversacionesConDetalles.filter(c => c !== null);
-
-            // Calcular total para paginación (respetando filtros)
-            let total = 0;
+            if (search) {
+                totalQuery.andWhere(
+                    '(l.nombre LIKE :search OR l.apellido LIKE :search OR l.telefono LIKE :search OR CONCAT(l.nombre, " ", l.apellido) LIKE :search)',
+                    { search: `%${search}%` }
+                );
+            }
 
             if (filter === 'unread') {
-                // Contar cuántos leads tienen al menos un mensaje no leído
-                const totalQuery = this.mensajeRepo
-                    .createQueryBuilder('mensaje')
-                    .select('COUNT(DISTINCT mensaje.leadUuid)', 'total')
-                    .leftJoin(Lead, 'lead', 'lead.uuid = mensaje.leadUuid') // Correct join
-                    .where('mensaje.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
-                    .andWhere('mensaje.leido = 0')
-                    .andWhere('mensaje.idEmisorTipo = 1'); // Solo mensajes de cliente
-
-                if (search) {
-                    totalQuery.andWhere(
-                        '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
-                        { search: `%${search}%` }
-                    );
-                }
-
-                const result = await totalQuery.getRawOne();
-                total = parseInt(result.total) || 0;
-            } else {
-                const totalQuery = this.mensajeRepo
-                    .createQueryBuilder('mensaje')
-                    .select('COUNT(DISTINCT mensaje.leadUuid)', 'total')
-                    .leftJoin(Lead, 'lead', 'lead.uuid = mensaje.leadUuid') // Correct join
-                    .where('mensaje.codigoEmpresa = :codigoEmpresa', { codigoEmpresa });
-
-                if (search) {
-                    totalQuery.andWhere(
-                        '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
-                        { search: `%${search}%` }
-                    );
-                }
-
-                const result = await totalQuery.getRawOne();
-                total = parseInt(result.total) || 0;
+                totalQuery.andWhere('m.leido = 0 AND m.idEmisorTipo IN (1, 2)');
             }
+
+            const totalResult = await totalQuery.getRawOne();
+            const total = parseInt(totalResult?.total || 0);
+
+            // 6. Map to DTO
+            const conversations = rawResults.map(raw => ({
+                leadUuid: raw.leadUuid,
+                numeroTelefono: raw.numeroTelefono,
+                nombreCompleto: `${raw.nombre || ''} ${raw.apellido || ''}`.trim() || 'Sin nombre',
+                nombre: raw.nombre,
+                apellido: raw.apellido,
+                email: raw.email || '',
+                estadoGestion: raw.estadoGestion || 'nuevo',
+                interesNombre: raw.interesNombre || '',
+                ultimoMensaje: {
+                    contenido: raw.ultimoMensajeContenido || '',
+                    fecha: raw.ultimaFecha,
+                    tipoEmisor: raw.ultimoMensajeTipoEmisor,
+                    tipoMultimedia: raw.ultimoMensajeTipoMultimedia,
+                    urlMultimedia: raw.ultimoMensajeUrlMultimedia
+                },
+                mensajesNoLeidos: parseInt(raw.noLeidos) || 0,
+                ultimaActividad: raw.ultimaFecha
+            }));
 
             return {
                 success: true,
-                data: conversacionesValidas,
+                data: conversations,
                 meta: {
-                    total: total,
+                    total,
                     page,
                     limit,
                     totalPages: Math.ceil(total / limit)
@@ -173,24 +159,29 @@ export class InboxService {
 
     async getHistorialChat(leadUuid: string, codigoEmpresa: number, limit: number = 200) {
         try {
-            this.logger.log(`getHistorialChat - Buscando mensajes para Lead: ${leadUuid}, Empresa: ${codigoEmpresa}`);
+            this.logger.log(`getHistorialChat - Buscando mensajes para Lead: ${leadUuid}, Empresa: ${codigoEmpresa}, Limit: ${limit}`);
 
+            // Use 'take' for limiting results, and order DESC properly
             const mensajes = await this.mensajeRepo.find({
                 where: {
                     leadUuid,
                     codigoEmpresa
                 },
-                order: { fechaCreacion: 'ASC' }
+                order: { fechaCreacion: 'DESC' },
+                take: limit
             });
+
+            // Reverse to show in chronological order
+            mensajes.reverse();
 
             this.logger.log(`getHistorialChat - Encontrados ${mensajes.length} mensajes para lead ${leadUuid}`);
 
-            // Marcar mensajes del prospecto como leídos
+            // Marcar mensajes del prospecto Y BOT como leídos
             const resultado = await this.mensajeRepo.update(
                 {
                     leadUuid,
                     codigoEmpresa,
-                    idEmisorTipo: 1, // Solo mensajes del prospecto
+                    idEmisorTipo: In([1, 2]), // Mensajes del prospecto (1) y Bot (2)
                     leido: 0
                 },
                 { leido: 1 }
@@ -282,7 +273,7 @@ export class InboxService {
                 {
                     leadUuid,
                     codigoEmpresa,
-                    idEmisorTipo: 1, // Solo mensajes del prospecto
+                    idEmisorTipo: In([1, 2]), // Mensajes del prospecto (1) y Bot (2)
                     leido: 0
                 },
                 { leido: 1 }
