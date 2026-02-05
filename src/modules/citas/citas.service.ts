@@ -53,4 +53,20 @@ export class CitasService {
             }
         });
     }
+
+    /**
+     * Reagenda una cita existente (cambia fecha, hora o tipo)
+     */
+    async reagendarCita(idCita: number, data: {
+        fechaCita?: string;
+        horaCita?: string;
+        tipoCita?: string;
+        observacion?: string;
+    }) {
+        this.logger.log(`Reagendando cita ${idCita} con: ${JSON.stringify(data)}`);
+        return this.citaRepo.update(idCita, {
+            ...data,
+            fechaActualizacion: new Date()
+        });
+    }
 }

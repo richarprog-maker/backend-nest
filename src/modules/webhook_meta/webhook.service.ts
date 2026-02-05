@@ -331,33 +331,31 @@ export class WebhookService implements OnModuleInit {
 
         let conversacionFacturable = 0;
 
-        // Verificar historial para determinar si es facturable (Ventana de 24h)
-        // LÓGICA IGUAL A EXPRESS: Buscar el ÚLTIMO mensaje del BOT (id_emisor_tipo = 2)
-        // Si no hay mensaje previo del Bot o pasaron más de 24h → es facturable
-        const ultimoMensajeBot = await this.mensajeRepo.findOne({
+        // Buscar el ÚLTIMO mensaje FACTURABLE (conversacion_facturable = 1)
+        const ultimoMensajeFacturable = await this.mensajeRepo.findOne({
             where: {
                 leadUuid: leadUuid,
                 codigoEmpresa,
-                idEmisorTipo: 2 // Solo mensajes del Bot
+                conversacionFacturable: 1
             },
             order: { fechaCreacion: 'DESC' }
         });
 
-        if (!ultimoMensajeBot) {
-            // No hay mensaje previo del Bot = Primera conversación facturable
+        if (!ultimoMensajeFacturable) {
+            // Primera conversación facturable
             conversacionFacturable = 1;
-            this.logger.log(`[Stats] Nueva sesión facturable: Primer mensaje del Bot para lead ${leadUuid}`);
+            this.logger.log(`[Stats] FACTURABLE: Primera conversación para lead ${leadUuid}`);
         } else {
             const ahora = new Date();
-            const fechaUltimoBot = new Date(ultimoMensajeBot.fechaCreacion);
-            const diffMs = ahora.getTime() - fechaUltimoBot.getTime();
+            const fechaUltimoFacturable = new Date(ultimoMensajeFacturable.fechaCreacion);
+            const diffMs = ahora.getTime() - fechaUltimoFacturable.getTime();
             const diffHoras = diffMs / (1000 * 60 * 60);
 
             if (diffHoras > 24) {
                 conversacionFacturable = 1;
-                this.logger.log(`[Stats] Nueva sesión facturable: Último mensaje del Bot fue hace ${diffHoras.toFixed(2)}h (>24h) para lead ${leadUuid}`);
+                this.logger.log(`[Stats] FACTURABLE: Último mensaje facturable fue hace ${diffHoras.toFixed(2)}h (>24h) - lead ${leadUuid}`);
             } else {
-                this.logger.log(`[Stats] Sesión continua (No facturable): Último mensaje del Bot fue hace ${diffHoras.toFixed(2)}h (<24h) para lead ${leadUuid}`);
+                this.logger.log(`[Stats] NO facturable: Último mensaje facturable fue hace ${diffHoras.toFixed(2)}h (<24h) - lead ${leadUuid}`);
             }
         }
 

@@ -72,6 +72,23 @@ export class AgentService {
       },
     });
 
+    // 1.1️ Reagendar Cita
+    const reagendarCitaTool = new DynamicStructuredTool({
+      name: 'reagendar_cita',
+      description: 'Reagenda una cita EXISTENTE. USA cuando el cliente YA TIENE cita y quiere cambiar: tipo (presencial ↔ virtual), fecha u hora. Solo actualiza lo que pida cambiar.',
+      schema: z.object({
+        tipo_cita_nuevo: z.enum(['PRESENCIAL', 'VIRTUAL']).optional().describe('Nuevo tipo solo si quiere cambiar'),
+        fecha_nueva: z.string().optional().describe('Nueva fecha YYYY-MM-DD solo si quiere cambiar'),
+        hora_nueva: z.string().optional().describe('Nueva hora HH:MM solo si quiere cambiar'),
+        motivo_cambio: z.string().describe('Descripción breve del cambio'),
+      }),
+      func: async (input, config) => {
+        const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.reagendarCita(input, codigoEmpresa, leadUuid);
+        return JSON.stringify(result);
+      },
+    });
+
     // 2️    Buscar Preguntas Frecuentes (FAQs)
     const buscarPreguntasFrecuentesTool = new DynamicStructuredTool({
       name: 'buscar_preguntas_frecuentes',
@@ -230,6 +247,7 @@ export class AgentService {
     this.tools = [
       buscarDepartamentoUniversalTool,  //ÚNICA herramienta para TODAS las búsquedas de departamentos
       agendarCitaTool,
+      reagendarCitaTool,                // Nueva herramienta para reagendar citas existentes
       buscarPreguntasFrecuentesTool,            // Para FAQs, características, amenidades
       validarDniTool,
       generarProformaTool,

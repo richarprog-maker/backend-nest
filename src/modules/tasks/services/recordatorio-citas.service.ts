@@ -15,10 +15,15 @@ import { InboxGateway } from '../../inbox/inbox.gateway';
 export class RecordatorioCitasService {
     private readonly logger = new Logger(RecordatorioCitasService.name);
 
-    // Nombres de plantillas (Deben coincidir con DB)
-    private readonly TEMPLATE_24H = 'recordatorio_cita_24horas_virtual_lirios';
-    private readonly TEMPLATE_3H = 'recordatorio_cita_3horas_virtual_lirios';
-    private readonly TEMPLATE_30MIN = 'recordatorio_cita_30min_virtual_lirios';
+    // Nombres de plantillas VIRTUAL (Deben coincidir con DB)
+    private readonly TEMPLATE_24H_VIRTUAL = 'recordatorio_cita_24horas_virtual_lirios';
+    private readonly TEMPLATE_3H_VIRTUAL = 'recordatorio_cita_3horas_virtual_lirios';
+    private readonly TEMPLATE_30MIN_VIRTUAL = 'recordatorio_cita_30min_virtual_lirios';
+
+    // Nombres de plantillas PRESENCIAL (Deben coincidir con DB)
+    private readonly TEMPLATE_24H_PRESENCIAL = 'recordatorio_cita_24horas';
+    private readonly TEMPLATE_3H_PRESENCIAL = 'recordatorio_cita_3horas';
+    private readonly TEMPLATE_30MIN_PRESENCIAL = 'recordatorio_cita_30min';
 
     constructor(
         @InjectRepository(Cita)
@@ -67,20 +72,25 @@ export class RecordatorioCitasService {
                 if (diffMinutes < 0) continue;
 
                 // LOGICA DE RECORDATORIOS
+                const isVirtual = cita.tipoCita?.toUpperCase() === 'VIRTUAL';
+
                 // 24 HORAS (1440 min)
                 // Rango aceptable: entre 1435 y 1445
                 if (diffMinutes >= 1435 && diffMinutes <= 1445) {
-                    await this.sendReminder(cita, this.TEMPLATE_24H, TipoPlantilla.RECORDATORIO_CITA_24H);
+                    const templateName = isVirtual ? this.TEMPLATE_24H_VIRTUAL : this.TEMPLATE_24H_PRESENCIAL;
+                    await this.sendReminder(cita, templateName, TipoPlantilla.RECORDATORIO_CITA_24H);
                 }
 
                 // 3 HORAS (180 min)
                 if (diffMinutes >= 175 && diffMinutes <= 185) {
-                    await this.sendReminder(cita, this.TEMPLATE_3H, TipoPlantilla.RECORDATORIO_CITA_3H);
+                    const templateName = isVirtual ? this.TEMPLATE_3H_VIRTUAL : this.TEMPLATE_3H_PRESENCIAL;
+                    await this.sendReminder(cita, templateName, TipoPlantilla.RECORDATORIO_CITA_3H);
                 }
 
                 // 30 MINUTOS
                 if (diffMinutes >= 25 && diffMinutes <= 35) {
-                    await this.sendReminder(cita, this.TEMPLATE_30MIN, TipoPlantilla.RECORDATORIO_CITA_30MIN);
+                    const templateName = isVirtual ? this.TEMPLATE_30MIN_VIRTUAL : this.TEMPLATE_30MIN_PRESENCIAL;
+                    await this.sendReminder(cita, templateName, TipoPlantilla.RECORDATORIO_CITA_30MIN);
                 }
             }
 
@@ -128,25 +138,69 @@ export class RecordatorioCitasService {
             return;
         }
 
-        // Reemplazar parámetros
-        let contenido = plantilla.contenido;
-        // Nombre
-        if (plantilla.parametros && plantilla.parametros.includes('name')) {
-            const nombre = lead.nombre || 'Cliente';
-            contenido = contenido.replace('{{name}}', nombre);
-        }
-        // Hora
-        if (plantilla.parametros && plantilla.parametros.includes('hora')) {
-            const horaSimple = cita.horaCita.substring(0, 5);
-            contenido = contenido.replace('{{hora}}', horaSimple);
+        // Preparar Componentes para Plantilla (HSM)
+        const components = [];
+        if (plantilla.parametros && Array.isArray(plantilla.parametros) && plantilla.parametros.length > 0) {
+            const bodyParams = [];
+
+            // Iterar params en orden definido en BD para mantener la secuencia de {{1}}, {{2}}, etc.
+            for (const param of plantilla.parametros) {
+                if (param === 'name') {
+                    // Validar que el nombre no esté vacío, null o undefined
+                    const nombre = (lead.nombre && lead.nombre.trim()) || 'Cliente';
+                    bodyParams.push({
+                        type: 'text',
+                        parameter_name: 'name',
+                        text: nombre
+                    });
+                } else if (param === 'hora') {
+                    const horaSimple = cita.horaCita.substring(0, 5);
+                    bodyParams.push({
+                        type: 'text',
+                        parameter_name: 'hora',
+                        text: horaSimple
+                    });
+                }
+            }
+
+            if (bodyParams.length > 0) {
+                components.push({
+                    type: 'body',
+                    parameters: bodyParams
+                });
+            }
         }
 
-        // ENVIAR
-        this.logger.log(`Enviando recordatorio ${logicalType} a ${lead.telefono}`);
-        const resultado = await this.wapiService.sendMessage(cita.codigoEmpresa, lead.telefono, contenido);
+        // LOG de debugging para verificar componentes antes de enviar
+        this.logger.debug(`Componentes preparados para cita ${cita.id}: ${JSON.stringify(components)}`);
 
-        // REGISTRAR HISTORIAL con el TIPO LOGICO
-        await this.logHistory(lead, cita.codigoEmpresa, logicalType, plantilla.id, contenido, resultado);
+        // ENVIAR COMO PLANTILLA
+        this.logger.log(`Enviando recordatorio ${logicalType} a ${lead.telefono} usando Plantilla: ${plantilla.nombre}`);
+
+        const resultado = await this.wapiService.sendTemplate(
+            cita.codigoEmpresa,
+            lead.telefono,
+            plantilla.nombre,
+            plantilla.idioma || 'es',
+            components
+        );
+
+        // Reemplazar variables en el contenido para guardarlo procesado
+        let contenidoProcesado = plantilla.contenido;
+        if (plantilla.parametros && Array.isArray(plantilla.parametros)) {
+            for (const param of plantilla.parametros) {
+                if (param === 'name') {
+                    const nombre = (lead.nombre && lead.nombre.trim()) || 'Cliente';
+                    contenidoProcesado = contenidoProcesado.replace(/\{\{name\}\}/g, nombre);
+                } else if (param === 'hora') {
+                    const horaSimple = cita.horaCita.substring(0, 5);
+                    contenidoProcesado = contenidoProcesado.replace(/\{\{hora\}\}/g, horaSimple);
+                }
+            }
+        }
+
+        // REGISTRAR HISTORIAL con el TIPO LOGICO y contenido procesado
+        await this.logHistory(lead, cita.codigoEmpresa, logicalType, plantilla.id, contenidoProcesado, resultado);
     }
 
     private async logHistory(lead: Lead, codigoEmpresa: number, tipo: TipoPlantilla, plantillaId: number, contenido: string, resultado: any) {
@@ -161,7 +215,7 @@ export class RecordatorioCitasService {
         let wamid = null;
         let estado = 'FALLIDO';
 
-        if (resultado && !resultado.error) {
+        if (resultado && !resultado.error && (resultado.messages || resultado.id)) {
             historial.estado = 'ENVIADO';
             historial.metadata = resultado;
             estado = 'enviado';
@@ -175,6 +229,9 @@ export class RecordatorioCitasService {
 
         // 2. Tbl Mensajes & WebSocket
         try {
+            // Fix: Capturar el detalle del error, no el booleano
+            const errorData = resultado?.error ? (resultado.details || resultado) : null;
+
             const nuevoMensaje = this.mensajeRepo.create({
                 codigoEmpresa: codigoEmpresa,
                 leadUuid: lead.uuid,
@@ -185,7 +242,7 @@ export class RecordatorioCitasService {
                 tipoMultimedia: 'text',
                 estadoMensaje: estado,
                 wamidMsg: wamid ? String(wamid) : null,
-                errorWapi: resultado?.error || null,
+                errorWapi: errorData,
                 leido: 0,
                 conversacionFacturable: 0,
                 fechaEnvio: new Date(),

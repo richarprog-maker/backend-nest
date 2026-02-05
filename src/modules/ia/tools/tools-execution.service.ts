@@ -192,6 +192,9 @@ export class ToolsExecutionService {
 
         const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, email, unidad_interes, dormitorios, precio_referencial } = params;
 
+        // Validar y normalizar tipo de cita (PRESENCIAL por defecto)
+        const tipoCitaNormalizado = tipo_cita?.toUpperCase() === 'VIRTUAL' ? 'VIRTUAL' : 'PRESENCIAL';
+
         if (email && leadUuid && codigoEmpresa) {
             await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { email });
         }
@@ -227,7 +230,7 @@ export class ToolsExecutionService {
         }
 
         // Construir observación detallada
-        let observacion = `Proyecto interés: ${nombre_proyecto}`;
+        let observacion = `Proyecto interés: ${nombre_proyecto} | Tipo: ${tipoCitaNormalizado}`;
         if (unidad_interes) observacion += ` | Unidad: ${unidad_interes}`;
         if (dormitorios) observacion += ` | Dorms: ${dormitorios}`;
         if (precio_referencial) observacion += ` | Precio: S/${precio_referencial}`;
@@ -238,7 +241,7 @@ export class ToolsExecutionService {
             leadUuid: leadUuid, // UUID del prospecto
             fechaCita: fecha_cita,
             horaCita: hora_cita,
-            tipoCita: tipo_cita || 'presencial',
+            tipoCita: tipoCitaNormalizado, // PRESENCIAL o VIRTUAL
             observacion: observacion,
             estadoCita: 'pendiente'
         });
@@ -265,9 +268,105 @@ export class ToolsExecutionService {
             // No bloqueamos el retorno de exito de la cita
         }
 
+        const tipoTexto = tipoCitaNormalizado === 'VIRTUAL' ? 'videollamada virtual' : 'visita presencial';
         return {
             success: true,
-            mensaje: `[ACCION_COMPLETADA] Cita agendada exitosamente para el proyecto ${nombre_proyecto} el día ${fecha_cita} a las ${hora_cita}. NO repitas esta herramienta.`
+            mensaje: `[ACCION_COMPLETADA] Cita ${tipoCitaNormalizado.toLowerCase()} agendada exitosamente para el proyecto ${nombre_proyecto} el día ${fecha_cita} a las ${hora_cita}. Tipo: ${tipoTexto}. NO repitas esta herramienta.`
+        };
+    }
+
+    /**
+     * Reagenda una cita existente - Solo actualiza lo que el cliente quiere cambiar
+     */
+    async reagendarCita(params: any, codigoEmpresa: number, leadUuid: string) {
+        this.logger.log(`Reagendando cita: ${JSON.stringify(params)}`);
+
+        const { tipo_cita_nuevo, fecha_nueva, hora_nueva, motivo_cambio } = params;
+
+        // 1. Obtener cita actual
+        const citaActual = await this.citasService.obtenerUltimaCitaPorLead(leadUuid, codigoEmpresa);
+
+        if (!citaActual) {
+            return {
+                success: false,
+                mensaje: "No encontré una cita agendada. ¿Quieres agendar una nueva?"
+            };
+        }
+
+        // 2. Validar estado
+        if (citaActual.estadoCita === 'cancelada' || citaActual.estadoCita === 'realizada') {
+            return {
+                success: false,
+                mensaje: `La cita está ${citaActual.estadoCita}. ¿Quieres agendar una nueva?`
+            };
+        }
+
+        // 3. Preparar datos a actualizar (solo lo que cambió)
+        const datosActualizacion: any = {};
+        const cambios: string[] = [];
+
+        // Tipo de cita
+        if (tipo_cita_nuevo) {
+            const tipoNormalizado = tipo_cita_nuevo.toUpperCase();
+            if (citaActual.tipoCita !== tipoNormalizado) {
+                datosActualizacion.tipoCita = tipoNormalizado;
+                cambios.push(`tipo de ${citaActual.tipoCita} a ${tipoNormalizado}`);
+            }
+        }
+
+        // Fecha
+        if (fecha_nueva) {
+            const fechaNuevaDate = new Date(`${fecha_nueva}T${hora_nueva || citaActual.horaCita}`);
+            const ahora = new Date();
+
+            if (fechaNuevaDate < ahora) {
+                return {
+                    success: false,
+                    mensaje: `La fecha ${fecha_nueva} ya pasó. Elige una fecha futura.`
+                };
+            }
+
+            datosActualizacion.fechaCita = fecha_nueva;
+            cambios.push(`fecha a ${fecha_nueva}`);
+        }
+
+        // Hora
+        if (hora_nueva) {
+            datosActualizacion.horaCita = hora_nueva;
+            cambios.push(`hora a ${hora_nueva}`);
+        }
+
+        // Validar disponibilidad si cambia fecha u hora
+        if (fecha_nueva || hora_nueva) {
+            const fechaFinal = fecha_nueva || citaActual.fechaCita;
+            const horaFinal = hora_nueva || citaActual.horaCita;
+
+            const ocupado = await this.citasService.existeCitaEnHorario(fechaFinal, horaFinal, codigoEmpresa);
+            if (ocupado) {
+                return {
+                    success: false,
+                    mensaje: `El horario ${horaFinal} del ${fechaFinal} ya está ocupado. Elige otro.`
+                };
+            }
+        }
+
+        // Actualizar observación
+        if (motivo_cambio) {
+            datosActualizacion.observacion = `${citaActual.observacion || ''} | ${motivo_cambio}`.trim();
+        }
+
+        // 4. Actualizar en BD
+        await this.citasService.reagendarCita(citaActual.id, datosActualizacion);
+
+        // 5. Preparar respuesta
+        const fechaFinal = fecha_nueva || citaActual.fechaCita;
+        const horaFinal = hora_nueva || citaActual.horaCita;
+        const tipoFinal = datosActualizacion.tipoCita || citaActual.tipoCita;
+        const tipoTexto = tipoFinal === 'VIRTUAL' ? 'virtual' : 'presencial';
+
+        return {
+            success: true,
+            mensaje: `[ACCION_COMPLETADA] Listo, actualicé tu cita ${cambios.length > 0 ? `(${cambios.join(', ')})` : ''}. Ahora es ${tipoTexto} para el ${fechaFinal} a las ${horaFinal}.`
         };
     }
 

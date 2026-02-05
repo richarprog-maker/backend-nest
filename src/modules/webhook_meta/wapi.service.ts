@@ -261,7 +261,7 @@ export class WapiService {
 
             const url = `https://graph.facebook.com/v21.0/${phoneId}/messages`;
 
-            const payload = {
+            const payload: any = {
                 messaging_product: 'whatsapp',
                 to: to,
                 type: 'template',
@@ -269,10 +269,13 @@ export class WapiService {
                     name: templateName,
                     language: {
                         code: languageCode
-                    },
-                    components: components
+                    }
                 }
             };
+
+            if (components && components.length > 0) {
+                payload.template.components = components;
+            }
 
             const response = await axios.post(url, payload, {
                 headers: {
