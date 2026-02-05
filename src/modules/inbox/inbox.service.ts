@@ -32,11 +32,9 @@ export class InboxService {
                 .where('m_sub.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
                 .groupBy('m_sub.leadUuid');
 
-            // 2. Main query joining the latest message
             const query = this.mensajeRepo.createQueryBuilder('mensaje')
                 .innerJoin(`(${subQuery.getQuery()})`, 'latest_msg', 'mensaje.id = latest_msg.max_id')
                 .leftJoin('tbl_leads', 'lead', 'lead.uuid = mensaje.lead_uuid')
-                // Select necessary fields
                 .select([
                     'mensaje.lead_uuid AS leadUuid',
                     'lead.telefono AS numeroTelefono',
@@ -49,7 +47,6 @@ export class InboxService {
                     'mensaje.tipo_multimedia AS ultimoMensajeTipoMultimedia',
                     'mensaje.url_multimedia AS ultimoMensajeUrlMultimedia',
                 ])
-                // Prospecto Estado (Correlated Subquery)
                 .addSelect(sub => {
                     return sub.select('p.estado_gestion', 'estadoGestion')
                         .from('tbl_prospectos', 'p')
@@ -58,7 +55,6 @@ export class InboxService {
                         .orderBy('p.fecha_actualizacion', 'DESC')
                         .limit(1);
                 }, 'estadoGestion')
-                // Prospecto Interes (Correlated Subquery)
                 .addSelect(sub => {
                     return sub.select('p.interes_nombre', 'interesNombre')
                         .from('tbl_prospectos', 'p')
@@ -67,7 +63,6 @@ export class InboxService {
                         .orderBy('p.fecha_actualizacion', 'DESC')
                         .limit(1);
                 }, 'interesNombre')
-                // Unread Count (Correlated Subquery) - NOW INCLUDES BOT (2)
                 .addSelect(sub => {
                     return sub.select('COUNT(*)', 'noLeidos')
                         .from('tbl_mensajes', 'm_count')
@@ -171,17 +166,15 @@ export class InboxService {
                 take: limit
             });
 
-            // Reverse to show in chronological order
             mensajes.reverse();
 
             this.logger.log(`getHistorialChat - Encontrados ${mensajes.length} mensajes para lead ${leadUuid}`);
 
-            // Marcar mensajes del prospecto Y BOT como leídos
             const resultado = await this.mensajeRepo.update(
                 {
                     leadUuid,
                     codigoEmpresa,
-                    idEmisorTipo: In([1, 2]), // Mensajes del prospecto (1) y Bot (2)
+                    idEmisorTipo: In([1, 2]),
                     leido: 0
                 },
                 { leido: 1 }
