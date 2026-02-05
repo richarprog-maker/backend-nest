@@ -151,7 +151,16 @@ export class RecoveryTasksService {
 
         // 3. Enviar Mensaje
         const contenido = plantilla.contenido;
-        const resultado = await this.wapiService.sendMessage(sesion.codigoEmpresa, lead.telefono, contenido);
+        let resultado;
+
+
+        resultado = await this.wapiService.sendTemplate(
+            sesion.codigoEmpresa,
+            lead.telefono,
+            plantilla.nombre,
+            plantilla.idioma || 'es'
+        );
+        this.logger.log(`[Recovery] Enviando como PLANTILLA (HSM): ${plantilla.nombre}`);
 
         // 4. Registrar en historial
         const historial = new HistorialPlantillas();
@@ -160,7 +169,9 @@ export class RecoveryTasksService {
         historial.tipoMensaje = tipoPlantilla;
         historial.fechaEnvio = new Date();
 
-        if (resultado && !resultado.error) {
+        const esExito = resultado && !resultado.error && (resultado.messages || resultado.id);
+
+        if (esExito) {
             this.logger.log(`Mensaje de recuperación (${tipoPlantilla}) enviado a ${lead.telefono}`);
 
             historial.estado = 'ENVIADO';

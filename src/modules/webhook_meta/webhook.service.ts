@@ -433,11 +433,19 @@ export class WebhookService implements OnModuleInit {
 
     private async handleStatusUpdate(status: any) {
         const wamid = status.id;
-        const newState = status.status; // sent, delivered, read
+        const newState = status.status; // sent, delivered, read, failed
+
+        let updateData: any = { estadoMensaje: newState };
+
+        // Si el estado es 'failed', capturamos los errores
+        if (newState === 'failed' && status.errors) {
+            updateData.errorWapi = status.errors;
+            this.logger.warn(`Mensaje fallido (Webhook): ${wamid} - ${JSON.stringify(status.errors)}`);
+        }
 
         await this.mensajeRepo.update(
             { wamidMsg: wamid },
-            { estadoMensaje: newState }
+            updateData
         );
 
         this.logger.log(`Estado mensaje actualizado: ${wamid} -> ${newState}`);

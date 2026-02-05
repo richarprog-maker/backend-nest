@@ -254,6 +254,45 @@ export class WapiService {
         }
     }
 
+    async sendTemplate(codigoEmpresa: number, to: string, templateName: string, languageCode: string = 'es', components: any[] = []) {
+        try {
+            const { token, phoneId } = await this.getCredentials(codigoEmpresa);
+            if (!token) return;
+
+            const url = `https://graph.facebook.com/v21.0/${phoneId}/messages`;
+
+            const payload = {
+                messaging_product: 'whatsapp',
+                to: to,
+                type: 'template',
+                template: {
+                    name: templateName,
+                    language: {
+                        code: languageCode
+                    },
+                    components: components
+                }
+            };
+
+            const response = await axios.post(url, payload, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            this.logger.log(`Template '${templateName}' enviado a ${to}`);
+            return response.data;
+
+        } catch (error) {
+            this.handleError(error);
+            return {
+                error: true,
+                details: error.response?.data || error.message
+            };
+        }
+    }
+
     // Indica que se leyó el mensaje y simula "typing" (según legacy)
     async markAsReadAndTyping(codigoEmpresa: number, wamid: string) {
         try {
