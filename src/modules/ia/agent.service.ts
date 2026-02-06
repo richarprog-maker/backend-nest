@@ -222,7 +222,7 @@ export class AgentService {
       description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant). SI EL USUARIO PIDE VARIOS TIPOS (ej: "2 y 3 dormitorios"), ENVÍA UN ARRAY: [2, 3]. Busca por: unidad, dormitorios, piso, precio, cuota, vista, tipología, área. Retorna información COMPLETA y REAL.',
       schema: z.object({
         unidad: z.string().optional().describe('Número de unidad específica (ej: "1003", "1701")'),
-        dormitorios: z.union([z.number(), z.array(z.number())]).optional().describe('Cantidad de dormitorios (ej: 2, o [2,3])'),
+        dormitorios: z.union([z.number(), z.string(), z.array(z.union([z.number(), z.string()]))]).optional().describe('Cantidad de dormitorios (ej: 2, "monoambiente" o [2, "monoambiente"])'),
         piso: z.number().optional().describe('Piso específico (1-17)'),
         precio_max: z.number().optional().describe('Precio máximo en soles'),
         precio_min: z.number().optional().describe('Precio mínimo en soles'),

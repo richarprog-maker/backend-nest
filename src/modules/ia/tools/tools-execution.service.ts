@@ -720,7 +720,7 @@ RESPUESTA PRECISA:`);
      */
     async buscarDepartamentoUniversal(params: {
         unidad?: string;
-        dormitorios?: number | number[];
+        dormitorios?: number | string | (number | string)[];
         piso?: number;
         precio_max?: number;
         precio_min?: number;
@@ -742,7 +742,12 @@ RESPUESTA PRECISA:`);
             if (params.leadUuid && params.codigoEmpresa) {
                 const puntos: string[] = [];
                 const d = params.dormitorios;
-                const dormsStr = Array.isArray(d) ? d.join(' y ') : d;
+                const dormsArray = Array.isArray(d) ? d : [d];
+                const dormsStr = dormsArray.map(val => {
+                    if (typeof val === 'string' && val.toLowerCase().includes('mono')) return 'Monoambiente';
+                    if (val === 0) return 'Monoambiente';
+                    return val;
+                }).join(' y ');
 
                 if (d) puntos.push(`Busca depa de ${dormsStr} dormitorio(s)`);
                 if (params.precio_max) puntos.push(`Presupuesto maximo: S/${params.precio_max.toLocaleString('es-PE')}`);
@@ -766,23 +771,49 @@ RESPUESTA PRECISA:`);
                 return this.manejarBusquedaPorUnidad(params, collectionName);
             }
 
-            // --- CASO ESPECIAL: MULTIPLES DORMITORIOS ---
-            if (Array.isArray(params.dormitorios) && params.dormitorios.length > 0) {
-                this.logger.log(`${logPrefix} Busqueda multi-dormitorios: ${params.dormitorios.join(', ')}`);
+            // Normalizar dormitorios: Convertir strings "monoambiente" a 0
+            let normalizedDorms: number | number[] | undefined = undefined;
 
-                const promesas = params.dormitorios.map(d => {
-                    const singleParams = { ...params, dormitorios: d }; // forzar individual
+            if (params.dormitorios !== undefined) {
+                const processDorm = (val: string | number): number => {
+                    if (typeof val === 'string') {
+                        const v = val.toLowerCase();
+                        if (v.includes('mono') || v.includes('estudio') || v.includes('loft')) return 0;
+                        const parsed = parseInt(val);
+                        return isNaN(parsed) ? -1 : parsed; // -1 for invalid
+                    }
+                    return val;
+                };
+
+                if (Array.isArray(params.dormitorios)) {
+                    normalizedDorms = params.dormitorios.map(processDorm).filter(d => d !== -1);
+                } else {
+                    const val = processDorm(params.dormitorios);
+                    if (val !== -1) normalizedDorms = val;
+                }
+            }
+
+            // Actualizar params con valores normalizados para uso interno (Qdrant usa numeros)
+            const paramsInternal = { ...params, dormitorios: normalizedDorms };
+
+
+            // --- CASO ESPECIAL: MULTIPLES DORMITORIOS ---
+            if (Array.isArray(paramsInternal.dormitorios) && paramsInternal.dormitorios.length > 0) {
+                this.logger.log(`${logPrefix} Busqueda multi-dormitorios: ${paramsInternal.dormitorios.join(', ')}`);
+
+                const promesas = paramsInternal.dormitorios.map(d => {
+                    const singleParams = { ...paramsInternal, dormitorios: d }; // forzar individual
                     return this.ejecutarBusquedaQdrant(collectionName, singleParams, params.preferencia_piso);
                 });
 
                 const resultadosRaw = await Promise.all(promesas);
-                
+
                 // Agrupar resultados por dormitorio para reporte estructurado
                 const resultadosPorDormitorio: { [key: number]: any[] } = {};
                 const dormitoriosConResultados: number[] = [];
                 const dormitoriosSinResultados: number[] = [];
 
-                params.dormitorios.forEach((d, idx) => {
+                paramsInternal.dormitorios.forEach((d, idx) => {
                     const res = resultadosRaw[idx];
                     if (res.ok && res.items.length > 0) {
                         resultadosPorDormitorio[d] = res.items;
@@ -798,8 +829,9 @@ RESPUESTA PRECISA:`);
 
                     dormitoriosConResultados.sort((a, b) => a - b).forEach(dorms => {
                         const items = resultadosPorDormitorio[dorms].slice(0, 3); // Top 3 de cada tipo
-                        respuestaCompleta += `**Departamentos de ${dorms} dormitorio${dorms > 1 ? 's' : ''}:**\n`;
-                        
+                        const dormsLabel = dorms === 0 ? 'Monoambiente/Estudio' : `${dorms} dormitorio${dorms > 1 ? 's' : ''}`;
+                        respuestaCompleta += `**Opciones tipo ${dormsLabel}:**\n`;
+
                         items.forEach((r, idx) => {
                             const m = r.document.metadata;
                             const pList = m.price_list ? parseFloat(m.price_list) : 0;
@@ -815,26 +847,28 @@ RESPUESTA PRECISA:`);
                                 m.view ? `vista ${m.view}` : '',
                                 m.floor ? `piso ${m.floor}` : ''
                             ].filter(Boolean).join(', ');
-                            
+
                             respuestaCompleta += `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}\n`;
                         });
                         respuestaCompleta += '\n';
                     });
 
                     if (dormitoriosSinResultados.length > 0) {
-                        respuestaCompleta += `Por el momento **no tengo disponibles** departamentos de ${dormitoriosSinResultados.join(' ni ')} dormitorio${dormitoriosSinResultados.length > 1 ? 's' : ''}.\n\n`;
+                        const missingLabels = dormitoriosSinResultados.map(d => d === 0 ? 'Monoambiente' : `${d} dorms`);
+                        respuestaCompleta += `Por el momento **no tengo disponibles**: ${missingLabels.join(' ni ')}.\n\n`;
                     }
 
                     respuestaCompleta += `¿Te interesa alguna de estas opciones? Puedo enviarte planos y mas detalles.`;
                     return respuestaCompleta;
                 }
 
-                this.logger.warn(`${logPrefix} No hubo coincidencias en ninguno de los dormitorios solicitados: ${params.dormitorios.join(', ')}`);
-                return `[ACCION_COMPLETADA] Lo siento, no encontre departamentos disponibles de ${params.dormitorios.join(' ni ')} dormitorios en este momento. ¿Te gustaria ver otras opciones?`;
+                this.logger.warn(`${logPrefix} No hubo coincidencias en ninguno de los dormitorios solicitados: ${paramsInternal.dormitorios.join(', ')}`);
+                const allLabels = paramsInternal.dormitorios.map(d => d === 0 ? 'Monoambiente' : `${d} dorms`);
+                return `[ACCION_COMPLETADA] Lo siento, no encontre departamentos disponibles de ${allLabels.join(' ni ')} en este momento. ¿Te gustaria ver otras opciones?`;
             }
 
-            let dormsNumber = typeof params.dormitorios === 'number' ? params.dormitorios :
-                (Array.isArray(params.dormitorios) && params.dormitorios.length > 0 ? params.dormitorios[0] : undefined);
+            let dormsNumber = typeof paramsInternal.dormitorios === 'number' ? paramsInternal.dormitorios :
+                (Array.isArray(paramsInternal.dormitorios) && paramsInternal.dormitorios.length > 0 ? paramsInternal.dormitorios[0] : undefined);
 
             const simpleParams = { ...params, dormitorios: dormsNumber };
 
@@ -899,14 +933,15 @@ RESPUESTA PRECISA:`);
             }
 
             // INTENTO 4: Fallback Final - Solo Dormitorios (Lo mas importante)
-            if (dormsNumber) {
+            if (dormsNumber !== undefined) {
                 this.logger.log(`${logPrefix} Intento 4: Solo Dormitorios`);
                 const paramsFinal = { dormitorios: dormsNumber };
                 resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsFinal, params.preferencia_piso);
 
                 if (resultado.ok && resultado.items.length > 0) {
+                    const label = dormsNumber === 0 ? "tipo Monoambiente" : `de ${dormsNumber} dormitorios`;
                     return this.formatearRespuestaBusqueda(resultado.items,
-                        `No tengo coincidencias exactas con todos los filtros, pero aqui estan departamentos de ${dormsNumber} dormitorios:`);
+                        `No tengo coincidencias exactas con todos los filtros, pero aqui estan departamentos ${label}:`);
                 }
             }
 
@@ -1024,7 +1059,7 @@ RESPUESTA PRECISA:`);
             resultados.sort((a, b) => {
                 const pisoA = a.document.metadata.floor || 0;
                 const pisoB = b.document.metadata.floor || 0;
-                
+
                 if (preferenciaPiso === 'bajos') {
                     return pisoA - pisoB; // Menor a mayor (piso 1, 2, 3...)
                 } else {
