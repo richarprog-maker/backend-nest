@@ -30,7 +30,7 @@ export class AgentService {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    const temperature = isReasoningModel ? 1 : 0.5; // 0.7 para que sea más amigable y creativo (no frío)
+    const temperature = isReasoningModel ? 1 : 0.4; 
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
