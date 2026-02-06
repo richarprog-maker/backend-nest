@@ -164,14 +164,13 @@ export class DashboardService {
             const [resContactados] = await this.entityManager.query(queryContactados, [empresaId, desde, hasta]);
             const totalContactados = Number(resContactados?.total || 0);
 
-            // 3. Derivados: Leads que han recibido respuesta manual de un ASESOR HUMANO (emisor_tipo = 3)
-            // Antes se contaba status 2 o clasificados, pero eso incluía automáticos.
+            // 3. Derivados: Leads que han sido CLASIFICADOS por el bot (Cualquier clasificación)
             const queryDerivados = `
-                SELECT COUNT(DISTINCT lead_uuid) as total
-                FROM tbl_mensajes
-                WHERE codigo_empresa = ?
-                AND id_emisor_tipo = 3
-                AND fecha_envio >= ? AND fecha_envio <= ?
+                SELECT COUNT(DISTINCT t2.lead_uuid) as total
+                FROM tbl_historial_clasificacion_lead t1
+                JOIN tbl_sesion_conversacion t2 ON t1.id_sesion = t2.id
+                WHERE t2.codigo_empresa = ?
+                AND t1.fecha_creacion >= ? AND t1.fecha_creacion <= ?
             `;
             const [resDerivados] = await this.entityManager.query(queryDerivados, [empresaId, desde, hasta]);
             const totalDerivados = Number(resDerivados?.total || 0);
@@ -188,30 +187,72 @@ export class DashboardService {
 
             // 5. Lead Scoring (Clasificacion)
             const queryClasificacion = `
-                SELECT clasificacion, COUNT(*) as total
+                SELECT t1.clasificacion, COUNT(*) as total
                 FROM tbl_historial_clasificacion_lead t1
                 JOIN tbl_sesion_conversacion t2 ON t1.id_sesion = t2.id
                 WHERE t2.codigo_empresa = ?
                 AND t1.fecha_creacion >= ? AND t1.fecha_creacion <= ?
-                GROUP BY clasificacion
+                AND t1.id = (
+                    SELECT MAX(h.id)
+                    FROM tbl_historial_clasificacion_lead h
+                    JOIN tbl_sesion_conversacion s ON h.id_sesion = s.id
+                    WHERE s.lead_uuid = t2.lead_uuid
+                    -- Aseguramos que sea la ultima dentro del rango o global?
+                    -- Para consistencia con el reporte, tomamos la ultima clasificacion global
+                    -- (o la ultima dentro del rango si queremos estricto periodo, 
+                    --  pero usualmente queremos el estado FINAL del lead)
+                )
+                GROUP BY t1.clasificacion
             `;
             const rowsClasificacion = await this.entityManager.query(queryClasificacion, [empresaId, desde, hasta]);
 
-            const clasificacionMap = { bajo: 0, medio: 0, alto: 0 };
+
+            const clasificacionMap = { pendiente: 0, bajo: 0, medio: 0, alto: 0, descartado: 0 };
             let totalClasificados = 0;
 
             rowsClasificacion.forEach(r => {
-                const key = r.clasificacion?.toLowerCase();
+                let key = r.clasificacion?.toLowerCase();
+                // Normalizar 'descartados' a 'descartado' si es necesario, o asegurar que coincida con el map
+                if (key && (key.includes('descartado'))) key = 'descartado';
+                if (key && (key.includes('pendiente'))) key = 'pendiente';
+
                 if (clasificacionMap[key] !== undefined) {
                     clasificacionMap[key] = Number(r.total);
                     totalClasificados += Number(r.total);
                 }
             });
 
+            // Calcular leads pendientes: sesiones con id_estado = 1 (sin clasificar)
+            const queryPendientes = `
+                SELECT COUNT(DISTINCT lead_uuid) as total
+                FROM tbl_sesion_conversacion
+                WHERE codigo_empresa = ?
+                AND id_estado = 1
+                AND created_at >= ? AND created_at <= ?
+            `;
+            const [resPendientes] = await this.entityManager.query(queryPendientes, [empresaId, desde, hasta]);
+            const leadsPendientes = Number(resPendientes?.total || 0);
+
+            if (leadsPendientes > 0) {
+                clasificacionMap.pendiente = leadsPendientes;
+                totalClasificados += leadsPendientes;
+            }
+
             // Calculo de Porcentajes
             const calcPorcentaje = (part: number, total: number) => total > 0 ? Math.round((part / total) * 100) : 0;
 
-            // 6. Heatmap y Estadísticas de Mensajes
+            // 6. Asistencia Humana (Mensajes de Asesor/Vendedor)
+            const queryAsistenciaHumana = `
+                SELECT COUNT(DISTINCT lead_uuid) as total
+                FROM tbl_mensajes
+                WHERE codigo_empresa = ?
+                AND id_emisor_tipo IN (3, 4)
+                AND fecha_creacion >= ? AND fecha_creacion <= ?
+            `;
+            const [resAsistencia] = await this.entityManager.query(queryAsistenciaHumana, [empresaId, desde, hasta]);
+            const totalAsistenciaHumana = Number(resAsistencia?.total || 0);
+
+            // 7. Heatmap y Estadísticas de Mensajes
             // Agrupar por dia de la semana (0-6) y hora (0-23)
             const queryHeatmap = `
                 SELECT 
@@ -329,9 +370,15 @@ export class DashboardService {
                     citados: { total: totalCitados, porcentajeTotal: calcPorcentaje(totalCitados, totalProspectos) }
                 },
                 estadisticasLeadClasificacion: {
+                    pendiente: { total: clasificacionMap.pendiente, porcentajeTotal: calcPorcentaje(clasificacionMap.pendiente, totalClasificados) },
                     bajo: { total: clasificacionMap.bajo, porcentajeTotal: calcPorcentaje(clasificacionMap.bajo, totalClasificados) },
                     medio: { total: clasificacionMap.medio, porcentajeTotal: calcPorcentaje(clasificacionMap.medio, totalClasificados) },
-                    alto: { total: clasificacionMap.alto, porcentajeTotal: calcPorcentaje(clasificacionMap.alto, totalClasificados) }
+                    alto: { total: clasificacionMap.alto, porcentajeTotal: calcPorcentaje(clasificacionMap.alto, totalClasificados) },
+                    descartado: { total: clasificacionMap.descartado, porcentajeTotal: calcPorcentaje(clasificacionMap.descartado, totalClasificados) }
+                },
+                asistenciaHumana: {
+                    total: totalAsistenciaHumana,
+                    porcentajeTotal: calcPorcentaje(totalAsistenciaHumana, totalContactados) // Base: Contactados
                 },
                 conversacionesAbandonadas: {
                     contactados: totalContactados,
@@ -359,9 +406,11 @@ export class DashboardService {
                     citados: { total: 0, porcentajeTotal: 0 }
                 },
                 estadisticasLeadClasificacion: {
+                    pendiente: { total: 0, porcentajeTotal: 0 },
                     bajo: { total: 0, porcentajeTotal: 0 },
                     medio: { total: 0, porcentajeTotal: 0 },
-                    alto: { total: 0, porcentajeTotal: 0 }
+                    alto: { total: 0, porcentajeTotal: 0 },
+                    descartado: { total: 0, porcentajeTotal: 0 }
                 },
                 conversacionesAbandonadas: {
                     contactados: 0,
