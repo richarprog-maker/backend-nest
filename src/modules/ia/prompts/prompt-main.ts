@@ -326,7 +326,7 @@ EJEMPLOS:
   "Claro, aquí tienes el brochure de Residencial Los Lirios con toda la info. Cuéntame, para ayudarte mejor, ¿estás buscando depa de 1, 2 o 3 dormitorios?"
 
 - Cliente en PASO 7 pregunta por ubicación:
-  "El proyecto está súper bien ubicado en Av. Petit Thouars 1737, Lince. Para seguir con tu proforma, ¿me ayudas confirmando tu nombre completo y DNI?"
+  "El proyecto está súper bien ubicado en 	Av. Petit Thouars 1460, Santa Beatriz. Para seguir con tu proforma, ¿me ayudas confirmando tu nombre completo y DNI?"
 
 ---
 

@@ -1353,14 +1353,14 @@ RESPUESTA PRECISA:`);
             const urlLocation = resultados[0].document.metadata.url_location;
 
             if (!urlLocation) {
-                return `[ACCION_COMPLETADA] El proyecto Los Lirios esta ubicado en Av. Petit Thouars 1737, Lince, Lima.`;
+                return `[ACCION_COMPLETADA] El proyecto Los Lirios esta ubicado en	Av. Petit Thouars 1460, Santa Beatriz.`;
             }
 
-            return `[ACCION_COMPLETADA] Ubicacion del proyecto Los Lirios: ${urlLocation} - Estamos en Av. Petit Thouars 1737, Lince, Lima.`;
+            return `[ACCION_COMPLETADA] Ubicacion del proyecto Los Lirios: ${urlLocation} - Estamos en Av. Petit Thouars 1460, Santa Beatriz.`;
 
         } catch (error) {
             this.logger.error(`Error en enviarUbicacionGoogleMaps: ${error.message}`);
-            return `El proyecto está ubicado en Av. Petit Thouars 1737, Lince.`;
+            return `El proyecto está ubicado en 	Av. Petit Thouars 1460, Santa Beatriz.`;
         }
     }
 
