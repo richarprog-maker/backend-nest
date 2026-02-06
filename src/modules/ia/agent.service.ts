@@ -30,7 +30,7 @@ export class AgentService {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    const temperature = isReasoningModel ? 1 : 0.4; 
+    const temperature = isReasoningModel ? 1 : 0.4;
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
@@ -549,14 +549,30 @@ REGLAS DE TIEMPO (CRÍTICAS):
       }
 
       // PASO 2B: Zona/Distrito
-      const distritos = ['surco', 'miraflores', 'san borja', 'san isidro', 'barranco',
-        'jesus maria', 'jesús maría', 'lince', 'magdalena', 'lima',
-        'la molina', 'san miguel', 'pueblo libre', 'chorrillos'];
+      const distritos = [
+        'santa catalina', 'surquillo', 'surco', 'miraflores', 'san borja', 'san isidro',
+        'barranco', 'jesus maria', 'jesús maría', 'lince', 'magdalena', 'lima',
+        'la molina', 'san miguel', 'pueblo libre', 'chorrillos', 'san juan de lurigancho',
+        'sjl', 'ate', 'breña', 'la victoria', 'rimac', 'san luis'
+      ];
+
+      const distritosEncontrados = [];
+
       for (const distrito of distritos) {
         if (msgLower.includes(distrito)) {
-          puntos.push(`Zona preferida: ${distrito.charAt(0).toUpperCase() + distrito.slice(1)}`);
-          break;
+          const distritoCapitalizado = distrito
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+
+          distritosEncontrados.push(distritoCapitalizado);
         }
+      }
+
+      const distritosUnicos = [...new Set(distritosEncontrados)];
+
+      if (distritosUnicos.length > 0) {
+        puntos.push(`Zona preferida: ${distritosUnicos.join(', ')}`);
       }
 
       // PASO 3: Tiempo estimado de compra
