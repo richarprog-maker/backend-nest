@@ -34,9 +34,9 @@ export class ClasificacionTibioTasksService {
     }
 
     /**
-     * Cron que se ejecuta cada 5 horas para clasificar leads tibios
+     * Cron que se ejecuta cada 1 hora para monitorear inactividad
      */
-    @Cron(CronExpression.EVERY_5_HOURS)
+    @Cron(CronExpression.EVERY_10_HOURS)
     async clasificarLeadsTibios() {
         // Validación de horario operativo
         if (!TimeUtils.isWithinOperatingHours()) {
@@ -44,23 +44,29 @@ export class ClasificacionTibioTasksService {
             return;
         }
 
-        this.logger.log('Verificando leads tibios para clasificar...');
+        this.logger.log('Verificando leads inactivos para posible clasificación...');
 
         try {
+            // Definir tiempo de inactividad (20 minutos atrás)
+      
+            const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+
             // Buscar sesiones activas (estado 1) que tengan un resumen significativo
+            // Y que SU ÚLTIMO MENSAJE haya sido hace más de 20 minutos
             const sesiones = await this.sesionRepo
                 .createQueryBuilder('sesion')
                 .where('sesion.id_estado = :estado', { estado: 1 })
                 .andWhere('sesion.resumen_conversacion IS NOT NULL')
                 .andWhere('LENGTH(sesion.resumen_conversacion) > :minLength', { minLength: 50 })
+                .andWhere('sesion.fechaHoraUltimoMsj < :tiempoLimite', { tiempoLimite: twentyMinutesAgo })
                 .getMany();
 
             if (sesiones.length === 0) {
-                this.logger.debug('No hay leads con contexto suficiente para clasificar.');
+           
                 return;
             }
 
-            this.logger.log(`Analizando ${sesiones.length} leads con contexto para posible clasificación tibio...`);
+            this.logger.log(`Encontrados ${sesiones.length} leads inactivos (>20min) para clasificar.`);
 
             for (const sesion of sesiones) {
                 await this.analizarYClasificar(sesion);
