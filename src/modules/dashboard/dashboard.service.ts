@@ -158,8 +158,8 @@ export class DashboardService {
                 SELECT COUNT(DISTINCT lead_uuid) as total
                 FROM tbl_mensajes
                 WHERE codigo_empresa = ?
-                AND id_emisor_tipo = 2
-                AND fecha_envio >= ? AND fecha_envio <= ?
+                AND id_emisor_tipo = 1
+                AND fecha_recibido >= ? AND fecha_recibido <= ?
             `;
             const [resContactados] = await this.entityManager.query(queryContactados, [empresaId, desde, hasta]);
             const totalContactados = Number(resContactados?.total || 0);
