@@ -727,6 +727,7 @@ RESPUESTA PRECISA:`);
         vista?: string;
         tipologia?: string;
         area_min?: number;
+        preferencia_piso?: 'bajos' | 'altos';
         phoneNumber?: string;
         codigoEmpresa?: number;
         leadUuid?: string;
@@ -771,7 +772,7 @@ RESPUESTA PRECISA:`);
 
                 const promesas = params.dormitorios.map(d => {
                     const singleParams = { ...params, dormitorios: d }; // forzar individual
-                    return this.ejecutarBusquedaQdrant(collectionName, singleParams);
+                    return this.ejecutarBusquedaQdrant(collectionName, singleParams, params.preferencia_piso);
                 });
 
                 const resultadosRaw = await Promise.all(promesas);
@@ -840,7 +841,7 @@ RESPUESTA PRECISA:`);
 
             // INTENTO 1: Busqueda Exacta
             this.logger.log(`${logPrefix} Intento 1: Filtros exactos`);
-            let resultado = await this.ejecutarBusquedaQdrant(collectionName, simpleParams);
+            let resultado = await this.ejecutarBusquedaQdrant(collectionName, simpleParams, params.preferencia_piso);
 
             this.logger.log(`${logPrefix} Intento 1 - Resultados: ${resultado.items.length}`);
 
@@ -856,7 +857,7 @@ RESPUESTA PRECISA:`);
             // Si piden area_min, relajamos un 10%
             if (paramsRelaxed1.area_min) paramsRelaxed1.area_min = paramsRelaxed1.area_min * 0.9;
 
-            resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsRelaxed1);
+            resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsRelaxed1, params.preferencia_piso);
 
             if (resultado.ok && resultado.items.length > 0) {
                 return this.formatearRespuestaBusqueda(resultado.items,
@@ -869,7 +870,7 @@ RESPUESTA PRECISA:`);
             if (paramsRelaxed2.precio_max) paramsRelaxed2.precio_max = paramsRelaxed2.precio_max * 1.2; // +20%
             if (paramsRelaxed2.precio_min) paramsRelaxed2.precio_min = paramsRelaxed2.precio_min * 0.8; // -20%
 
-            resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsRelaxed2);
+            resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsRelaxed2, params.preferencia_piso);
 
             if (resultado.ok && resultado.items.length > 0) {
                 return this.formatearRespuestaBusqueda(resultado.items,
@@ -884,7 +885,7 @@ RESPUESTA PRECISA:`);
                 delete paramsSinTipologia.vista;
                 delete paramsSinTipologia.area_min;
 
-                resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsSinTipologia);
+                resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsSinTipologia, params.preferencia_piso);
 
                 if (resultado.ok && resultado.items.length > 0) {
                     // Extraer tipologias unicas disponibles
@@ -901,7 +902,7 @@ RESPUESTA PRECISA:`);
             if (dormsNumber) {
                 this.logger.log(`${logPrefix} Intento 4: Solo Dormitorios`);
                 const paramsFinal = { dormitorios: dormsNumber };
-                resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsFinal);
+                resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsFinal, params.preferencia_piso);
 
                 if (resultado.ok && resultado.items.length > 0) {
                     return this.formatearRespuestaBusqueda(resultado.items,
@@ -977,7 +978,7 @@ RESPUESTA PRECISA:`);
         return `[ACCION_COMPLETADA] No encontré la unidad ${params.unidad}. Revisa si el número es correcto.`;
     }
 
-    private async ejecutarBusquedaQdrant(collectionName: string, params: any) {
+    private async ejecutarBusquedaQdrant(collectionName: string, params: any, preferenciaPiso?: 'bajos' | 'altos') {
         // Construir query text
         const queryParts = ['departamento disponible'];
         if (params.dormitorios) queryParts.push(`${params.dormitorios} dormitorios`);
@@ -1017,9 +1018,23 @@ RESPUESTA PRECISA:`);
             { limit: 20, threshold: 0.4 }
         );
 
-        // LÓGICA DE ORDENAMIENTO POR PRECIO
-        // Si el usuario especificó precio (max o min), ordenamos por cercanía a ese precio
-        if (params.precio_max || params.precio_min) {
+        // LÓGICA DE ORDENAMIENTO INTELIGENTE
+        // Prioridad 1: Si especificó preferencia de piso
+        if (preferenciaPiso) {
+            resultados.sort((a, b) => {
+                const pisoA = a.document.metadata.floor || 0;
+                const pisoB = b.document.metadata.floor || 0;
+                
+                if (preferenciaPiso === 'bajos') {
+                    return pisoA - pisoB; // Menor a mayor (piso 1, 2, 3...)
+                } else {
+                    return pisoB - pisoA; // Mayor a menor (piso 17, 16, 15...)
+                }
+            });
+            this.logger.log(`[BusquedaUniversal] Resultados ordenados por pisos ${preferenciaPiso}: ${preferenciaPiso === 'bajos' ? 'ascendente' : 'descendente'}`);
+        }
+        // Prioridad 2: Si el usuario especificó precio (max o min), ordenamos por cercanía a ese precio
+        else if (params.precio_max || params.precio_min) {
             const precioObjetivo = params.precio_max || params.precio_min;
 
             resultados.sort((a, b) => {

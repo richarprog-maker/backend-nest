@@ -229,6 +229,7 @@ export class AgentService {
         vista: z.string().optional().describe('Vista: "exterior" o "interior"'),
         tipologia: z.string().optional().describe('Tipología: "Tipo 1", "Tipo 2", etc.'),
         area_min: z.number().optional().describe('Área mínima en m²'),
+        preferencia_piso: z.enum(['bajos', 'altos']).optional().describe('"bajos" si pide pisos bajos (ordena 1,2,3...), "altos" si pide pisos altos (ordena 17,16,15...)'),
       }),
       func: async (input, config) => {
         const metadata = (config as any)?.metadata || {};
