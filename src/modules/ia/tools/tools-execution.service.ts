@@ -1461,4 +1461,68 @@ RESPUESTA PRECISA:`);
             return `Hubo un error al enviar los videos del proyecto. Por favor intenta de nuevo.`;
         }
     }
+
+    /**
+     * Descarta un cliente que se molestó o pidió no ser contactado
+     * Clasifica como "descartado" y cierra la sesión para evitar futuras plantillas
+     */
+    async descartarCliente(params: {
+        motivo: string;
+        leadUuid: string;
+        codigoEmpresa: number;
+    }) {
+        try {
+            this.logger.log(`Descartando cliente: ${params.leadUuid} - Motivo: ${params.motivo}`);
+
+            // 1. Buscar sesión activa
+            const sesion = await this.sesionRepo.findOne({
+                where: {
+                    leadUuid: params.leadUuid,
+                    codigoEmpresa: params.codigoEmpresa
+                }
+            });
+
+            if (!sesion) {
+                this.logger.warn(`No se encontró sesión para lead: ${params.leadUuid}`);
+                return {
+                    success: false,
+                    mensaje: "No se pudo procesar la solicitud."
+                };
+            }
+
+            // 2. Insertar clasificación como DESCARTADO
+            const clasificacion = this.clasificacionRepo.create({
+                idSesion: sesion.id,
+                clasificacion: 'descartado',
+                razon: `Cliente descartado: ${params.motivo}`,
+            });
+            await this.clasificacionRepo.save(clasificacion);
+
+            // 3. Actualizar estado de sesión a 2 (cerrado)
+            sesion.idEstado = 2;
+            sesion.proximoMensajeMinutos = 0; // Detener plantillas
+            await this.sesionRepo.save(sesion);
+
+            // 4. Registrar en resumen
+            await this.resumenService.agregarPunto(
+                params.leadUuid,
+                params.codigoEmpresa,
+                `Cliente descartado: ${params.motivo}`
+            );
+
+            this.logger.log(`Cliente descartado exitosamente - Lead: ${params.leadUuid}`);
+
+            return {
+                success: true,
+                mensaje: "[ACCION_COMPLETADA] Entendido. Lamento las molestias. No volverás a recibir mensajes nuestros. Que tengas un excelente día."
+            };
+
+        } catch (error) {
+            this.logger.error(`Error descartando cliente: ${error.message}`);
+            return {
+                success: false,
+                mensaje: "Disculpa las molestias. Entendido, no te contactaremos más."
+            };
+        }
+    }
 }

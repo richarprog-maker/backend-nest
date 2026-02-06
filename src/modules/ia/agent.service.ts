@@ -247,18 +247,37 @@ export class AgentService {
       },
     });
 
+    // Descartar Cliente
+    const descartarClienteTool = new DynamicStructuredTool({
+      name: 'descartar_cliente',
+      description: 'USA INMEDIATAMENTE cuando el cliente pida que NO lo contacten más o se moleste. Señales: "No me escriban", "Ya no me contacten", "Me están molestando", "Déjenme en paz", cualquier RECHAZO EXPLÍCITO.',
+      schema: z.object({
+        motivo: z.string().describe('Razón del descarte según lo que dijo el cliente'),
+      }),
+      func: async (input, config) => {
+        const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.descartarCliente({
+          motivo: input.motivo,
+          leadUuid: leadUuid,
+          codigoEmpresa: codigoEmpresa
+        });
+        return JSON.stringify(result);
+      },
+    });
+
     // Agregar todas las tools al array
     this.tools = [
       buscarDepartamentoUniversalTool,  //ÚNICA herramienta para TODAS las búsquedas de departamentos
       agendarCitaTool,
       reagendarCitaTool,                // Nueva herramienta para reagendar citas existentes
-      buscarPreguntasFrecuentesTool,            // Para FAQs, características, amenidades
+      buscarPreguntasFrecuentesTool,    // Para FAQs, características, amenidades
       validarDniTool,
       generarProformaTool,
       enviarBrochureTool,
       enviarPlanoTool,                  // PLANO del departamento (imagen)
       enviarUbicacionTool,              // UBICACIÓN del proyecto (Google Maps)
       enviarVideosProyectoTool,         // VIDEOS promocionales del proyecto (MP4)
+      descartarClienteTool,             // DESCARTAR cliente que no quiere ser contactado
     ];
 
     this.logger.log(`Agente inicializado con ${this.tools.length} herramientas`);
