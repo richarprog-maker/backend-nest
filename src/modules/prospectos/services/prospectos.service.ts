@@ -108,14 +108,18 @@ export class ProspectosService {
             }
         }
 
+        qb.andWhere('p.id_prospecto IN (SELECT MAX(p2.id_prospecto) FROM tbl_prospectos p2 GROUP BY p2.id_lead)');
+
         // Obtener datos y total
         const rawData = await qb.getRawMany();
 
         // Count total
         const countQb = this.dataSource.createQueryBuilder()
-            .select('COUNT(*)', 'total')
+            .select('COUNT(DISTINCT l.id_lead)', 'total') // Contar leads únicos
             .from('tbl_prospectos', 'p')
             .leftJoin('tbl_leads', 'l', 'l.id_lead = p.id_lead');
+
+        countQb.andWhere('p.id_prospecto IN (SELECT MAX(p2.id_prospecto) FROM tbl_prospectos p2 GROUP BY p2.id_lead)');
 
         if (query.search) {
             countQb.andWhere(
@@ -167,7 +171,7 @@ export class ProspectosService {
                 id_prospecto: row.id_prospecto,
                 idLead: row.id_lead,
                 leadUuid: row.lead_uuid,
-                nombre: row.interes_nombre || (row.origen_dato === 'Excel' ? 'Importado' : 'Prospecto'),
+                nombre: row.interes_nombre || (row.origen_dato === 'Excel' ? 'Importado' : 'Lead'),
                 tipoRegistro: row.origen_dato === 'Excel' ? 'Manual' : 'Automático',
                 etiqueta: 'Prospecto',
                 fecha_creacion: row.fecha_registro,
