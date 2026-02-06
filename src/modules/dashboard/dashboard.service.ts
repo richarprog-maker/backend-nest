@@ -153,7 +153,7 @@ export class DashboardService {
             const [resProspectos] = await this.entityManager.query(queryProspectos, [empresaId, desde, hasta]);
             const totalProspectos = Number(resProspectos?.total || 0);
 
-            // 2. Contactados: Leads que han recibido al menos un mensaje del BOT (emisor_tipo = 2)
+            // 2. Contactados: Leads que han recibido al menos un mensaje del cliente (emisor_tipo = 1)
             const queryContactados = `
                 SELECT COUNT(DISTINCT lead_uuid) as total
                 FROM tbl_mensajes
