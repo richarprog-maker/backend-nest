@@ -164,17 +164,15 @@ export class DashboardService {
             const [resContactados] = await this.entityManager.query(queryContactados, [empresaId, desde, hasta]);
             const totalContactados = Number(resContactados?.total || 0);
 
-            // 3. Derivados: Leads con clasificación O estado de sesión 2
-            // Usamos LEFT JOIN para contar leads únicos que cumplan cualqueira de las dos condiciones
+            // 3. Derivados: Leads que han recibido respuesta manual de un ASESOR HUMANO (emisor_tipo = 3)
+            // Antes se contaba status 2 o clasificados, pero eso incluía automáticos.
             const queryDerivados = `
-                SELECT COUNT(DISTINCT t1.lead_uuid) as total
-                FROM tbl_sesion_conversacion t1
-                LEFT JOIN tbl_historial_clasificacion_lead t2 ON t2.id_sesion = t1.id
-                WHERE t1.codigo_empresa = ?
-                AND (t1.id_estado = 2 OR t2.id IS NOT NULL)
-                AND (t1.created_at >= ? AND t1.created_at <= ?)
+                SELECT COUNT(DISTINCT lead_uuid) as total
+                FROM tbl_mensajes
+                WHERE codigo_empresa = ?
+                AND id_emisor_tipo = 3
+                AND fecha_envio >= ? AND fecha_envio <= ?
             `;
-            // Nota: Filtramos por fecha de la sesión, asumiendo que es cuando se gestionó
             const [resDerivados] = await this.entityManager.query(queryDerivados, [empresaId, desde, hasta]);
             const totalDerivados = Number(resDerivados?.total || 0);
 
