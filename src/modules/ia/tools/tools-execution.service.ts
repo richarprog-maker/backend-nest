@@ -720,7 +720,7 @@ RESPUESTA PRECISA:`);
      */
     async buscarDepartamentoUniversal(params: {
         unidad?: string;
-        dormitorios?: number;
+        dormitorios?: number | number[];
         piso?: number;
         precio_max?: number;
         precio_min?: number;
@@ -740,8 +740,11 @@ RESPUESTA PRECISA:`);
             // Capturar preferencias del cliente en el resumen
             if (params.leadUuid && params.codigoEmpresa) {
                 const puntos: string[] = [];
-                if (params.dormitorios) puntos.push(`Busca depa de ${params.dormitorios} dormitorio${params.dormitorios > 1 ? 's' : ''}`);
-                if (params.precio_max) puntos.push(`Presupuesto máximo: S/${params.precio_max.toLocaleString('es-PE')}`);
+                const d = params.dormitorios;
+                const dormsStr = Array.isArray(d) ? d.join(' y ') : d;
+
+                if (d) puntos.push(`Busca depa de ${dormsStr} dormitorio(s)`);
+                if (params.precio_max) puntos.push(`Presupuesto maximo: S/${params.precio_max.toLocaleString('es-PE')}`);
                 if (params.vista) puntos.push(`Prefiere vista ${params.vista}`);
                 if (params.piso) puntos.push(`Interesado en piso ${params.piso}`);
 
@@ -750,9 +753,8 @@ RESPUESTA PRECISA:`);
                 }
             }
 
-            // --- CASO 1: BÚSQUEDA POR UNIDAD ESPECÍFICA (Prioridad Máxima) ---
+            // --- CASO 1: BUSQUEDA POR UNIDAD ESPECIFICA (Prioridad Maxima) ---
             if (params.unidad) {
-                // Capturar interés en unidad específica
                 if (params.leadUuid && params.codigoEmpresa) {
                     await this.resumenService.agregarPunto(
                         params.leadUuid,
@@ -763,27 +765,92 @@ RESPUESTA PRECISA:`);
                 return this.manejarBusquedaPorUnidad(params, collectionName);
             }
 
+            // --- CASO ESPECIAL: MULTIPLES DORMITORIOS ---
+            if (Array.isArray(params.dormitorios) && params.dormitorios.length > 0) {
+                this.logger.log(`${logPrefix} Busqueda multi-dormitorios: ${params.dormitorios.join(', ')}`);
 
-            // INTENTO 1: Búsqueda Exacta
+                const promesas = params.dormitorios.map(d => {
+                    const singleParams = { ...params, dormitorios: d }; // forzar individual
+                    return this.ejecutarBusquedaQdrant(collectionName, singleParams);
+                });
+
+                const resultadosRaw = await Promise.all(promesas);
+                
+                // Agrupar resultados por dormitorio para reporte estructurado
+                const resultadosPorDormitorio: { [key: number]: any[] } = {};
+                const dormitoriosConResultados: number[] = [];
+                const dormitoriosSinResultados: number[] = [];
+
+                params.dormitorios.forEach((d, idx) => {
+                    const res = resultadosRaw[idx];
+                    if (res.ok && res.items.length > 0) {
+                        resultadosPorDormitorio[d] = res.items;
+                        dormitoriosConResultados.push(d);
+                    } else {
+                        dormitoriosSinResultados.push(d);
+                    }
+                });
+
+                // Si encontramos resultados (aunque sea de algunos dormitorios)
+                if (dormitoriosConResultados.length > 0) {
+                    let respuestaCompleta = `[ACCION_COMPLETADA] Aqui estan las opciones disponibles:\n\n`;
+
+                    dormitoriosConResultados.sort((a, b) => a - b).forEach(dorms => {
+                        const items = resultadosPorDormitorio[dorms].slice(0, 3); // Top 3 de cada tipo
+                        respuestaCompleta += `**Departamentos de ${dorms} dormitorio${dorms > 1 ? 's' : ''}:**\n`;
+                        
+                        items.forEach((r, idx) => {
+                            const m = r.document.metadata;
+                            const pList = m.price_list ? parseFloat(m.price_list) : 0;
+                            const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+                            let precioMostrar = '';
+                            if (pPromo && pPromo < pList) {
+                                precioMostrar = `S/${pList.toLocaleString('es-PE')} → **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
+                            } else {
+                                precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
+                            }
+                            const detalles = [
+                                m.area_total ? `${m.area_total}m²` : '',
+                                m.view ? `vista ${m.view}` : '',
+                                m.floor ? `piso ${m.floor}` : ''
+                            ].filter(Boolean).join(', ');
+                            
+                            respuestaCompleta += `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}\n`;
+                        });
+                        respuestaCompleta += '\n';
+                    });
+
+                    if (dormitoriosSinResultados.length > 0) {
+                        respuestaCompleta += `Por el momento **no tengo disponibles** departamentos de ${dormitoriosSinResultados.join(' ni ')} dormitorio${dormitoriosSinResultados.length > 1 ? 's' : ''}.\n\n`;
+                    }
+
+                    respuestaCompleta += `¿Te interesa alguna de estas opciones? Puedo enviarte planos y mas detalles.`;
+                    return respuestaCompleta;
+                }
+
+                this.logger.warn(`${logPrefix} No hubo coincidencias en ninguno de los dormitorios solicitados: ${params.dormitorios.join(', ')}`);
+                return `[ACCION_COMPLETADA] Lo siento, no encontre departamentos disponibles de ${params.dormitorios.join(' ni ')} dormitorios en este momento. ¿Te gustaria ver otras opciones?`;
+            }
+
+            let dormsNumber = typeof params.dormitorios === 'number' ? params.dormitorios :
+                (Array.isArray(params.dormitorios) && params.dormitorios.length > 0 ? params.dormitorios[0] : undefined);
+
+            const simpleParams = { ...params, dormitorios: dormsNumber };
+
+
+            // INTENTO 1: Busqueda Exacta
             this.logger.log(`${logPrefix} Intento 1: Filtros exactos`);
-            let resultado = await this.ejecutarBusquedaQdrant(collectionName, params);
+            let resultado = await this.ejecutarBusquedaQdrant(collectionName, simpleParams);
 
             this.logger.log(`${logPrefix} Intento 1 - Resultados: ${resultado.items.length}`);
-            if (resultado.items.length > 0) {
-                this.logger.debug(`${logPrefix} Primeros resultados: ${JSON.stringify(resultado.items.slice(0, 2).map(i => ({
-                    unit: i.document.metadata.unit_number,
-                    typology: i.document.metadata.typology,
-                    availability: i.document.metadata.availability
-                })))}`);
-            }
 
             if (resultado.ok && resultado.items.length > 0) {
-                return this.formatearRespuestaBusqueda(resultado.items, "Encontré estas opciones exactas para ti:");
+                return this.formatearRespuestaBusqueda(resultado.items, "Encontre estas opciones exactas para ti:");
             }
 
-            // INTENTO 2: Relajar filtros secundarios (Vista y Tipología)
+            // INTENTO 2: Relajar filtros secundarios (Vista y Tipologia)
             this.logger.log(`${logPrefix} Intento 2: Relajando Vista y Tipologia`);
-            const paramsRelaxed1 = { ...params };
+            const paramsRelaxed1 = { ...simpleParams };
             delete paramsRelaxed1.vista;
             delete paramsRelaxed1.tipologia;
             // Si piden area_min, relajamos un 10%
@@ -793,7 +860,7 @@ RESPUESTA PRECISA:`);
 
             if (resultado.ok && resultado.items.length > 0) {
                 return this.formatearRespuestaBusqueda(resultado.items,
-                    "No encontré opciones exactas con esa vista/tipo específicados, pero garanticé los dormitorios y presupuesto. Mira estas alternativas:");
+                    "No encontre opciones exactas con esa vista/tipo especificos, pero estas alternativas cumplen con dormitorios y presupuesto:");
             }
 
             // INTENTO 3: Relajar Presupuesto (Smart Range +/- 20%)
@@ -806,13 +873,13 @@ RESPUESTA PRECISA:`);
 
             if (resultado.ok && resultado.items.length > 0) {
                 return this.formatearRespuestaBusqueda(resultado.items,
-                    "No encontré en el rango exacto de precio, pero estas opciones están muy cerca y valen la pena revisar:");
+                    "No encontre en el rango exacto de precio, pero estas opciones estan muy cerca:");
             }
 
-            // INTENTO 3.5: Si pidieron tipología que no existe, listar las disponibles
-            if (params.tipologia) {
-                this.logger.log(`${logPrefix} Intento 3.5: Listar tipologías disponibles`);
-                const paramsSinTipologia = { ...params };
+            // INTENTO 3.5: Si pidieron tipologia que no existe, listar las disponibles
+            if (simpleParams.tipologia) {
+                this.logger.log(`${logPrefix} Intento 3.5: Listar tipologias disponibles`);
+                const paramsSinTipologia = { ...simpleParams };
                 delete paramsSinTipologia.tipologia;
                 delete paramsSinTipologia.vista;
                 delete paramsSinTipologia.area_min;
@@ -820,30 +887,30 @@ RESPUESTA PRECISA:`);
                 resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsSinTipologia);
 
                 if (resultado.ok && resultado.items.length > 0) {
-                    // Extraer tipologías únicas disponibles
+                    // Extraer tipologias unicas disponibles
                     const tipologiasDisponibles = [...new Set(
                         resultado.items.map(i => i.document.metadata.typology).filter(Boolean)
                     )];
 
                     return this.formatearRespuestaBusqueda(resultado.items,
-                        `No encontré exactamente "${params.tipologia}", pero aquí están las opciones disponibles (tipologías: ${tipologiasDisponibles.join(', ')}):`);
+                        `No encontre exactamente "${simpleParams.tipologia}", pero aqui estan las opciones disponibles (tipologias: ${tipologiasDisponibles.join(', ')}):`);
                 }
             }
 
-            // INTENTO 4: Fallback Final - Solo Dormitorios (Lo más importante)
-            if (params.dormitorios) {
+            // INTENTO 4: Fallback Final - Solo Dormitorios (Lo mas importante)
+            if (dormsNumber) {
                 this.logger.log(`${logPrefix} Intento 4: Solo Dormitorios`);
-                const paramsFinal = { dormitorios: params.dormitorios };
+                const paramsFinal = { dormitorios: dormsNumber };
                 resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsFinal);
 
                 if (resultado.ok && resultado.items.length > 0) {
                     return this.formatearRespuestaBusqueda(resultado.items,
-                        `Actualmente no tengo coincidencias exactas con todos los filtros, pero aquí están TODOS los departamentos disponibles de ${params.dormitorios} dormitorios:`);
+                        `No tengo coincidencias exactas con todos los filtros, pero aqui estan departamentos de ${dormsNumber} dormitorios:`);
                 }
             }
 
-            // INTENTO 5: Ultra-fallback - Listar todo sin filtros específicos (solo semántico)
-            this.logger.log(`${logPrefix} Intento 5: Búsqueda semántica sin filtros estrictos`);
+            // INTENTO 5: Ultra-fallback - Listar todo sin filtros especificos (solo semantico)
+            this.logger.log(`${logPrefix} Intento 5: Busqueda semantica sin filtros estrictos`);
             const allResults = await this.qdrantVectorService.searchPropertiesWithFilters(
                 collectionName,
                 'departamento disponible',
@@ -852,12 +919,10 @@ RESPUESTA PRECISA:`);
             );
 
             if (allResults.length > 0) {
-                // Extraer tipologías únicas para informar al usuario
                 const tipologiasDisponibles = [...new Set(
                     allResults.map(i => i.document.metadata.typology).filter(Boolean)
                 )].sort();
 
-                // Formatear manualmente para este caso especial
                 const lista = allResults.slice(0, 6).map((r, idx) => {
                     const m = r.document.metadata;
                     const pList = m.price_list ? parseFloat(m.price_list) : 0;
@@ -870,21 +935,21 @@ RESPUESTA PRECISA:`);
                     }
                     const detalles = [
                         m.bedrooms ? `${m.bedrooms} dorm` : '',
-                        m.area_total ? `${m.area_total}m²` : '',
+                        m.area_total ? `${m.area_total}m2` : '',
                         m.view ? `Vista ${m.view}` : '',
                         m.typology ? `${m.typology}` : ''
                     ].filter(Boolean).join(', ');
                     return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
                 }).join('\n');
 
-                return `[ACCION_COMPLETADA] Aquí tienes las opciones de departamentos disponibles (tipologías: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\nPregúntame por una tipología específica o cuántos dormitorios buscas.`;
+                return `[ACCION_COMPLETADA] Aqui tienes las opciones de departamentos disponibles (tipologias: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\nPreguntame por una tipologia especifica o cuantos dormitorios buscas.`;
             }
 
-            return "[ACCION_COMPLETADA] Lo siento, realmente no encontré nada disponible ni siquiera relajando la búsqueda. Pregúntale si quiere ver departamentos de otra cantidad de dormitorios.";
+            return "[ACCION_COMPLETADA] Lo siento, no encontre nada disponible ni siquiera relajando la busqueda. Pregunta si quiere ver departamentos de otra cantidad de dormitorios.";
 
         } catch (error) {
             this.logger.error(`Error en buscarDepartamentoUniversal: ${error.message}`, error.stack);
-            return "Ocurrió un error técnico al buscar. Por favor intenta de nuevo.";
+            return "Ocurrio un error tecnico al buscar. Por favor intenta de nuevo.";
         }
     }
 
@@ -997,12 +1062,12 @@ RESPUESTA PRECISA:`);
                 precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
             }
 
-            const area = m.area_total ? `${m.area_total}m²` : '';
+            const area = m.area_total ? `${m.area_total}m2` : '';
             const piso = m.floor ? `Piso ${m.floor}` : '';
             const vista = m.view ? `Vista ${m.view}` : '';
             const dorms = m.bedrooms ? `${m.bedrooms} dorm` : '';
 
-            // Construir línea resumen compacta
+            // Construir linea resumen compacta
             // Ej: 1. Unidad 1704 - 2 dorm, 65m2, Vista Calle - S/450,000
             const detalles = [dorms, area, vista, piso].filter(Boolean).join(', ');
             return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
@@ -1012,14 +1077,14 @@ RESPUESTA PRECISA:`);
     }
 
     private formatearDetalleUnidad(m: any) {
-        // Formatear precio mostrando lista y promoción si existe
+        // Formatear precio mostrando lista y promocion si existe
         const pList = m.price_list ? parseFloat(m.price_list) : 0;
         const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
 
         let precioTexto = '';
         if (pPromo && pPromo < pList) {
             // Mostrar ambos precios: lista tachada y promo destacada
-            precioTexto = `S/${pList.toLocaleString('es-PE')} → **S/${pPromo.toLocaleString('es-PE')}** (Precio de oferta)`;
+            precioTexto = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Precio de oferta)`;
         } else {
             precioTexto = `S/${pList.toLocaleString('es-PE')}`;
         }
@@ -1028,7 +1093,7 @@ RESPUESTA PRECISA:`);
             `- Tipo: ${m.unit_type} (${m.typology || 'Standard'})\n` +
             `- Piso: ${m.floor}\n` +
             `- Dormitorios: ${m.bedrooms}\n` +
-            `- Área: ${m.area_total}m²\n` +
+            `- Area: ${m.area_total}m2\n` +
             `- Vista: ${m.view}\n` +
             `- Precio: ${precioTexto}\n` +
             `- Disponibilidad: ${m.availability}\n\n` +

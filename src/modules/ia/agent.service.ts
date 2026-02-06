@@ -219,10 +219,10 @@ export class AgentService {
     // HERRAMIENTA UNIVERSAL: Busca departamentos por CUALQUIER criterio
     const buscarDepartamentoUniversalTool = new DynamicStructuredTool({
       name: 'buscar_departamento',
-      description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant) por CUALQUIER criterio. USA ESTA HERRAMIENTA PARA TODO lo relacionado con búsqueda de departamentos: unidad específica, dormitorios, piso, precio, cuota mensual, vista, tipología, área. Ejemplos: "unidad 1003", "2 dormitorios", "piso 5", "cuota de S/5000", "vista exterior", "departamentos disponibles". Retorna información COMPLETA y REAL del inventario.',
+      description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant). SI EL USUARIO PIDE VARIOS TIPOS (ej: "2 y 3 dormitorios"), ENVÍA UN ARRAY: [2, 3]. Busca por: unidad, dormitorios, piso, precio, cuota, vista, tipología, área. Retorna información COMPLETA y REAL.',
       schema: z.object({
         unidad: z.string().optional().describe('Número de unidad específica (ej: "1003", "1701")'),
-        dormitorios: z.number().optional().describe('Cantidad de dormitorios (1, 2, 3)'),
+        dormitorios: z.union([z.number(), z.array(z.number())]).optional().describe('Cantidad de dormitorios (ej: 2, o [2,3])'),
         piso: z.number().optional().describe('Piso específico (1-17)'),
         precio_max: z.number().optional().describe('Precio máximo en soles'),
         precio_min: z.number().optional().describe('Precio mínimo en soles'),
@@ -239,7 +239,10 @@ export class AgentService {
           codigoEmpresa: metadata.codigoEmpresa,
           leadUuid: metadata.leadUuid
         };
-        return await this.toolsExecutionService.buscarDepartamentoUniversal(paramsWithContext);
+        return await this.toolsExecutionService.buscarDepartamentoUniversal({
+          ...paramsWithContext,
+          dormitorios: input.dormitorios
+        });
       },
     });
 
@@ -496,14 +499,45 @@ REGLAS DE TIEMPO (CRÍTICAS):
 
       // Patrones para detectar información clave del flujo de descubrimiento
 
-      // PASO 1: Dormitorios
-      const dormitoriosMatch = msgLower.match(/(\d+)\s*(dormitorio|dorm|cuarto|habitaci[oó]n)/i) ||
-        msgLower.match(/(un|uno|dos|tres|cuatro)\s*(dormitorio|dorm|cuarto)/i) ||
-        msgLower.match(/de\s+(un|uno|dos|tres|cuatro|1|2|3|4)/i);
-      if (dormitoriosMatch) {
-        const numMap: { [key: string]: string } = { 'un': '1', 'uno': '1', 'dos': '2', 'tres': '3', 'cuatro': '4' };
-        const num = numMap[dormitoriosMatch[1]] || dormitoriosMatch[1];
-        puntos.push(`Busca depa de ${num} dormitorio${num !== '1' ? 's' : ''}`);
+      // PASO 1: Dormitorios (Detectar múltiples)
+      const numberMap: { [key: string]: string } = { 'un': '1', 'uno': '1', 'dos': '2', 'tres': '3', 'cuatro': '4', '1': '1', '2': '2', '3': '3', '4': '4' };
+      const dormsRegex = /(\d+|un|uno|dos|tres|cuatro)\s*(?:dormitorio|dorm|cuarto|habitaci[oó]n)/gi;
+      const dormsMatches = [...msgLower.matchAll(dormsRegex)];
+
+      // Intentar también patrón "de 2 y 3"
+      const combinedRegex = /de\s+((?:[0-9]|un|uno|dos|tres|cuatro)(?:\s*y\s*(?:[0-9]|un|uno|dos|tres|cuatro))*)/i;
+
+      const foundDorms = new Set<string>();
+
+      // Estrategia 1: Match directo "2 dormitorios", "3 habitaciones"
+      for (const m of dormsMatches) {
+        const val = numberMap[m[1].toLowerCase()] || m[1];
+        foundDorms.add(val);
+      }
+
+      // Estrategia 2: Patrón "de 2 y 3"
+      const combinedMatch = msgLower.match(combinedRegex);
+      if (combinedMatch) {
+        const parts = combinedMatch[1].split(/\s*y\s*/);
+        parts.forEach(p => {
+          const val = numberMap[p.trim()] || p.trim();
+          if (val) foundDorms.add(val);
+        });
+      }
+
+      // Estrategia 3: Si dice "2 y 3" sin palabra clave inmediata pero contexto claro
+      if (foundDorms.size === 0) {
+        const looseMatch = msgLower.match(/(\d+)\s*y\s*(\d+)/);
+        if (looseMatch && (msgLower.includes('dorm') || msgLower.includes('habitaci'))) {
+          foundDorms.add(looseMatch[1]);
+          foundDorms.add(looseMatch[2]);
+        }
+      }
+
+      if (foundDorms.size > 0) {
+        const dormsList = Array.from(foundDorms).sort();
+        const dormsStr = dormsList.join(' y ');
+        puntos.push(`Busca depa de ${dormsStr} dormitorio(s)`);
       }
 
       // PASO 2A: Para vivir / invertir (uso/propósito)
