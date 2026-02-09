@@ -1337,6 +1337,11 @@ RESPUESTA PRECISA:`);
     async enviarUbicacionGoogleMaps(params: { nombre_proyecto: string, unidad_id?: string }) {
         try {
             const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const buildFaqQuery = () => ([
+                `¿Dónde se encuentra ubicado el proyecto ${params.nombre_proyecto}?`,
+                `ubicación del proyecto ${params.nombre_proyecto}`,
+                `dirección del proyecto ${params.nombre_proyecto}`,
+            ]);
 
             // Buscar cualquier unidad del proyecto para obtener url_location
             const resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
@@ -1353,14 +1358,24 @@ RESPUESTA PRECISA:`);
             const urlLocation = resultados[0].document.metadata.url_location;
 
             if (!urlLocation) {
-                return `[ACCION_COMPLETADA] El proyecto Los Lirios esta ubicado en	Av. Petit Thouars 1460, Santa Beatriz.`;
+                return this.buscarPreguntasFrecuentes({
+                    queries_de_busqueda: buildFaqQuery(),
+                    nombre_proyecto: params.nombre_proyecto
+                });
             }
 
-            return `[ACCION_COMPLETADA] Ubicacion del proyecto Los Lirios: ${urlLocation} - Estamos en Av. Petit Thouars 1460, Santa Beatriz.`;
+            return `[ACCION_COMPLETADA] Ubicacion del proyecto ${params.nombre_proyecto}: ${urlLocation}.`;
 
         } catch (error) {
             this.logger.error(`Error en enviarUbicacionGoogleMaps: ${error.message}`);
-            return `El proyecto está ubicado en 	Av. Petit Thouars 1460, Santa Beatriz.`;
+            return this.buscarPreguntasFrecuentes({
+                queries_de_busqueda: [
+                    `¿Dónde se encuentra ubicado el proyecto ${params.nombre_proyecto}?`,
+                    `ubicación del proyecto ${params.nombre_proyecto}`,
+                    `dirección del proyecto ${params.nombre_proyecto}`,
+                ],
+                nombre_proyecto: params.nombre_proyecto
+            });
         }
     }
 
