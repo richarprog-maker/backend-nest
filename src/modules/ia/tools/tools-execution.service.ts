@@ -166,10 +166,19 @@ export class ToolsExecutionService {
             // Formatear respuesta para el LLM final
             const contextText = results.map((d: any, i: number) => {
                 const m = d.metadata;
+                // Validacion temporal para promos
+                const fechaLimite = new Date('2025-01-01');
+                const mostrarPromos = new Date() < fechaLimite;
+
+                let precioStr = `- Precio: ${m.currency || 'S/'} ${m.price_list}`;
+                if (mostrarPromos && m.price_promo) {
+                    precioStr = `- Precio: ${m.currency || 'S/'} ${m.price_promo} (Antes: ${m.price_list})`;
+                }
+
                 return `OPCION ${i + 1}:
 - Proyecto: ${m.project_name}
 - Unidad: ${m.unit_number} (${m.type || 'Depa'})
-- Precio: ${m.currency} ${m.price_promo} (Antes: ${m.price_list})
+${precioStr}
 - Dormitorios: ${m.bedrooms}
 - Piso: ${m.floor} (${m.view})
 - Area: ${m.area_total}m2
@@ -579,8 +588,23 @@ RESPUESTA PRECISA:`);
             // Formatear resultados con cálculo de cuota aproximada
             const datos = resultados.map((r: any) => {
                 const m = r.metadata;
-                const precioPromo = parseFloat(m.price_promo?.replace(/[^0-9.]/g, '') || m.price_list?.replace(/[^0-9.]/g, '') || '0');
-                const cuotaAprox = Math.round(precioPromo / 200); // Aproximación simple
+                const fechaLimite = new Date('2025-01-01');
+                const mostrarPromos = new Date() < fechaLimite;
+
+                const pListNum = parseFloat(m.price_list?.replace(/[^0-9.]/g, '') || '0');
+                const pPromoNum = parseFloat(m.price_promo?.replace(/[^0-9.]/g, '') || '0');
+
+                // Si NO mostramos promos, usamos pListNum como base
+                let precioBase = pListNum;
+                if (mostrarPromos && pPromoNum > 0) {
+                    precioBase = pPromoNum;
+                } else if (!mostrarPromos) {
+                    precioBase = pListNum;
+                } else {
+                    precioBase = pPromoNum || pListNum;
+                }
+
+                const cuotaAprox = Math.round(precioBase / 200); // Aproximación simple
 
                 return {
                     unidad: m.unit_number,
@@ -588,7 +612,7 @@ RESPUESTA PRECISA:`);
                     area: m.area_total,
                     piso: m.floor,
                     precio_lista: m.price_list,
-                    precio_promo: m.price_promo,
+                    precio_promo: mostrarPromos ? m.price_promo : null,
                     cuota_aprox: cuotaAprox,
                     disponibilidad: m.availability,
                     vista: m.view
@@ -655,8 +679,12 @@ RESPUESTA PRECISA:`);
                 const pList = m.price_list ? parseFloat(m.price_list) : 0;
                 const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
 
+                // Validacion temporal: Ocultar promos si la fecha actual > 2025
+                const fechaLimite = new Date('2025-01-01');
+                const mostrarPromos = new Date() < fechaLimite;
+
                 let precioMostrar = '';
-                if (pPromo && pPromo < pList) {
+                if (mostrarPromos && pPromo && pPromo < pList) {
                     precioMostrar = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
                 } else {
                     precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
@@ -899,8 +927,12 @@ RESPUESTA PRECISA:`);
                             const m = r.document.metadata;
                             const pList = m.price_list ? parseFloat(m.price_list) : 0;
                             const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+                            // Validacion temporal para no mostrar promos hasta nueva subida de data
+                            const fechaLimite = new Date('2025-01-01');
+                            const mostrarPromos = new Date() < fechaLimite;
+
                             let precioMostrar = '';
-                            if (pPromo && pPromo < pList) {
+                            if (mostrarPromos && pPromo && pPromo < pList) {
                                 precioMostrar = `S/${pList.toLocaleString('es-PE')} → **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
                             } else {
                                 precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
@@ -1026,8 +1058,11 @@ RESPUESTA PRECISA:`);
                     const m = r.document.metadata;
                     const pList = m.price_list ? parseFloat(m.price_list) : 0;
                     const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+                    const fechaLimite = new Date('2025-01-01');
+                    const mostrarPromos = new Date() < fechaLimite;
+
                     let precioMostrar = '';
-                    if (pPromo && pPromo < pList) {
+                    if (mostrarPromos && pPromo && pPromo < pList) {
                         precioMostrar = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
                     } else {
                         precioMostrar = `**S/${pList.toLocaleString('es-PE')}**`;
@@ -1167,8 +1202,12 @@ RESPUESTA PRECISA:`);
             const pList = m.price_list ? parseFloat(m.price_list) : 0;
             const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
 
+            // Validacion temporal: Ocultar promos si la fecha actual > 2025 (simulando espera de data nueva)
+            const fechaLimite = new Date('2025-01-01');
+            const mostrarPromos = new Date() < fechaLimite;
+
             let precioMostrar = '';
-            if (pPromo && pPromo < pList) {
+            if (mostrarPromos && pPromo && pPromo < pList) {
                 // Mostrar ambos precios para que el cliente vea que SI existe el de lista
                 precioMostrar = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Oferta)`;
             } else {
@@ -1194,8 +1233,11 @@ RESPUESTA PRECISA:`);
         const pList = m.price_list ? parseFloat(m.price_list) : 0;
         const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
 
+        const fechaLimite = new Date('2025-01-01');
+        const mostrarPromos = new Date() < fechaLimite;
+
         let precioTexto = '';
-        if (pPromo && pPromo < pList) {
+        if (mostrarPromos && pPromo && pPromo < pList) {
             // Mostrar ambos precios: lista tachada y promo destacada
             precioTexto = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Precio de oferta)`;
         } else {
