@@ -43,7 +43,13 @@ async function bootstrap() {
     });
 
     const port = process.env.PORT || 3007;
-    await app.listen(port);
-    console.log(`Application is running on: http://localhost:${port}`);
+
+    if (process.env.IS_TASK_WORKER === 'true') {
+        await app.init();
+        console.log('Task worker started');
+    } else {
+        await app.listen(port);
+        console.log(`Application is running on: http://localhost:${port}`);
+    }
 }
 bootstrap();
