@@ -104,45 +104,49 @@ ${campos.join('\n')}
     private buildInfoCita(cita?: Cita): string {
         if (!cita) return '';
 
+        // Usar zona horaria de Perú para comparaciones correctas
+        const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+        const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
         const fechaCita = new Date(`${cita.fechaCita}T${cita.horaCita}`);
-        const ahora = new Date();
-        const esFutura = fechaCita > ahora;
+        const esFutura = fechaCita > ahoraPeru;
 
-        if (esFutura) {
-            const opciones: Intl.DateTimeFormatOptions = {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            };
-            const fechaFormateada = fechaCita.toLocaleDateString('es-ES', opciones);
+        // Calcular etiqueta legible de la fecha
+        const tomorrowPeru = new Date(ahoraPeru);
+        tomorrowPeru.setDate(tomorrowPeru.getDate() + 1);
+        const mananaISO = `${tomorrowPeru.getFullYear()}-${String(tomorrowPeru.getMonth() + 1).padStart(2, '0')}-${String(tomorrowPeru.getDate()).padStart(2, '0')}`;
 
+        let etiquetaFecha = cita.fechaCita; // fallback: fecha ISO
+        if (cita.fechaCita === hoyISO) {
+            etiquetaFecha = 'HOY';
+        } else if (cita.fechaCita === mananaISO) {
+            etiquetaFecha = 'MAÑANA';
+        } else if (cita.fechaCita < hoyISO) {
+            etiquetaFecha = `${cita.fechaCita} (YA PASÓ)`;
+        }
+
+        // Solo citas activas (pendiente/confirmada) y futuras se muestran como "programada"
+        const citaActiva = cita.estadoCita === 'pendiente' || cita.estadoCita === 'confirmada';
+
+        if (esFutura && citaActiva) {
             return `
-## CITA PROGRAMADA
+## CITA PROGRAMADA ACTIVA
 El cliente YA TIENE UNA CITA AGENDADA:
-- Fecha: ${fechaFormateada}
+- Fecha: ${etiquetaFecha} (${cita.fechaCita})
+- Hora: ${cita.horaCita}
 - Tipo: ${cita.tipoCita || 'No especificado'}
 - Estado: ${cita.estadoCita}
 ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
 
-**INSTRUCCIÓN CRÍTICA**: 
-- NO OFREZCAS AGENDAR OTRA CITA (ya tiene una programada)
-- Solo responde sus consultas sobre el proyecto o departamento
-- Si pregunta por su cita, confirma la información arriba
+**INSTRUCCIÓN**: 
+- NO ofrezcas agendar otra cita (ya tiene una)
+- Si pregunta por su cita, dile que es ${etiquetaFecha} a las ${cita.horaCita}
 `;
         } else {
-            const opciones: Intl.DateTimeFormatOptions = {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-            };
-            const fechaFormateada = fechaCita.toLocaleDateString('es-ES', opciones);
-
+            // Cita pasada o cancelada/realizada
             return `
 ## HISTORIAL DE CITAS
-- La última cita registrada fue el ${fechaFormateada} (ya pasó)
-- Puedes ofrecer agendar una nueva visita si el cliente muestra interés
+- Tuvo una cita el ${cita.fechaCita} a las ${cita.horaCita} (estado: ${cita.estadoCita}) — YA PASÓ.
+- NO la menciones como futura. Puedes ofrecer agendar una NUEVA si muestra interés.
 `;
         }
     }

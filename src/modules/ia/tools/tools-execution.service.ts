@@ -195,6 +195,46 @@ export class ToolsExecutionService {
         // Validar y normalizar tipo de cita (PRESENCIAL por defecto)
         const tipoCitaNormalizado = tipo_cita?.toUpperCase() === 'VIRTUAL' ? 'VIRTUAL' : 'PRESENCIAL';
 
+        // === VALIDACIONES DE FECHA Y HORA ===
+        const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+        const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
+
+        // 1. Validar que la fecha no sea pasada
+        if (fecha_cita < hoyISO) {
+            return {
+                success: false,
+                mensaje: `La fecha ${fecha_cita} ya pasó. Solo puedo agendar citas para hoy o fechas futuras.`
+            };
+        }
+
+        // 2. Si es hoy, validar que la hora no haya pasado
+        if (fecha_cita === hoyISO) {
+            const horaActualMin = ahoraPeru.getHours() * 60 + ahoraPeru.getMinutes();
+            const [hCita, mCita] = hora_cita.split(':').map(Number);
+            const horaCitaMin = hCita * 60 + mCita;
+
+            if (horaCitaMin <= horaActualMin) {
+                const horaActualStr = `${String(ahoraPeru.getHours()).padStart(2, '0')}:${String(ahoraPeru.getMinutes()).padStart(2, '0')}`;
+                return {
+                    success: false,
+                    mensaje: `La hora ${hora_cita} ya pasó (son las ${horaActualStr}). Por favor elige una hora posterior.`
+                };
+            }
+        }
+
+        // 3. Validar horario de atención: 10:00 a 19:00
+        const [horaNum, minNum] = hora_cita.split(':').map(Number);
+        const minutosDelDia = horaNum * 60 + minNum;
+        const HORA_APERTURA = 10 * 60; // 10:00 = 600 min
+        const HORA_CIERRE = 19 * 60;   // 19:00 = 1140 min
+
+        if (minutosDelDia < HORA_APERTURA || minutosDelDia >= HORA_CIERRE) {
+            return {
+                success: false,
+                mensaje: `El horario de atención es de 10:00 a.m. a 7:00 p.m. La hora ${hora_cita} está fuera de horario. ¿Podrías elegir otro horario dentro de ese rango?`
+            };
+        }
+
         if (email && leadUuid && codigoEmpresa) {
             await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { email });
         }
@@ -316,14 +356,27 @@ export class ToolsExecutionService {
 
         // Fecha
         if (fecha_nueva) {
-            const fechaNuevaDate = new Date(`${fecha_nueva}T${hora_nueva || citaActual.horaCita}`);
-            const ahora = new Date();
+            const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+            const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
 
-            if (fechaNuevaDate < ahora) {
+            if (fecha_nueva < hoyISO) {
                 return {
                     success: false,
-                    mensaje: `La fecha ${fecha_nueva} ya pasó. Elige una fecha futura.`
+                    mensaje: `La fecha ${fecha_nueva} ya pasó. Elige una fecha de hoy o futura.`
                 };
+            }
+
+            // Si es hoy, validar que la hora no haya pasado
+            const horaParaValidar = hora_nueva || citaActual.horaCita;
+            if (fecha_nueva === hoyISO) {
+                const horaActualMin = ahoraPeru.getHours() * 60 + ahoraPeru.getMinutes();
+                const [hC, mC] = horaParaValidar.split(':').map(Number);
+                if (hC * 60 + mC <= horaActualMin) {
+                    return {
+                        success: false,
+                        mensaje: `La hora ${horaParaValidar} ya pasó para hoy. Elige una hora posterior.`
+                    };
+                }
             }
 
             datosActualizacion.fechaCita = fecha_nueva;
@@ -332,6 +385,16 @@ export class ToolsExecutionService {
 
         // Hora
         if (hora_nueva) {
+            // Validar horario de atención: 10:00 a 19:00
+            const [hN, mN] = hora_nueva.split(':').map(Number);
+            const minutosDia = hN * 60 + mN;
+            if (minutosDia < 600 || minutosDia >= 1140) {
+                return {
+                    success: false,
+                    mensaje: `El horario de atención es de 10:00 a.m. a 7:00 p.m. La hora ${hora_nueva} está fuera de horario.`
+                };
+            }
+
             datosActualizacion.horaCita = hora_nueva;
             cambios.push(`hora a ${hora_nueva}`);
         }

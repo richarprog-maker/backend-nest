@@ -8,13 +8,7 @@ import { HistorialChatService } from './historial-chat.service';
 import { ResumenConversacionService } from './resumen-conversacion.service';
 import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 
-/**
- * 
- * Reemplaza el manual if/else de 9 herramientas con AgentExecutor
- * El agente DECIDE automáticamente qué tool usar y cuándo parar
- * 
 
- */
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
@@ -323,10 +317,11 @@ export class AgentService {
       // Construir mensajes iniciales
       const messages: BaseMessage[] = [...historial];
 
-      // Generar Contexto Temporal (Fecha Actual)
-      const now = new Date();
-      const fechaISO = now.toISOString().split('T')[0]; // YYYY-MM-DD
-      const fechaLegible = now.toLocaleString('es-PE', {
+      // Generar Contexto Temporal (Fecha Actual en zona horaria de Perú)
+      const nowPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+      const fechaISO = `${nowPeru.getFullYear()}-${String(nowPeru.getMonth() + 1).padStart(2, '0')}-${String(nowPeru.getDate()).padStart(2, '0')}`;
+      const horaActual = `${String(nowPeru.getHours()).padStart(2, '0')}:${String(nowPeru.getMinutes()).padStart(2, '0')}`;
+      const fechaLegible = new Date().toLocaleString('es-PE', {
         timeZone: 'America/Lima',
         weekday: 'long',
         year: 'numeric',
@@ -337,17 +332,22 @@ export class AgentService {
         hour12: true
       });
 
-      const timeContext = `
-=== CONTEXTO TEMPORAL DEL SERVIDOR ===
-DATOS ACTUALES:
-- FECHA ISO: ${fechaISO} (Úsala para comparar)
-- FECHA LEGIBLE: ${fechaLegible}
+      // Calcular fecha de mañana en Perú
+      const tomorrowPeru = new Date(nowPeru);
+      tomorrowPeru.setDate(tomorrowPeru.getDate() + 1);
+      const fechaMananaISO = `${tomorrowPeru.getFullYear()}-${String(tomorrowPeru.getMonth() + 1).padStart(2, '0')}-${String(tomorrowPeru.getDate()).padStart(2, '0')}`;
 
-REGLAS DE TIEMPO (CRÍTICAS):
-1. **SI LA FECHA DE LA CITA ES ${fechaISO} → DEBES DECIR "HOY"**.
-2. Si la fecha de la cita es diferente, calcula si es "mañana" o el día de la semana.
-3. JAMÁS digas "mañana" si la fecha es igual a la FECHA ISO actual.
-4. Tómate un segundo para verificar: ¿Fecha Cita === Fecha Actual? -> Entonces es HOY.
+      const timeContext = `
+=== CONTEXTO TEMPORAL (ZONA: PERÚ) ===
+- FECHA HOY: ${fechaISO}
+- FECHA MAÑANA: ${fechaMananaISO}
+- HORA ACTUAL: ${horaActual}
+- ${fechaLegible}
+
+REGLAS GENERALES:
+- HORARIO DE ATENCIÓN: 10:00 a 19:00 (7pm). NO agendes fuera de ese horario.
+- NO agendes citas para fechas pasadas ni horas que ya pasaron hoy.
+- Para referirte a fechas: si es ${fechaISO} di "hoy", si es ${fechaMananaISO} di "mañana", si ya pasó di que "ya pasó".
 ======================================
 `;
 
