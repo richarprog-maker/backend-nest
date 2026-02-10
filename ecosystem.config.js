@@ -15,7 +15,7 @@ module.exports = {
         },
         {
             name: 'checor-tasks',
-            script: 'dist/main.js', // Or 'dist/main.js' if it's the same entry point
+            script: 'dist/main.js', 
             instances: 1,
             autorestart: true,
             watch: false,
