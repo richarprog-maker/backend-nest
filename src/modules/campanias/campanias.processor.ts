@@ -148,8 +148,20 @@ export class CampaniasProcessor extends WorkerHost {
                         let urlMultimedia = null;
 
                         if (campania.plantilla?.url_multimedia) {
-                            const tipoPlantilla = campania.plantilla.tipo_contenido_multimedia;
-                            tipoMultimedia = tipoPlantilla === 'ninguno' ? 'none' : tipoPlantilla;
+                            const tipoPlantilla = (campania.plantilla.tipo_contenido_multimedia || '').toLowerCase();
+
+                            if (tipoPlantilla === 'imagen' || tipoPlantilla === 'image') {
+                                tipoMultimedia = 'image';
+                            } else if (tipoPlantilla === 'video') {
+                                tipoMultimedia = 'video';
+                            } else if (tipoPlantilla === 'documento' || tipoPlantilla === 'document') {
+                                tipoMultimedia = 'document';
+                            } else if (tipoPlantilla === 'audio') {
+                                tipoMultimedia = 'audio';
+                            } else {
+                                tipoMultimedia = tipoPlantilla === 'ninguno' ? 'none' : tipoPlantilla;
+                            }
+
                             urlMultimedia = campania.plantilla.url_multimedia;
                         } else if (campania.imagenUrl) {
                             tipoMultimedia = 'image';
