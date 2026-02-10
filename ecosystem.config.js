@@ -2,7 +2,7 @@ module.exports = {
     apps: [
         {
             name: 'checor-backend',
-            script: 'dist/main.js',
+            script: 'dist/src/main.js',
             instances: 1,
             autorestart: true,
             watch: false,
@@ -15,7 +15,7 @@ module.exports = {
         },
         {
             name: 'checor-tasks',
-            script: 'dist/main.js', 
+            script: 'dist/src/main.js',
             instances: 1,
             autorestart: true,
             watch: false,
