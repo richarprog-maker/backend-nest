@@ -15,20 +15,33 @@ export class CampaniasController {
         @Body() body: any,
         @UploadedFiles() files: { excel?: Express.Multer.File[], imagen?: Express.Multer.File[] }
     ) {
-        // El body llega como string en form-data, parsear si es necesario o usar DTO con transformación
-        // Por simplicidad, asumimos que body trae las propiedades planas o JSON parseado por Nest si es application/json (pero aquí es multipart)
-
-        // Si usamos FormData, los números llegan como strings "1"
         const safeInt = (val: any) => (val && !isNaN(Number(val))) ? Number(val) : null;
+
+        let plantillaNombre = null;
+        if (body.plantillaNombre) {
+            plantillaNombre = body.plantillaNombre;
+        } else if (body.plantilla) {
+            try {
+                const plantillaObj = typeof body.plantilla === 'string' ? JSON.parse(body.plantilla) : body.plantilla;
+                plantillaNombre = plantillaObj.nombre;
+            } catch (e) {
+                // Si falla el parseo, ignoramos
+            }
+        }
 
         const data = {
             nombre: body.nombre,
             descripcion: body.descripcion,
             plantillaId: safeInt(body.plantillaId),
-            codigoEmpresa: safeInt(body.codigoEmpresa) || 1, // Default temporal
+            plantillaNombre: plantillaNombre,
+            plantillaContenido: body.plantillaContenido,
+            plantillaParametros: body.plantillaParametros ? JSON.parse(body.plantillaParametros) : null,
+            codigoEmpresa: safeInt(body.codigoEmpresa) || 1,
             usuarioId: safeInt(body.usuarioId),
-            filtrosAudiencia: body.filtrosAudiencia ? JSON.parse(body.filtrosAudiencia) : null
+            filtrosAudiencia: body.filtrosAudiencia ? JSON.parse(body.filtrosAudiencia) : null,
+            fechaProgramada: body.fechaProgramada || null
         };
+
 
         return this.campaniasService.crear(data, files);
     }
@@ -58,9 +71,38 @@ export class CampaniasController {
         return this.campaniasService.cambiarEstado(body.id_campania, body.nuevo_estado);
     }
 
+    @Patch(':id/toggle')
+    async toggleCampania(
+        @Param('id') id: string, 
+        @Body() body: { activar: boolean }
+    ) {
+        const nuevoEstado = body.activar ? 'habilitado' : 'deshabilitado';
+        return this.campaniasService.cambiarEstado(+id, nuevoEstado);
+    }
+
     @Post('actualizar/:id')
     actualizar(@Param('id') id: string, @Body() body: any) {
-        // TODO: Manejar archivos en actualización tambien si se requiere
         return this.campaniasService.actualizar(+id, body);
     }
+
+    @Post('plantilla/crear-en-meta')
+    crearPlantillaEnMeta(@Body() body: { plantillaId: number, codigoEmpresa: number }) {
+        return this.campaniasService.crearPlantillaEnMeta(body.plantillaId, body.codigoEmpresa);
+    }
+
+    @Post('plantillas/sincronizar')
+    sincronizarPlantillas(@Body('codigoEmpresa') codigoEmpresa: number) {
+        return this.campaniasService.sincronizarPlantillas(codigoEmpresa);
+    }
+
+    @Get('plantillas/meta-debug')
+    listarPlantillasMeta(@Query('codigoEmpresa') codigoEmpresa: number) {
+        return this.campaniasService.listarPlantillasMeta(codigoEmpresa || 1);
+    }
+
+    @Post('plantilla/verificar-estado')
+    verificarEstadoPlantilla(@Body() body: { plantillaId: number, codigoEmpresa: number }) {
+        return this.campaniasService.verificarEstadoPlantilla(body.plantillaId, body.codigoEmpresa);
+    }
 }
+

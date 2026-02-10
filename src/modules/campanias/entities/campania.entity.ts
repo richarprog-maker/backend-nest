@@ -1,5 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
-import { PlantillaMensaje } from '../../plantillas/entities/plantilla.entity';
+import { PlantillaCampania } from '../../plantillas-campanias/entities/plantilla-campania.entity';
 
 export enum EstadoCampania {
     BORRADOR = 'borrador',
@@ -39,7 +39,7 @@ export class Campania {
 
     @Column({
         name: 'tipo_audiencia',
-        type: 'varchar', // Cambiado a varchar para flexibilidad o enum si la BD lo soporta
+        type: 'varchar', 
         default: TipoAudiencia.BASE_DATOS
     })
     tipoAudiencia: TipoAudiencia;
@@ -50,9 +50,9 @@ export class Campania {
     @Column({ name: 'archivo_audiencia_path', nullable: true })
     archivoAudienciaPath: string;
 
-    @ManyToOne(() => PlantillaMensaje)
+    @ManyToOne(() => PlantillaCampania)
     @JoinColumn({ name: 'plantilla_id' })
-    plantilla: PlantillaMensaje;
+    plantilla: PlantillaCampania;
 
     @Column({ name: 'plantilla_id', nullable: true })
     plantillaId: number;

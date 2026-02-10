@@ -18,6 +18,7 @@ import { PlantillasModule } from './modules/plantillas/plantillas.module';
 import { HistorialEnviosModule } from './modules/historial-envios/historial-envios.module';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { ClasificacionLeadsModule } from './modules/clasificacion-leads/clasificacion-leads.module';
+import { PlantillasCampaniasModule } from './modules/plantillas-campanias/plantillas-campanias.module';
 
 import { BullModule } from '@nestjs/bullmq';
 
@@ -63,6 +64,7 @@ import { BullModule } from '@nestjs/bullmq';
         HistorialEnviosModule,
         TasksModule,
         ClasificacionLeadsModule,
+        PlantillasCampaniasModule,
     ],
     controllers: [],
     providers: [],

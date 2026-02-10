@@ -36,6 +36,10 @@ export class Prospecto {
     @Column({ type: 'json', nullable: true })
     json_data: any; // Data cruda extra
 
+    // Contador de campañas enviadas para estadísticas
+    @Column({ name: 'contador_campanias', default: 0 })
+    contadorCampanias: number;
+
     @ManyToOne(() => Lead, (lead) => lead.prospectos)
     @JoinColumn({ name: 'id_lead' })
     lead: Lead;

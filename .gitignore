@@ -21,3 +21,4 @@ yarn-error.log*
 .env.development
 
 storage/inbox
+storage/multimedia/campaigns

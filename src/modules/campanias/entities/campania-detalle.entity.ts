@@ -10,8 +10,8 @@ export enum EstadoCampaniaDetalle {
 }
 
 @Entity('tbl_campania_detalles')
-@Index(['campaniaId', 'telefono']) // Índice para búsquedas rápidas
-@Index(['campaniaId', 'estado'])   // Índice para estadísticas
+@Index(['campaniaId', 'telefono']) 
+@Index(['campaniaId', 'estado'])  
 export class CampaniaDetalle {
     @PrimaryGeneratedColumn()
     id: number;
@@ -47,6 +47,16 @@ export class CampaniaDetalle {
 
     @Column({ name: 'url_multimedia', nullable: true })
     urlMultimedia: string;
+
+    // Relación con Lead y Prospecto
+    @Column({ name: 'lead_id', nullable: true })
+    leadId: number;
+
+    @Column({ name: 'prospecto_id', nullable: true })
+    prospectoId: number;
+
+    @Column({ name: 'clasificacion_lead', nullable: true })
+    clasificacionLead: string;
 
     @Column({ name: 'error_log', type: 'text', nullable: true })
     errorLog: string;

@@ -42,7 +42,9 @@ export class WebhookService implements OnModuleInit {
         try {
             const token = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
             const phoneId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
-            const businessId = this.configService.get<string>('META_BUSINESS_ACCOUNT_ID');
+            // Soporte para ambas variables de entorno
+            const businessId = this.configService.get<string>('WHATSAPP_BUSINESS_ID') ||
+                this.configService.get<string>('META_BUSINESS_ACCOUNT_ID');
             const appId = this.configService.get<string>('META_APP_ID');
             const verifyToken = this.configService.get<string>('WHATSAPP_WEBHOOK_VERIFY_TOKEN');
             const codigoEmpresa = 1; // Default para MVP
