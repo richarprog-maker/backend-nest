@@ -18,6 +18,9 @@ export class Lead {
     @Column({ nullable: true })
     apellido: string;
 
+    @Column({ name: 'nombre_meta', nullable: true })
+    nombreMeta: string;
+
     @Column({ name: 'telefono_principal' })
     telefono: string;
 

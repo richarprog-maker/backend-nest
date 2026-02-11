@@ -77,6 +77,7 @@ export class PromptService {
 
         const campos: string[] = [];
 
+        // Solo pasar nombre REAL del cliente (no el de WhatsApp/Meta)
         if (lead.nombre) campos.push(`- Nombre: ${lead.nombre}`);
         if (lead.apellido) campos.push(`- Apellido: ${lead.apellido}`);
         if (lead.dni) campos.push(`- DNI: ${lead.dni}`);
@@ -86,9 +87,14 @@ export class PromptService {
         if (lead.pais) campos.push(`- País: ${lead.pais}`);
         if (lead.direccion) campos.push(`- Dirección: ${lead.direccion}`);
 
-        if (campos.length === 0) return '';
+        // Si no tiene nombre real, indicar que debe pedirlo
+        const necesitaNombre = !lead.nombre;
 
-        return `
+        if (campos.length === 0 && !necesitaNombre) return '';
+
+        let texto = '';
+        if (campos.length > 0) {
+            texto += `
 ## DATOS DEL CLIENTE (YA RECOPILADOS)
 Los siguientes datos ya están en nuestro sistema. NO VUELVAS A PEDIRLOS:
 
@@ -99,6 +105,18 @@ ${campos.join('\n')}
 - Solo pide datos que NO aparecen en esta lista.
 - Si un dato está vacío o no aparece, SÍ puedes preguntarlo.
 `;
+        }
+
+        if (necesitaNombre) {
+            texto += `
+## NOMBRE DEL CLIENTE PENDIENTE
+- El cliente AÚN NO ha proporcionado su nombre real.
+- Cuando llegues al paso de recopilar datos personales, PIDE su nombre completo.
+- NO asumas ningún nombre. Pregúntale directamente cómo se llama.
+`;
+        }
+
+        return texto;
     }
 
     private buildInfoCita(cita?: Cita): string {

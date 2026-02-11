@@ -17,15 +17,23 @@ export class CitasService {
         return this.citaRepo.save(nuevaCita);
     }
 
-    async existeCitaEnHorario(fecha: string, hora: string, codigoEmpresa: number): Promise<boolean> {
-        const count = await this.citaRepo.count({
-            where: {
-                fechaCita: fecha,
-                horaCita: hora,
-                codigoEmpresa,
-                estadoCita: 'pendiente' // Solo validamos contra pendientes o confirmadas, no canceladas
-            }
-        });
+    /**
+     * Verifica si existe una cita en el horario especificado
+     * @param excludeLeadUuid - UUID del lead a excluir de la validación (útil para reagendamiento)
+     */
+    async existeCitaEnHorario(fecha: string, hora: string, codigoEmpresa: number, excludeLeadUuid?: string): Promise<boolean> {
+        const query = this.citaRepo.createQueryBuilder('cita')
+            .where('cita.fechaCita = :fecha', { fecha })
+            .andWhere('cita.horaCita = :hora', { hora })
+            .andWhere('cita.codigoEmpresa = :codigoEmpresa', { codigoEmpresa })
+            .andWhere('cita.estadoCita IN (:...estados)', { estados: ['pendiente', 'confirmada'] });
+
+        // Excluir citas del mismo lead si se especifica
+        if (excludeLeadUuid) {
+            query.andWhere('cita.leadUuid != :leadUuid', { leadUuid: excludeLeadUuid });
+        }
+
+        const count = await query.getCount();
         return count > 0;
     }
 

@@ -37,6 +37,7 @@ export class ProspectosService {
                 'p.fecha_registro as fecha_registro',
                 'l.uuid as lead_uuid',
                 'l.nombre as nombre_lead',
+                'l.nombre_meta as nombre_meta_lead',
                 'l.apellido as apellido_lead',
                 'l.telefono_principal as telefono',
                 'l.email as email',
@@ -74,7 +75,7 @@ export class ProspectosService {
         // Filtro de búsqueda
         if (query.search) {
             qb.andWhere(
-                '(l.nombre LIKE :s OR l.apellido LIKE :s OR l.telefono_principal LIKE :s OR l.email LIKE :s)',
+                '(l.nombre LIKE :s OR l.nombre_meta LIKE :s OR l.apellido LIKE :s OR l.telefono_principal LIKE :s OR l.email LIKE :s)',
                 { s: `%${query.search}%` }
             );
         }
@@ -123,7 +124,7 @@ export class ProspectosService {
 
         if (query.search) {
             countQb.andWhere(
-                '(l.nombre LIKE :s OR l.apellido LIKE :s OR l.telefono_principal LIKE :s OR l.email LIKE :s)',
+                '(l.nombre LIKE :s OR l.nombre_meta LIKE :s OR l.apellido LIKE :s OR l.telefono_principal LIKE :s OR l.email LIKE :s)',
                 { s: `%${query.search}%` }
             );
         }
@@ -178,8 +179,8 @@ export class ProspectosService {
                 origen: row.origen_dato,
                 contactado: row.estado_gestion,
 
-                // Datos Persona
-                nombrePersona: row.nombre_lead,
+                // Datos Persona (prioridad: nombre real > nombre de WhatsApp)
+                nombrePersona: row.nombre_lead || row.nombre_meta_lead || null,
                 apellido: row.apellido_lead,
                 dni: row.dni,
                 celular: row.telefono,
@@ -275,7 +276,9 @@ export class ProspectosService {
                 lead: {
                     id: lead.id,
                     uuid: lead.uuid,
-                    nombre: lead.nombre,
+                    nombre: lead.nombre || lead.nombreMeta || null,
+                    nombreReal: lead.nombre || null,
+                    nombreMeta: lead.nombreMeta || null,
                     apellido: lead.apellido,
                     telefono: lead.telefono,
                     email: lead.email,
@@ -298,7 +301,7 @@ export class ProspectosService {
                 })),
                 citas: citas.map(c => ({
                     id: c.id,
-                    fecha: c.fechaCita,
+                    fecha: c.fechaCita, // Ya viene formateado por el transformer de la entidad
                     hora: c.horaCita,
                     tipo: c.tipoCita,
                     estado: c.estadoCita,

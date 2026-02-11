@@ -61,6 +61,8 @@ export class ToolsExecutionService {
         return null;
     }
 
+
+
     /**
      * Actualiza datos del lead SOLO si los campos están vacíos
      * Previene sobrescribir información existente
@@ -89,14 +91,16 @@ export class ToolsExecutionService {
                 return;
             }
 
-            // 2. Construir objeto de actualización solo con campos vacíos
+            // 2. Construir objeto de actualización
+            // nombre/apellido: siempre sobrescribir si viene dato nuevo (nombre real del cliente)
+            // dni/email: solo si está vacío (previene sobrescritura accidental)
             const updateData: any = {};
 
-            if (datos.nombre && !lead.nombre) {
+            if (datos.nombre) {
                 updateData.nombre = datos.nombre.trim();
             }
 
-            if (datos.apellido && !lead.apellido) {
+            if (datos.apellido) {
                 updateData.apellido = datos.apellido.trim();
             }
 
@@ -196,37 +200,33 @@ ${precioStr}
         }
     }
 
-    async agendarCita(params: any, codigoEmpresa: number, leadUuid: string) {
-        this.logger.log(`Intentando agendar cita: ${JSON.stringify(params)}`);
-
-        const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, email, unidad_interes, dormitorios, precio_referencial } = params;
-
-        // Validar y normalizar tipo de cita (PRESENCIAL por defecto)
-        const tipoCitaNormalizado = tipo_cita?.toUpperCase() === 'VIRTUAL' ? 'VIRTUAL' : 'PRESENCIAL';
-
-        // === VALIDACIONES DE FECHA Y HORA ===
+    /**
+     * Valida fecha y hora para agendamiento de citas
+     * Retorna objeto con {valid: boolean, mensaje?: string}
+     */
+    private validarFechaHoraCita(fecha_cita: string, hora_cita: string): { valid: boolean; mensaje?: string } {
         const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
         const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
 
         // 1. Validar que la fecha no sea pasada
         if (fecha_cita < hoyISO) {
             return {
-                success: false,
+                valid: false,
                 mensaje: `La fecha ${fecha_cita} ya pasó. Solo puedo agendar citas para hoy o fechas futuras.`
             };
         }
 
-        // 2. Si es hoy, validar que la hora no haya pasado
+        // 2. Si es hoy, validar que la hora no haya pasado (margen de 0 min)
         if (fecha_cita === hoyISO) {
             const horaActualMin = ahoraPeru.getHours() * 60 + ahoraPeru.getMinutes();
             const [hCita, mCita] = hora_cita.split(':').map(Number);
             const horaCitaMin = hCita * 60 + mCita;
 
-            if (horaCitaMin <= horaActualMin) {
+            if (horaCitaMin < horaActualMin) {
                 const horaActualStr = `${String(ahoraPeru.getHours()).padStart(2, '0')}:${String(ahoraPeru.getMinutes()).padStart(2, '0')}`;
                 return {
-                    success: false,
-                    mensaje: `La hora ${hora_cita} ya pasó (son las ${horaActualStr}). Por favor elige una hora posterior.`
+                    valid: false,
+                    mensaje: `La hora ${hora_cita} ya pasó (ahora son las ${horaActualStr}). Elige una hora a partir de las ${horaActualStr} en adelante.`
                 };
             }
         }
@@ -239,37 +239,52 @@ ${precioStr}
 
         if (minutosDelDia < HORA_APERTURA || minutosDelDia >= HORA_CIERRE) {
             return {
-                success: false,
+                valid: false,
                 mensaje: `El horario de atención es de 10:00 a.m. a 7:00 p.m. La hora ${hora_cita} está fuera de horario. ¿Podrías elegir otro horario dentro de ese rango?`
             };
         }
 
+        return { valid: true };
+    }
+
+    async agendarCita(params: any, codigoEmpresa: number, leadUuid: string) {
+        this.logger.log(`Intentando agendar cita: ${JSON.stringify(params)}`);
+
+        const { fecha_cita, hora_cita, nombre_proyecto, tipo_cita, email, unidad_interes, dormitorios, precio_referencial } = params;
+
+        // Validar y normalizar tipo de cita (PRESENCIAL por defecto)
+        const tipoCitaNormalizado = tipo_cita?.toUpperCase() === 'VIRTUAL' ? 'VIRTUAL' : 'PRESENCIAL';
+
+        // === VALIDACIONES DE FECHA Y HORA ===
+        const validacion = this.validarFechaHoraCita(fecha_cita, hora_cita);
+        if (!validacion.valid) {
+            return { success: false, mensaje: validacion.mensaje };
+        }
+
+        // Actualizar email si lo proporciona
         if (email && leadUuid && codigoEmpresa) {
             await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { email });
         }
 
-        // 0. Validar si ya tiene una cita ACTIVA
+        // Validar si ya tiene una cita ACTIVA FUTURA
         const ultimaCita = await this.citasService.obtenerUltimaCitaPorLead(leadUuid, codigoEmpresa);
 
         if (ultimaCita) {
             const fechaCitaExistente = new Date(`${ultimaCita.fechaCita}T${ultimaCita.horaCita}`);
             const ahora = new Date();
-
-            // Si la fecha de la cita existente es MAYOR a la fecha actual (futuro)
-            // Y su estado NO es cancelada ni realizada
             const citaEsFutura = fechaCitaExistente > ahora;
             const citaEsActiva = ultimaCita.estadoCita === 'pendiente' || ultimaCita.estadoCita === 'confirmada';
 
             if (citaEsActiva && citaEsFutura) {
                 return {
                     success: false,
-                    mensaje: `Ya tienes una cita programada para el ${ultimaCita.fechaCita} a las ${ultimaCita.horaCita}. Si deseas reagendarla, primero debemos cancelar la anterior o coordinar el cambio.`
+                    mensaje: `Ya tienes una cita programada para el ${ultimaCita.fechaCita} a las ${ultimaCita.horaCita}. Si deseas reagendarla, dime la nueva fecha y hora.`
                 };
             }
         }
 
-        // 1. Validar disponibilidad (básico)
-        const ocupado = await this.citasService.existeCitaEnHorario(fecha_cita, hora_cita, codigoEmpresa);
+        // Validar disponibilidad del horario (excluyendo al mismo lead)
+        const ocupado = await this.citasService.existeCitaEnHorario(fecha_cita, hora_cita, codigoEmpresa, leadUuid);
 
         if (ocupado) {
             return {
@@ -284,26 +299,24 @@ ${precioStr}
         if (dormitorios) observacion += ` | Dorms: ${dormitorios}`;
         if (precio_referencial) observacion += ` | Precio: S/${precio_referencial}`;
 
-        // 2. Crear Cita
+        // Crear Cita
         await this.citasService.crearCita({
             codigoEmpresa,
-            leadUuid: leadUuid, // UUID del prospecto
+            leadUuid: leadUuid,
             fechaCita: fecha_cita,
             horaCita: hora_cita,
-            tipoCita: tipoCitaNormalizado, // PRESENCIAL o VIRTUAL
+            tipoCita: tipoCitaNormalizado,
             observacion: observacion,
             estadoCita: 'pendiente'
         });
 
-        // 3. Actualizar Estado Sesion y Clasificacion
+        // Actualizar Estado Sesion y Clasificacion
         try {
             const sesion = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
             if (sesion) {
-                // Actualizar a estado 2 (convertido/cita)
-                sesion.idEstado = 2; // TODO: Usar Enum si existe
+                sesion.idEstado = 2;
                 await this.sesionRepo.save(sesion);
 
-                // Insertar Historial Clasificacion
                 const historial = this.clasificacionRepo.create({
                     idSesion: sesion.id,
                     clasificacion: 'alto',
@@ -314,7 +327,6 @@ ${precioStr}
             }
         } catch (err) {
             this.logger.error(`[AgendarCita] Error actualizando clasificacion: ${err.message}`);
-            // No bloqueamos el retorno de exito de la cita
         }
 
         const tipoTexto = tipoCitaNormalizado === 'VIRTUAL' ? 'videollamada virtual' : 'visita presencial';
@@ -328,27 +340,31 @@ ${precioStr}
      * Reagenda una cita existente - Solo actualiza lo que el cliente quiere cambiar
      */
     async reagendarCita(params: any, codigoEmpresa: number, leadUuid: string) {
-        this.logger.log(`Reagendando cita: ${JSON.stringify(params)}`);
+        this.logger.log(`[ReagendarCita] Params: ${JSON.stringify(params)}`);
 
         const { tipo_cita_nuevo, fecha_nueva, hora_nueva, motivo_cambio } = params;
 
-        // 1. Obtener cita actual
+        // 1. VALIDACIÓN CRÍTICA: Obtener cita actual
         const citaActual = await this.citasService.obtenerUltimaCitaPorLead(leadUuid, codigoEmpresa);
 
         if (!citaActual) {
+            this.logger.error(`[ReagendarCita] ERROR: No existe cita previa para lead ${leadUuid}`);
             return {
                 success: false,
-                mensaje: "No encontré una cita agendada. ¿Quieres agendar una nueva?"
+                mensaje: "ERROR INTERNO: No puedes reagendar porque NO TIENES ninguna cita agendada. Esta herramienta solo se usa cuando YA existe una cita."
             };
         }
 
-        // 2. Validar estado
+        // 2. Validar estado de la cita
         if (citaActual.estadoCita === 'cancelada' || citaActual.estadoCita === 'realizada') {
+            this.logger.warn(`[ReagendarCita] Cita ya está ${citaActual.estadoCita}`);
             return {
                 success: false,
-                mensaje: `La cita está ${citaActual.estadoCita}. ¿Quieres agendar una nueva?`
+                mensaje: `Tu cita anterior está ${citaActual.estadoCita}. Si quieres, puedo agendar una nueva.`
             };
         }
+
+        this.logger.log(`[ReagendarCita] Cita actual encontrada: ${citaActual.fechaCita} ${citaActual.horaCita}`);
 
         // 3. Preparar datos a actualizar (solo lo que cambió)
         const datosActualizacion: any = {};
@@ -363,76 +379,50 @@ ${precioStr}
             }
         }
 
-        // Fecha
-        if (fecha_nueva) {
-            const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-            const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
+        const fechaFinal = fecha_nueva || citaActual.fechaCita;
+        const horaFinal = hora_nueva || citaActual.horaCita;
 
-            if (fecha_nueva < hoyISO) {
-                return {
-                    success: false,
-                    mensaje: `La fecha ${fecha_nueva} ya pasó. Elige una fecha de hoy o futura.`
-                };
-            }
-
-            // Si es hoy, validar que la hora no haya pasado
-            const horaParaValidar = hora_nueva || citaActual.horaCita;
-            if (fecha_nueva === hoyISO) {
-                const horaActualMin = ahoraPeru.getHours() * 60 + ahoraPeru.getMinutes();
-                const [hC, mC] = horaParaValidar.split(':').map(Number);
-                if (hC * 60 + mC <= horaActualMin) {
-                    return {
-                        success: false,
-                        mensaje: `La hora ${horaParaValidar} ya pasó para hoy. Elige una hora posterior.`
-                    };
-                }
-            }
-
-            datosActualizacion.fechaCita = fecha_nueva;
-            cambios.push(`fecha a ${fecha_nueva}`);
-        }
-
-        // Hora
-        if (hora_nueva) {
-            // Validar horario de atención: 10:00 a 19:00
-            const [hN, mN] = hora_nueva.split(':').map(Number);
-            const minutosDia = hN * 60 + mN;
-            if (minutosDia < 600 || minutosDia >= 1140) {
-                return {
-                    success: false,
-                    mensaje: `El horario de atención es de 10:00 a.m. a 7:00 p.m. La hora ${hora_nueva} está fuera de horario.`
-                };
-            }
-
-            datosActualizacion.horaCita = hora_nueva;
-            cambios.push(`hora a ${hora_nueva}`);
-        }
-
-        // Validar disponibilidad si cambia fecha u hora
         if (fecha_nueva || hora_nueva) {
-            const fechaFinal = fecha_nueva || citaActual.fechaCita;
-            const horaFinal = hora_nueva || citaActual.horaCita;
+            const validacion = this.validarFechaHoraCita(fechaFinal, horaFinal);
+            if (!validacion.valid) {
+                return { success: false, mensaje: validacion.mensaje };
+            }
 
-            const ocupado = await this.citasService.existeCitaEnHorario(fechaFinal, horaFinal, codigoEmpresa);
+            const ocupado = await this.citasService.existeCitaEnHorario(fechaFinal, horaFinal, codigoEmpresa, leadUuid);
             if (ocupado) {
                 return {
                     success: false,
                     mensaje: `El horario ${horaFinal} del ${fechaFinal} ya está ocupado. Elige otro.`
                 };
             }
+
+            if (fecha_nueva) {
+                datosActualizacion.fechaCita = fecha_nueva;
+                cambios.push(`fecha a ${fecha_nueva}`);
+            }
+            if (hora_nueva) {
+                datosActualizacion.horaCita = hora_nueva;
+                cambios.push(`hora a ${hora_nueva}`);
+            }
         }
 
-        // Actualizar observación
         if (motivo_cambio) {
-            datosActualizacion.observacion = `${citaActual.observacion || ''} | ${motivo_cambio}`.trim();
+            const obsBase = citaActual.observacion?.split(' | Reagendada:')[0] || citaActual.observacion || '';
+            datosActualizacion.observacion = `${obsBase} | Reagendada: ${motivo_cambio}`.trim();
         }
 
-        // 4. Actualizar en BD
+        // Si no hay cambios reales, no hacer nada
+        if (Object.keys(datosActualizacion).length === 0) {
+            this.logger.log(`[ReagendarCita] No hay cambios que realizar`);
+            return {
+                success: true,
+                mensaje: `Tu cita ya está programada para el ${fechaFinal} a las ${horaFinal}. No hay cambios que realizar.`
+            };
+        }
+
+        this.logger.log(`[ReagendarCita] Actualizando cita ID ${citaActual.id} con: ${JSON.stringify(datosActualizacion)}`);
         await this.citasService.reagendarCita(citaActual.id, datosActualizacion);
 
-        // 5. Preparar respuesta
-        const fechaFinal = fecha_nueva || citaActual.fechaCita;
-        const horaFinal = hora_nueva || citaActual.horaCita;
         const tipoFinal = datosActualizacion.tipoCita || citaActual.tipoCita;
         const tipoTexto = tipoFinal === 'VIRTUAL' ? 'virtual' : 'presencial';
 
@@ -722,7 +712,10 @@ RESPUESTA PRECISA:`);
         try {
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
 
-            //  Actualizar lead en BD con nombre completo (solo si está vacío)
+            const ocupacionCorregida = this.corregirOcupacion(params.ocupacion);
+            const ingresosFormateados = this.formatearMonto(params.ingresos);
+            const precioFormateado = this.formatearMonto(params.precio);
+
             if (params.leadUuid && params.codigoEmpresa && params.nombre_cliente) {
                 const nombreCompleto = params.nombre_cliente.trim();
                 const partes = nombreCompleto.split(' ');
@@ -738,13 +731,13 @@ RESPUESTA PRECISA:`);
                 await this.actualizarLeadSeguro(params.leadUuid, params.codigoEmpresa, datos);
             }
 
-            // Capturar datos del cliente en el resumen
+            // Capturar datos del cliente en el resumen (con ocupación corregida)
             if (params.leadUuid && params.codigoEmpresa) {
                 const puntos: string[] = [];
-                if (params.ocupacion) puntos.push(`Ocupación: ${params.ocupacion}`);
-                if (params.ingresos) puntos.push(`Ingresos mensuales: ${params.ingresos}`);
+                if (ocupacionCorregida) puntos.push(`Ocupación: ${ocupacionCorregida}`);
+                if (params.ingresos) puntos.push(`Ingresos mensuales: ${ingresosFormateados}`);
                 if (params.unidad && params.precio) {
-                    puntos.push(`Cotizó unidad ${params.unidad} (${params.dormitorios || '?'} dorms, ${params.precio})`);
+                    puntos.push(`Cotizó unidad ${params.unidad} (${params.dormitorios || '?'} dorms, ${precioFormateado})`);
                 }
 
                 if (puntos.length > 0) {
@@ -752,22 +745,20 @@ RESPUESTA PRECISA:`);
                 }
             }
 
-            // Construir resumen formateado
-            const resumen = `📝 RESUMEN DE TU COTIZACIÓN\n\n` +
+            // Construir resumen formateado (sin emojis)
+            const resumen = `RESUMEN DE TU COTIZACION\n\n` +
                 `DATOS DEL CLIENTE:\n` +
                 `. Nombre: ${params.nombre_cliente || 'N/A'}\n` +
                 `. DNI: ${params.dni || 'N/A'}\n` +
-                `. Ocupación: ${params.ocupacion || 'N/A'}\n` +
-                `. Ingresos: ${params.ingresos || 'N/A'}\n\n` +
+                `. Ocupación: ${ocupacionCorregida || 'N/A'}\n` +
+                `. Ingresos: ${ingresosFormateados}\n\n` +
                 `DETALLES DEL DEPARTAMENTO:\n` +
                 `. Unidad: ${params.unidad || 'N/A'}\n` +
                 `. Dormitorios: ${params.dormitorios || 'N/A'}\n` +
                 `. Área: ${params.area || 'N/A'}\n` +
                 `. Piso: ${params.piso || 'N/A'}\n` +
-                `. Precio: ${params.precio || 'N/A'}\n\n`;
+                `. Precio: ${precioFormateado}\n\n`;
 
-            // Enviar mensaje por WhatsApp si hay teléfono
-            // Enviar mensaje por WhatsApp si hay teléfono
             if (params.phoneNumber && params.codigoEmpresa) {
                 const response: any = await this.wapiService.sendMessage(params.codigoEmpresa, params.phoneNumber, resumen);
                 this.logger.log(`Proforma enviada a ${params.phoneNumber}`);
@@ -1238,21 +1229,32 @@ RESPUESTA PRECISA:`);
 
         let precioTexto = '';
         if (mostrarPromos && pPromo && pPromo < pList) {
-            // Mostrar ambos precios: lista tachada y promo destacada
-            precioTexto = `S/${pList.toLocaleString('es-PE')} -> **S/${pPromo.toLocaleString('es-PE')}** (Precio de oferta)`;
+            precioTexto = `Precio lista: S/${pList.toLocaleString('es-PE')} | Precio oferta: S/${pPromo.toLocaleString('es-PE')}`;
         } else {
             precioTexto = `S/${pList.toLocaleString('es-PE')}`;
         }
 
-        return `[ACCION_COMPLETADA] **Unidad ${m.unit_number}**\n` +
-            `- Tipo: ${m.unit_type} (${m.typology || 'Standard'})\n` +
-            `- Piso: ${m.floor}\n` +
-            `- Dormitorios: ${m.bedrooms}\n` +
-            `- Area: ${m.area_total}m2\n` +
-            `- Vista: ${m.view}\n` +
-            `- Precio: ${precioTexto}\n` +
-            `- Disponibilidad: ${m.availability}\n\n` +
-            `Para separar esta unidad, necesito tu DNI y nombre completo.`;
+        // Construir detalle completo con TODOS los campos disponibles
+        const detalles: string[] = [
+            `[ACCION_COMPLETADA] **Unidad ${m.unit_number}**`,
+            `- Proyecto: ${m.project_name || 'Residencial Los Lirios'}`,
+            `- Tipo: ${m.unit_type || 'Departamento'} (${m.typology || 'Standard'})`,
+            `- Piso: ${m.floor}`,
+            `- Dormitorios: ${m.bedrooms}`,
+            `- Area total: ${m.area_total}m2`,
+            `- Vista: ${m.view}`,
+            `- Precio: ${precioTexto}`,
+            `- Disponibilidad: ${m.availability || 'Disponible'}`,
+        ];
+
+        if (m.bathrooms) detalles.push(`- Banos: ${m.bathrooms}`);
+        if (m.parking) detalles.push(`- Estacionamiento: ${m.parking}`);
+        if (m.storage) detalles.push(`- Deposito: ${m.storage}`);
+
+        detalles.push('');
+        detalles.push('Ya se envio el plano al cliente. Muestra TODOS los datos de arriba en tu respuesta y continua con el flujo de venta.');
+
+        return detalles.join('\n');
     }
 
     private async enviarPlanoSiCorresponde(m: any, params: any) {
@@ -1644,5 +1646,73 @@ RESPUESTA PRECISA:`);
                 mensaje: "Disculpa las molestias. Entendido, no te contactaremos más."
             };
         }
+    }
+
+    /**
+     * Corrige errores ortográficos comunes en profesiones/ocupaciones
+     */
+    private corregirOcupacion(ocupacion: string): string {
+        if (!ocupacion) return ocupacion;
+        const texto = ocupacion.trim();
+        const correcciones: Record<string, string> = {
+            'ingeniro': 'Ingeniero', 'ingenero': 'Ingeniero', 'injeniero': 'Ingeniero',
+            'injniero': 'Ingeniero', 'ingeniro de sistemas': 'Ingeniero de Sistemas',
+            'ingeniero de sistemas': 'Ingeniero de Sistemas', 'ing de sistemas': 'Ingeniero de Sistemas',
+            'ing sistemas': 'Ingeniero de Sistemas', 'ing civil': 'Ingeniero Civil',
+            'ingeniro civil': 'Ingeniero Civil', 'ingeniero civil': 'Ingeniero Civil',
+            'abogdo': 'Abogado', 'abogda': 'Abogada', 'avogado': 'Abogado',
+            'contador': 'Contador', 'contadora': 'Contadora', 'comtador': 'Contador',
+            'arquitecto': 'Arquitecto', 'arquitecta': 'Arquitecta', 'arqutecto': 'Arquitecto',
+            'doctor': 'Doctor', 'doctora': 'Doctora', 'dotor': 'Doctor',
+            'enfermera': 'Enfermera', 'enfermero': 'Enfermero', 'emfermera': 'Enfermera',
+            'profesor': 'Profesor', 'profesora': 'Profesora', 'profsor': 'Profesor',
+            'policia': 'Policía', 'polisia': 'Policía',
+            'administrador': 'Administrador', 'administradora': 'Administradora', 'aministrador': 'Administrador',
+            'economista': 'Economista', 'econmista': 'Economista',
+            'comerciante': 'Comerciante', 'comersiante': 'Comerciante',
+            'independiente': 'Independiente', 'indepediente': 'Independiente', 'independente': 'Independiente',
+            'empresario': 'Empresario', 'empresaria': 'Empresaria', 'enpresario': 'Empresario',
+            'mecanico': 'Mecánico', 'mecanica': 'Mecánica',
+            'tecnico': 'Técnico', 'tecnica': 'Técnica', 'tecnco': 'Técnico',
+            'vendedor': 'Vendedor', 'vendedora': 'Vendedora',
+            'militar': 'Militar', 'miltiar': 'Militar',
+            'chofer': 'Chofer', 'choffer': 'Chofer',
+            'psicologo': 'Psicólogo', 'psicologa': 'Psicóloga', 'sicologo': 'Psicólogo',
+            'nutricionista': 'Nutricionista', 'nutriscionista': 'Nutricionista',
+            'diseñador': 'Diseñador', 'diseñadora': 'Diseñadora',
+            'programador': 'Programador', 'programadora': 'Programadora',
+            'obrero': 'Obrero', 'obrera': 'Obrera',
+            'secretaria': 'Secretaria', 'secretario': 'Secretario',
+            'biologo': 'Biólogo', 'biologa': 'Bióloga',
+            'dentista': 'Dentista', 'demtista': 'Dentista',
+        };
+
+        const textoLower = texto.toLowerCase();
+
+        // Buscar match exacto
+        if (correcciones[textoLower]) {
+            return correcciones[textoLower];
+        }
+
+        // Buscar match parcial (ej: "ingeniro de sistemas" -> buscar "ingeniro")
+        for (const [error, correccion] of Object.entries(correcciones)) {
+            if (textoLower.includes(error)) {
+                return texto.replace(new RegExp(error, 'i'), correccion);
+            }
+        }
+
+        // Si no hay match, capitalizar primera letra de cada palabra
+        return texto.replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    /**
+     * Formatea un monto numérico a formato legible con separadores
+     * Ej: 5000 -> "S/ 5,000" | 713600 -> "S/ 713,600"
+     */
+    private formatearMonto(valor: string | number | undefined): string {
+        if (!valor) return 'N/A';
+        const num = typeof valor === 'string' ? parseFloat(valor.replace(/[^\d.]/g, '')) : valor;
+        if (isNaN(num)) return String(valor);
+        return `S/ ${num.toLocaleString('es-PE')}`;
     }
 }

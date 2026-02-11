@@ -38,7 +38,7 @@ export class InboxService {
                 .select([
                     'mensaje.lead_uuid AS leadUuid',
                     'lead.telefono AS numeroTelefono',
-                    'lead.nombre AS nombre',
+                    'COALESCE(lead.nombre, lead.nombre_meta) AS nombre',
                     'lead.apellido AS apellido',
                     'lead.email AS email',
                     'mensaje.contenido AS ultimoMensajeContenido',
@@ -77,7 +77,7 @@ export class InboxService {
             // 3. Apply Filters
             if (search) {
                 query.andWhere(
-                    '(lead.nombre LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(lead.nombre, " ", lead.apellido) LIKE :search)',
+                    '(lead.nombre LIKE :search OR lead.nombre_meta LIKE :search OR lead.apellido LIKE :search OR lead.telefono LIKE :search OR CONCAT(COALESCE(lead.nombre, lead.nombre_meta, \'\'), " ", COALESCE(lead.apellido, \'\')) LIKE :search)',
                     { search: `%${search}%` }
                 );
             }
@@ -103,7 +103,7 @@ export class InboxService {
 
             if (search) {
                 totalQuery.andWhere(
-                    '(l.nombre LIKE :search OR l.apellido LIKE :search OR l.telefono LIKE :search OR CONCAT(l.nombre, " ", l.apellido) LIKE :search)',
+                    '(l.nombre LIKE :search OR l.nombre_meta LIKE :search OR l.apellido LIKE :search OR l.telefono LIKE :search OR CONCAT(COALESCE(l.nombre, l.nombre_meta, \'\'), " ", COALESCE(l.apellido, \'\')) LIKE :search)',
                     { search: `%${search}%` }
                 );
             }

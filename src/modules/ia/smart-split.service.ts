@@ -17,19 +17,35 @@ Tu misión es recibir un texto y dividirlo en "burbujas" (mensajes separados) pa
 - NO agregues saludos ("Hola", "Buenos días", "Espero que estés bien", etc.)
 - NO agregues emojis que no estén en el original
 - NO agregues frases de cortesía ("Claro", "Por supuesto", etc.) si no están
-- SOLO divide el texto existente, NUNCA lo modifiques ni le añadas nada
+- SOLO divide el texto existente, NUNCA lo modifices ni le añadas nada
 
 # REGLAS PARA DIVIDIR:
 1.  **Separa la pregunta final o CTA**. La última frase que invita al usuario a responder DEBE ir sola en su propia burbuja.
-2.  **MANTÉN LA LISTA DE UNIDADES/ITEMS EN UN SOLO MENSAJE (CRÍTICO)**.
-    - Si hay opciones numeradas (1., 2., 3...) o con viñetas, DEBEN ir TODAS JUNTAS en el mismo bloque.
+
+2.  **MANTÉN LISTAS Y DETALLES JUNTOS (CRÍTICO - NUNCA SEPARES)**.
+    - Si hay opciones numeradas (1., 2., 3...), TODAS JUNTAS en el mismo bloque.
+    - Si hay viñetas con campos de datos (• Dormitorios:, • Área:, • Piso:, • Vista:, • Precio:, etc.), TODAS JUNTAS en el mismo bloque.
+    - JAMÁS separes "• Dormitorios: 2" en un mensaje y "• Área: 53m²" en otro.
     - JAMÁS separes "1. Unidad X" en un mensaje y "2. Unidad Y" en otro.
-    - El bloque de la lista debe incluir la frase introductoria si es corta (ej: "Aquí las opciones:").
+    - Si hay una frase introductoria corta antes de la lista (ej: "Esta es la información de la Unidad 606:"), inclúyela CON la lista en el mismo bloque.
+
 3.  Si el texto ya tiene un saludo, agrúpalo con la siguiente frase. Si NO tiene saludo, NO inventes uno.
+
 4.  El resultado debe contener EXACTAMENTE las mismas palabras que el texto original, solo dividido.
 
-# EJEMPLO (solo si el texto original YA contiene estas palabras):
-Texto original: "Ya te envié el brochure. Aquí están las opciones: 1. Unidad A 2. Unidad B. ¿Cuál prefieres?"
+# EJEMPLOS:
+Ejemplo 1 - Detalles con viñetas (MANTENER TODO JUNTO):
+Texto: "Esta es la información de la Unidad 606: • Dormitorios: 2 • Área total: 53.74 m² • Piso: 6 • Vista: interior • Precio: S/377,000. ¿Te gustaría avanzar con esta unidad?"
+json
+{
+  "messages": [
+    "Esta es la información de la Unidad 606:\\n• Dormitorios: 2\\n• Área total: 53.74 m²\\n• Piso: 6\\n• Vista: interior\\n• Precio: S/377,000.",
+    "¿Te gustaría avanzar con esta unidad?"
+  ]
+}
+
+Ejemplo 2 - Lista numerada (MANTENER TODO JUNTO):
+Texto: "Ya te envié el brochure. Aquí están las opciones: 1. Unidad A 2. Unidad B. ¿Cuál prefieres?"
 json
 {
   "messages": [
@@ -38,7 +54,6 @@ json
     "¿Cuál prefieres?"
   ]
 }
-
 `;
 
     constructor(private configService: ConfigService) {

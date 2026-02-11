@@ -24,7 +24,7 @@ export class AgentService {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    const temperature = isReasoningModel ? 1 : 0.4;
+    const temperature = isReasoningModel ? 1 : 0.7;
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
@@ -43,15 +43,15 @@ export class AgentService {
    * Cada tool es una función que el agente puede llamar
    */
   private initializeTools() {
-    // 1️ Agendar Cita
+    // 1️ Agendar Cita (Primera vez)
     const agendarCitaTool = new DynamicStructuredTool({
       name: 'agendar_cita',
-      description: 'Agenda una cita para visitar un proyecto inmobiliario. Retorna confirmación o error si el horario está ocupado.',
+      description: 'Agenda una cita por PRIMERA VEZ (NO tiene cita previa). Usa la fecha y hora EXACTA que el cliente solicita. Retorna confirmación o error si horario ocupado. NUNCA uses si ya tiene cita, usa reagendar_cita.',
       schema: z.object({
-        fecha_cita: z.string().describe('Fecha en formato YYYY-MM-DD'),
-        hora_cita: z.string().describe('Hora en formato HH:MM (24h)'),
+        fecha_cita: z.string().describe('Fecha EXACTA que pidió el cliente en formato YYYY-MM-DD'),
+        hora_cita: z.string().describe('Hora EXACTA que pidió el cliente en formato HH:MM (24h)'),
         nombre_proyecto: z.string().describe('Nombre del proyecto a visitar'),
-        tipo_cita: z.enum(['presencial', 'virtual']).describe('Tipo de visita'),
+        tipo_cita: z.enum(['presencial', 'virtual']).describe('Tipo de visita (presencial por defecto)'),
         email: z.string().optional().describe('Email del cliente para confirmación'),
         unidad_interes: z.string().optional().describe('Número de unidad que le interesó (Ej: 1702)'),
         dormitorios: z.number().optional().describe('Cantidad de dormitorios de interés'),
@@ -66,15 +66,15 @@ export class AgentService {
       },
     });
 
-    // 1.1️ Reagendar Cita
+    // 1.1️ Reagendar Cita (Ya tiene cita)
     const reagendarCitaTool = new DynamicStructuredTool({
       name: 'reagendar_cita',
-      description: 'Reagenda una cita EXISTENTE. USA cuando el cliente YA TIENE cita y quiere cambiar: tipo (presencial ↔ virtual), fecha u hora. Solo actualiza lo que pida cambiar.',
+      description: 'SOLO para MODIFICAR una cita EXISTENTE. CRÍTICO: Validará que exista cita previa y fallará si no existe. USA cuando cliente YA TIENE cita agendada y quiere cambiar tipo/fecha/hora. NUNCA uses junto con agendar_cita en la misma respuesta.',
       schema: z.object({
         tipo_cita_nuevo: z.enum(['PRESENCIAL', 'VIRTUAL']).optional().describe('Nuevo tipo solo si quiere cambiar'),
-        fecha_nueva: z.string().optional().describe('Nueva fecha YYYY-MM-DD solo si quiere cambiar'),
-        hora_nueva: z.string().optional().describe('Nueva hora HH:MM solo si quiere cambiar'),
-        motivo_cambio: z.string().describe('Descripción breve del cambio'),
+        fecha_nueva: z.string().optional().describe('Nueva fecha EXACTA YYYY-MM-DD solo si quiere cambiar'),
+        hora_nueva: z.string().optional().describe('Nueva hora EXACTA HH:MM solo si quiere cambiar'),
+        motivo_cambio: z.string().describe('Razón del cambio (ej: "Cliente prefiere horario de tarde")'),
       }),
       func: async (input, config) => {
         const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
@@ -100,12 +100,17 @@ export class AgentService {
     // 3️    Validar DNI
     const validarDniTool = new DynamicStructuredTool({
       name: 'validar_dni',
-      description: 'Valida que un DNI peruano sea válido (8 dígitos, no todo ceros).',
+      description: 'Valida que un DNI peruano sea válido (8 dígitos, no todo ceros) y lo guarda en el sistema.',
       schema: z.object({
         dni: z.string().length(8).describe('DNI de 8 dígitos'),
       }),
-      func: async (input) => {
-        const result = await this.toolsExecutionService.validarDni(input);
+      func: async (input, config) => {
+        const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.validarDni({
+          ...input,
+          leadUuid,
+          codigoEmpresa,
+        });
         return JSON.stringify(result);
       },
     });
@@ -356,6 +361,11 @@ REGLAS GENERALES:
       // Control de herramientas ejecutadas para evitar duplicados
       const accionesEjecutadas = new Set<string>();
 
+      const HERRAMIENTAS_EXCLUYENTES: Record<string, string[]> = {
+        'agendar_cita': ['reagendar_cita'],
+        'reagendar_cita': ['agendar_cita'],
+      };
+
       // Máximo de iteraciones para evitar loops infinitos
       const maxIteraciones = 5;
       let iteracion = 0;
@@ -409,6 +419,10 @@ REGLAS GENERALES:
           if (accionesEjecutadas.has(toolCall.name)) {
             this.logger.warn(`Tool ${toolCall.name} ya fue ejecutada, enviando mensaje de bloqueo`);
             toolResult = `[BLOQUEADO] La herramienta ${toolCall.name} ya fue ejecutada. Genera tu respuesta final con la información que ya tienes.`;
+          } else if (HERRAMIENTAS_EXCLUYENTES[toolCall.name]?.some(excl => accionesEjecutadas.has(excl))) {
+            const ejecutada = HERRAMIENTAS_EXCLUYENTES[toolCall.name].find(excl => accionesEjecutadas.has(excl));
+            this.logger.warn(`[BLOQUEO MUTUO] ${toolCall.name} bloqueada porque ${ejecutada} ya se ejecutó`);
+            toolResult = `[BLOQUEADO] No puedes usar ${toolCall.name} porque ya se ejecutó ${ejecutada}. Son herramientas mutuamente excluyentes. Usa la respuesta de ${ejecutada} para tu mensaje final.`;
           } else {
             try {
               // Encontrar tool

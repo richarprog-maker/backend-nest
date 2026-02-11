@@ -151,7 +151,8 @@ export class WebhookService implements OnModuleInit {
             lead = this.leadRepo.create({
                 codigoEmpresa,
                 telefono: from,
-                nombre: contact?.profile?.name || 'Lead WhatsApp',
+                nombreMeta: contact?.profile?.name || null,
+                // nombre queda vacío hasta que el cliente diga su nombre real
                 // UUID se genera automáticamente en la entidad
                 fechaRegistro: new Date(),
             });
