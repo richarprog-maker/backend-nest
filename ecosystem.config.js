@@ -3,7 +3,6 @@ module.exports = {
         {
             name: 'checor-backend',
             script: 'dist/src/main.js',
-            instances: 1,
             autorestart: true,
             watch: false,
             max_memory_restart: '1G',
@@ -16,7 +15,6 @@ module.exports = {
         {
             name: 'checor-tasks',
             script: 'dist/src/main.js',
-            instances: 1,
             autorestart: true,
             watch: false,
             max_memory_restart: '1G',
