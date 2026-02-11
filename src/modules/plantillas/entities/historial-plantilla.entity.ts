@@ -5,8 +5,8 @@ export class HistorialPlantillas {
     @PrimaryGeneratedColumn()
     id: number;
 
-    @Column({ name: 'lead_uid' })
-    leadUid: number; // User asked for int lead_uid, presumably referencing id_lead from tbl_leads, but we have uuid in session. Will need to resolve this.
+    @Column({ name: 'lead_id' })
+    leadUid: number;
 
     @Column({ name: 'plantilla_id' })
     plantillaId: number;

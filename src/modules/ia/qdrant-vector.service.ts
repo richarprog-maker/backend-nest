@@ -252,6 +252,7 @@ export class QdrantVectorService {
       pisoMax?: number;
       tipologia?: string;
       areaMin?: number;
+      tipoUnidad?: string;
     } = {},
     options: {
       limit?: number;
@@ -349,6 +350,13 @@ export class QdrantVectorService {
       conditions.push({
         key: 'metadata.area_total',
         range: { gte: filters.areaMin }
+      });
+    }
+
+    if (filters.tipoUnidad) {
+      conditions.push({
+        key: 'metadata.unit_type',
+        match: { value: filters.tipoUnidad }
       });
     }
 

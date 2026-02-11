@@ -808,6 +808,7 @@ RESPUESTA PRECISA:`);
         precio_min?: number;
         vista?: string;
         tipologia?: string;
+        tipo_unidad?: string;
         area_min?: number;
         preferencia_piso?: 'bajos' | 'altos';
         phoneNumber?: string;
@@ -835,6 +836,7 @@ RESPUESTA PRECISA:`);
                 if (params.precio_max) puntos.push(`Presupuesto maximo: S/${params.precio_max.toLocaleString('es-PE')}`);
                 if (params.vista) puntos.push(`Prefiere vista ${params.vista}`);
                 if (params.piso) puntos.push(`Interesado en piso ${params.piso}`);
+                if (params.tipo_unidad) puntos.push(`Busca tipo: ${params.tipo_unidad}`);
 
                 if (puntos.length > 0) {
                     await this.resumenService.agregarPuntos(params.leadUuid, params.codigoEmpresa, puntos);
@@ -969,7 +971,7 @@ RESPUESTA PRECISA:`);
                 return this.formatearRespuestaBusqueda(resultado.items, "Encontre estas opciones exactas para ti:");
             }
 
-            // INTENTO 2: Relajar filtros secundarios (Vista y Tipologia)
+            // INTENTO 2: Relajar filtros secundarios (Vista y Tipologia) - NUNCA relajar tipo_unidad
             this.logger.log(`${logPrefix} Intento 2: Relajando Vista y Tipologia`);
             const paramsRelaxed1 = { ...simpleParams };
             delete paramsRelaxed1.vista;
@@ -1021,7 +1023,8 @@ RESPUESTA PRECISA:`);
             // INTENTO 4: Fallback Final - Solo Dormitorios (Lo mas importante)
             if (dormsNumber !== undefined) {
                 this.logger.log(`${logPrefix} Intento 4: Solo Dormitorios`);
-                const paramsFinal = { dormitorios: dormsNumber };
+                const paramsFinal: any = { dormitorios: dormsNumber };
+                if (params.tipo_unidad) paramsFinal.tipo_unidad = params.tipo_unidad;
                 resultado = await this.ejecutarBusquedaQdrant(collectionName, paramsFinal, params.preferencia_piso);
 
                 if (resultado.ok && resultado.items.length > 0) {
@@ -1033,10 +1036,12 @@ RESPUESTA PRECISA:`);
 
             // INTENTO 5: Ultra-fallback - Listar todo sin filtros especificos (solo semantico)
             this.logger.log(`${logPrefix} Intento 5: Busqueda semantica sin filtros estrictos`);
+            const ultraFallbackFilters: any = {};
+            if (params.tipo_unidad) ultraFallbackFilters.tipoUnidad = params.tipo_unidad;
             const allResults = await this.qdrantVectorService.searchPropertiesWithFilters(
                 collectionName,
                 'departamento disponible',
-                {}, // SIN filtros
+                ultraFallbackFilters,
                 { limit: 10, threshold: 0.3, fallbackStrategy: 'none' }
             );
 
@@ -1119,6 +1124,7 @@ RESPUESTA PRECISA:`);
         if (params.precio_min !== undefined) filters.precioMin = params.precio_min;
         if (params.precio_max !== undefined) filters.precioMax = params.precio_max;
         if (params.vista) filters.vista = params.vista;
+        if (params.tipo_unidad) filters.tipoUnidad = params.tipo_unidad;
 
         if (params.tipologia) {
             let tipologiaNormalizada = params.tipologia.toString().trim();

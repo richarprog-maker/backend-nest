@@ -218,7 +218,7 @@ export class AgentService {
     // HERRAMIENTA UNIVERSAL: Busca departamentos por CUALQUIER criterio
     const buscarDepartamentoUniversalTool = new DynamicStructuredTool({
       name: 'buscar_departamento',
-      description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant). SI EL USUARIO PIDE VARIOS TIPOS (ej: "2 y 3 dormitorios"), ENVÍA UN ARRAY: [2, 3]. Busca por: unidad, dormitorios, piso, precio, cuota, vista, tipología, área. Retorna información COMPLETA y REAL.',
+      description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant). SI EL USUARIO PIDE VARIOS TIPOS (ej: "2 y 3 dormitorios"), ENVÍA UN ARRAY: [2, 3]. Busca por: unidad, dormitorios, piso, precio, cuota, vista, tipología, tipo de unidad (Duplex/Flat), área. Retorna información COMPLETA y REAL.',
       schema: z.object({
         unidad: z.string().optional().describe('Número de unidad específica (ej: "1003", "1701")'),
         dormitorios: z.union([z.number(), z.string(), z.array(z.union([z.number(), z.string()]))]).optional().describe('Cantidad de dormitorios (ej: 2, "monoambiente" o [2, "monoambiente"])'),
@@ -227,6 +227,7 @@ export class AgentService {
         precio_min: z.number().optional().describe('Precio mínimo en soles'),
         vista: z.string().optional().describe('Vista: "exterior" o "interior"'),
         tipologia: z.string().optional().describe('Tipología: "Tipo 1", "Tipo 2", etc.'),
+        tipo_unidad: z.string().optional().describe('Tipo de unidad: "Duplex" o "Flat". Usa cuando el cliente pide específicamente duplex o flat. SIEMPRE capitalizado.'),
         area_min: z.number().optional().describe('Área mínima en m²'),
         preferencia_piso: z.enum(['bajos', 'altos']).optional().describe('"bajos" si pide pisos bajos (ordena 1,2,3...), "altos" si pide pisos altos (ordena 17,16,15...)'),
       }),
