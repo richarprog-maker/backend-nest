@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Proyecto } from './entities/proyecto.entity';
+import { PreguntasFrecuentesService } from '../preguntas-frecuentes/preguntas-frecuentes.service';
 
 @Injectable()
 export class ProyectosService {
@@ -10,6 +11,8 @@ export class ProyectosService {
     constructor(
         @InjectRepository(Proyecto)
         private proyectoRepo: Repository<Proyecto>,
+        @Inject(forwardRef(() => PreguntasFrecuentesService))
+        private preguntasFrecuentesService: PreguntasFrecuentesService,
     ) { }
 
     async getProyectosPorEmpresa(codigoEmpresa: number) {
@@ -30,11 +33,12 @@ export class ProyectosService {
         }
     }
 
-    async getProyectoInfo(id: number, codigoEmpresa: number) {
+    async getProyectoInfo(id: number, codigoEmpresa: number | null) {
         try {
-            const proyecto = await this.proyectoRepo.findOne({
-                where: { id, codigoEmpresa }
-            });
+            const where: any = { id };
+            if (codigoEmpresa) where.codigoEmpresa = codigoEmpresa;
+
+            const proyecto = await this.proyectoRepo.findOne({ where });
 
             if (!proyecto) {
                 return null;
@@ -98,6 +102,14 @@ export class ProyectosService {
             proyecto.jsonData = newJson;
 
             await this.proyectoRepo.save(proyecto);
+
+            try {
+                await this.preguntasFrecuentesService.syncQdrant(id);
+                this.logger.log(`Qdrant sincronizado después de actualizar proyecto ${id}`);
+            } catch (syncError) {
+                this.logger.error(`Error sincronizando Qdrant después de actualizar proyecto ${id}: ${syncError.message}`);
+            }
+
             return { success: true, message: 'Proyecto actualizado correctamente' };
 
         } catch (error) {

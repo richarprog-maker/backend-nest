@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PreguntaFrecuente } from './entities/pregunta-frecuente.entity';
 import { PreguntasFrecuentesService } from './preguntas-frecuentes.service';
@@ -9,8 +9,8 @@ import { ProyectosModule } from '../proyectos/proyectos.module';
 @Module({
     imports: [
         TypeOrmModule.forFeature([PreguntaFrecuente]),
-        AiModule, // Provides QdrantVectorService
-        ProyectosModule // Provides ProyectosService
+        AiModule,
+        forwardRef(() => ProyectosModule)
     ],
     controllers: [PreguntasFrecuentesController],
     providers: [PreguntasFrecuentesService],

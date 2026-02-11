@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PreguntaFrecuente } from './entities/pregunta-frecuente.entity';
@@ -14,6 +14,7 @@ export class PreguntasFrecuentesService {
         @InjectRepository(PreguntaFrecuente)
         private fqaRepo: Repository<PreguntaFrecuente>,
         private qdrantService: QdrantVectorService,
+        @Inject(forwardRef(() => ProyectosService))
         private proyectosService: ProyectosService
     ) { }
 
@@ -156,8 +157,7 @@ export class PreguntasFrecuentesService {
         }
     }
 
-    // Método Core de Sincronización
-    private async syncQdrant(projectId: number) {
+    async syncQdrant(projectId: number) {
         const collectionName = process.env.QDRANT_COLLECTION_NAME;
         if (!collectionName) {
             this.logger.warn('No QDRANT_COLLECTION_NAME configured, skipping sync');
@@ -169,9 +169,8 @@ export class PreguntasFrecuentesService {
         // 1. Obtener todas las FQAs del proyecto
         const allFqas = await this.fqaRepo.find({ where: { idProyecto: projectId } });
 
-        // 2. Convertir a Documentos LangChain
+        // 2. Convertir FAQs a Documentos LangChain
         const documents: Document[] = allFqas.map(fqa => {
-            // Formato de contenido para el embedding
             const content = `Pregunta: ${fqa.pregunta}\nRespuesta: ${fqa.respuesta}\nTema: ${fqa.tema}\nTipo: ${fqa.tipo}`;
 
             return new Document({
@@ -185,15 +184,76 @@ export class PreguntasFrecuentesService {
             });
         });
 
-        // 3. Recrear Colección (Wipe & Re-upload)
-        // Esto asegura que borramos lo viejo y ponemos solo lo vigente
+        // 3. Obtener info del proyecto y convertirla a documentos
+        const proyectoInfo = await this.proyectosService.getProyectoInfo(projectId, null);
+        if (proyectoInfo) {
+            const infoDocuments = this.buildProjectInfoDocuments(proyectoInfo);
+            documents.push(...infoDocuments);
+        }
+
+        // 4. Recrear Colección (Wipe & Re-upload)
         await this.qdrantService.recreateCollection(collectionName);
 
-        // 4. Subir Documentos
+        // 5. Subir Documentos
         if (documents.length > 0) {
             await this.qdrantService.addDocuments(collectionName, documents);
         }
 
         this.logger.log(`Sincronización completada. ${documents.length} documentos indexados en ${collectionName}`);
+    }
+
+    private buildProjectInfoDocuments(info: any): Document[] {
+        const docs: Document[] = [];
+        const tema = 'Información del Proyecto';
+
+        const fields: { pregunta: string; key: string; formatter?: (val: any) => string }[] = [
+            { pregunta: '¿Cuál es el nombre del proyecto?', key: 'nombre_proyecto' },
+            { pregunta: '¿De qué trata el proyecto? ¿Qué es el proyecto?', key: 'acerca_proyecto' },
+            { pregunta: '¿Cuál es la fecha estimada de entrega del proyecto?', key: 'fecha_estimada_entrega' },
+            { pregunta: '¿Qué tipos de unidades tiene el proyecto?', key: 'tipos_unidades' },
+            { pregunta: '¿En qué etapa se encuentra el proyecto actualmente?', key: 'etapa_actual' },
+            { pregunta: '¿Cuál es la dirección del proyecto?', key: 'direccion_proyecto' },
+            { pregunta: '¿Dónde queda la sala de ventas?', key: 'direccion_sala_ventas' },
+            {
+                pregunta: '¿Cuál es el horario de atención?',
+                key: 'horario_atencion',
+                formatter: (val) => {
+                    if (!val) return '';
+                    const dias = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+                    const horarios = Array.isArray(val) ? val : [val];
+                    return horarios.map(h => {
+                        const diaInicio = dias[h.num_dia_semana_inicio] || h.num_dia_semana_inicio;
+                        const diaFin = dias[h.num_dia_semana_fin] || h.num_dia_semana_fin;
+                        return `${diaInicio} a ${diaFin}: ${h.hora_inicio} - ${h.hora_fin}`;
+                    }).join('. ');
+                }
+            },
+            { pregunta: '¿Cuántas unidades disponibles hay?', key: 'unidades_disponibles' },
+            { pregunta: '¿Hay recorrido virtual del proyecto?', key: 'recorrido_virtual' },
+            { pregunta: '¿Hay exhibición de unidades? ¿Se puede visitar un departamento piloto?', key: 'exhibicion_unidades' },
+        ];
+
+        for (const field of fields) {
+            const rawValue = info[field.key];
+            if (!rawValue) continue;
+
+            const respuesta = field.formatter ? field.formatter(rawValue) : String(rawValue);
+            if (!respuesta.trim()) continue;
+
+            const content = `Pregunta: ${field.pregunta}\nRespuesta: ${respuesta}\nTema: ${tema}\nTipo: Información del Proyecto`;
+
+            docs.push(new Document({
+                pageContent: content,
+                metadata: {
+                    pregunta: field.pregunta,
+                    respuesta: respuesta,
+                    tipo: 'Información del Proyecto',
+                    tema: tema,
+                    origen: 'info-proyecto'
+                }
+            }));
+        }
+
+        return docs;
     }
 }
