@@ -10,11 +10,12 @@ import { ProjectsSearchService } from '../projects-search.service';
 import { WapiService } from '../../webhook_meta/wapi.service';
 import { InboxService } from '../../inbox/inbox.service';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, ILike } from 'typeorm';
 import { SesionConversacion } from '../entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Lead } from '../../inbox/entities/lead.entity';
 import { ResumenConversacionService } from '../resumen-conversacion.service';
+import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 
 @Injectable()
 export class ToolsExecutionService {
@@ -31,6 +32,7 @@ export class ToolsExecutionService {
         @InjectRepository(SesionConversacion) private sesionRepo: Repository<SesionConversacion>,
         @InjectRepository(HistorialClasificacionLead) private clasificacionRepo: Repository<HistorialClasificacionLead>,
         @InjectRepository(Lead) private leadRepo: Repository<Lead>,
+        @InjectRepository(Proyecto) private proyectosRepo: Repository<Proyecto>,
         private resumenService: ResumenConversacionService,
     ) {
         // LLM para el RAG Chain
@@ -329,10 +331,73 @@ ${precioStr}
             this.logger.error(`[AgendarCita] Error actualizando clasificacion: ${err.message}`);
         }
 
+
+        let direccion = '';
+        let mapaUrl = '';
+
+        try {
+            const proyectoDb = await this.proyectosRepo.findOne({
+                where: { nombre: ILike(`%${nombre_proyecto}%`), codigoEmpresa }
+            });
+
+            let proyectoFinal = proyectoDb;
+
+            if (!proyectoFinal) {
+                const palabras = nombre_proyecto.split(' ').filter((p: string) => p.length > 3);
+                if (palabras.length > 0) {
+                    proyectoFinal = await this.proyectosRepo.findOne({
+                        where: palabras.map((p: string) => ({ nombre: ILike(`%${p}%`), codigoEmpresa }))
+                    });
+                }
+            }
+
+            this.logger.log(`[AgendarCita] Proyecto buscado: "${nombre_proyecto}" -> Encontrado: ${proyectoFinal?.nombre || 'NO'}`);
+
+            if (proyectoFinal && proyectoFinal.ubicacion) {
+                const ubicacionRaw = proyectoFinal.ubicacion;
+                const urlRegex = /(https?:\/\/[^\s]+)/g;
+                const match = ubicacionRaw.match(urlRegex);
+
+                if (match) {
+                    mapaUrl = match[0];
+                    let cleanAddr = ubicacionRaw.replace(urlRegex, '').replace(/Google Maps:?/i, '').trim();
+                    cleanAddr = cleanAddr.replace(/^[:\-\s]+|[:\-\s]+$/g, '');
+
+                    if (cleanAddr.length > 3) {
+                        direccion = cleanAddr;
+                    }
+                } else {
+                    direccion = ubicacionRaw;
+                    const encodedAddress = encodeURIComponent(direccion);
+                    mapaUrl = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`;
+                }
+            }
+        } catch (e) {
+            this.logger.error(`Error buscando proyecto para ubicacion: ${e.message}`);
+        }
+
         const tipoTexto = tipoCitaNormalizado === 'VIRTUAL' ? 'videollamada virtual' : 'visita presencial';
+
+        let mensajeExito = `Perfecto, tu cita ${tipoCitaNormalizado} quedó CONFIRMADA:
+
+        📅 Fecha: **${fecha_cita}**
+        🕐 Hora: **${hora_cita}**`;
+
+        if (direccion) {
+            mensajeExito += `\n📍 Dirección: **${direccion}**`;
+        }
+
+        if (mapaUrl) {
+            mensajeExito += `\n🔗 Ver en mapa: ${mapaUrl}`;
+        }
+
+        mensajeExito += `
+
+        [ACCION_COMPLETADA] Cita ${tipoCitaNormalizado.toLowerCase()} programada. NO repitas esta herramienta.`;
+
         return {
             success: true,
-            mensaje: `[ACCION_COMPLETADA] Cita ${tipoCitaNormalizado.toLowerCase()} agendada exitosamente para el proyecto ${nombre_proyecto} el día ${fecha_cita} a las ${hora_cita}. Tipo: ${tipoTexto}. NO repitas esta herramienta.`
+            mensaje: mensajeExito
         };
     }
 
