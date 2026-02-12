@@ -48,7 +48,7 @@ export class ClasificacionTibioTasksService {
 
         try {
             // Definir tiempo de inactividad (20 minutos atrás)
-      
+
             const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
 
             // Buscar sesiones activas (estado 1) que tengan un resumen significativo
@@ -62,7 +62,7 @@ export class ClasificacionTibioTasksService {
                 .getMany();
 
             if (sesiones.length === 0) {
-           
+
                 return;
             }
 
@@ -165,8 +165,7 @@ export class ClasificacionTibioTasksService {
 
             // 2. Actualizar estado de la sesión a 2 (procesado/cerrado)
             // Esto evita que el lead sea re-evaluado constantemente por este cron
-            sesion.idEstado = 2;
-            await queryRunner.manager.save(sesion);
+            await queryRunner.manager.update(SesionConversacion, sesion.id, { idEstado: 2 });
 
             await queryRunner.commitTransaction();
 
