@@ -183,7 +183,10 @@ export class InboxService {
             // Si se marcaron mensajes como leídos, notificar actualización de conversaciones
             if (resultado.affected > 0) {
                 this.logger.log(`${resultado.affected} mensajes marcados como leídos - Lead: ${leadUuid}`);
-                this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
+                // Delay para asegurar consistencia en DB antes de que otros clientes refresquen
+                setTimeout(() => {
+                    this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
+                }, 300);
             }
 
             const mensajesAgrupados = this.agruparMensajesPorFecha(mensajes);
@@ -274,8 +277,10 @@ export class InboxService {
 
             if (resultado.affected > 0) {
                 this.logger.log(`${resultado.affected} mensajes marcados como leídos - Lead: ${leadUuid}`);
-                // Notificar actualización para que se actualice el contador
-                this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
+                // Notificar actualización con un pequeño delay para asegurar consistencia en DB
+                setTimeout(() => {
+                    this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
+                }, 300);
             }
 
             return {
