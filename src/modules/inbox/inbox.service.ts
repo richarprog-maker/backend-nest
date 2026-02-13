@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { Mensaje } from './entities/mensaje.entity';
@@ -6,6 +6,7 @@ import { Lead } from './entities/lead.entity';
 import { Prospecto } from './entities/prospecto.entity';
 import { WapiService } from '../webhook_meta/wapi.service';
 import { InboxGateway } from './inbox.gateway';
+import { HistorialChatService } from '../ia/historial-chat.service';
 
 @Injectable()
 export class InboxService {
@@ -20,6 +21,8 @@ export class InboxService {
         private prospectoRepo: Repository<Prospecto>,
         private wapiService: WapiService,
         private inboxGateway: InboxGateway,
+        @Inject(forwardRef(() => HistorialChatService))
+        private historialChatService: HistorialChatService,
     ) { }
 
     async getConversaciones(codigoEmpresa: number, page: number = 1, limit: number = 50, filter: string = 'all', search: string = '') {
@@ -413,6 +416,38 @@ export class InboxService {
 
             // Notificar actualización de conversaciones
             this.inboxGateway.notifyConversationsUpdate(dto.codigoEmpresa);
+           // gurdamos en la tbal de hsitorial lo que se esciebe desde la bandeja
+            try {
+                let contenidoHistorial = dto.contenido || '';
+                if (dto.tipoMultimedia && dto.urlMultimedia) {
+                    const tipo = dto.tipoMultimedia.toUpperCase();
+                    if (contenidoHistorial) {
+                        contenidoHistorial = `[Multimedia: ${tipo}] ${dto.urlMultimedia}\n${contenidoHistorial}`;
+                    } else {
+                        contenidoHistorial = `[Multimedia: ${tipo}] ${dto.urlMultimedia}`;
+                    }
+                }
+
+                if (!contenidoHistorial && dto.tipoMultimedia) {
+                    contenidoHistorial = `[Multimedia sin descripcion: ${dto.tipoMultimedia}]`;
+                }
+
+                await this.historialChatService.guardarMensaje({
+                    leadUuid: dto.leadUuid,
+                    codigoEmpresa: dto.codigoEmpresa,
+                    mensaje: { role: 'assistant', content: contenidoHistorial },
+                    role: 'assistant',
+                    metadatos: {
+                        origen: 'inbox',
+                        id_usuario: dto.idUsuario,
+                        id_mensaje: mensajeGuardado.id,
+                        tipo_multimedia: dto.tipoMultimedia
+                    }
+                });
+                this.logger.log(`Mensaje de Inbox guardado en HistorialIA para contexto - Lead: ${dto.leadUuid}`);
+            } catch (errorHistorial) {
+                this.logger.warn(`No se pudo guardar historial IA desde Inbox: ${errorHistorial.message}`);
+            }
 
             return {
                 success: true,

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InboxService } from './inbox.service';
 import { Lead } from './entities/lead.entity';
@@ -9,11 +9,13 @@ import { CredencialesWapi } from '../webhook_meta/entities/credenciales-wapi.ent
 import { WapiService } from '../webhook_meta/wapi.service';
 import { ConfigModule } from '@nestjs/config';
 import { InboxGateway } from './inbox.gateway';
+import { AiModule } from '../ia/ia.module';
 
 @Module({
     imports: [
         ConfigModule,
-        TypeOrmModule.forFeature([Lead, Prospecto, Mensaje, CredencialesWapi])
+        TypeOrmModule.forFeature([Lead, Prospecto, Mensaje, CredencialesWapi]),
+        forwardRef(() => AiModule)
     ],
     controllers: [InboxController],
     providers: [InboxService, WapiService, InboxGateway],
