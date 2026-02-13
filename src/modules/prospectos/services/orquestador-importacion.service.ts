@@ -182,12 +182,15 @@ export class OrquestadorImportacionService {
 
                             const components = [];
                             if (plantilla.parametros && Array.isArray(plantilla.parametros) && plantilla.parametros.length > 0) {
+                                // La plantilla solo usa {{name}} - mapear el nombre del lead
                                 const bodyParams = plantilla.parametros.map(param => {
-                                    if (param === 'name') {
+                                    if (param === 'name' || param === 'nombre') {
                                         return { type: 'text', text: lead.nombre || 'Cliente' };
                                     }
-                                    return { type: 'text', text: '' };
-                                });
+                                    // Para cualquier otro parámetro futuro, buscar en los datos de la fila
+                                    const valor = fila[param];
+                                    return valor ? { type: 'text', text: String(valor) } : null;
+                                }).filter(p => p !== null && p.text && p.text.length > 0);
 
                                 if (bodyParams.length > 0) {
                                     components.push({
