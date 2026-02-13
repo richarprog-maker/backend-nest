@@ -315,9 +315,28 @@ export class WebhookService implements OnModuleInit {
         } catch (error) {
             this.logger.error(`Error procesando buffer IA para lead ${leadUuid}: ${error.message}`);
         } finally {
-            // Liberar el lead para futuros procesamientos
             this.procesandoLead.delete(leadUuid);
         }
+    }
+
+    /**
+     * Limpia marcadores internos del LLM que NO deben llegar al cliente.
+     * Estos tags son instrucciones internas entre tools y el agente IA.
+     */
+    private limpiarMarcadoresInternos(texto: string): string {
+        let limpio = texto;
+
+        limpio = limpio.replace(/\[ACCION_COMPLETADA\]\s*/gi, '');
+        limpio = limpio.replace(/\[ACCION_REQUERIDA\]\s*/gi, '');
+
+        limpio = limpio.replace(/^INSTRUCCION:.*$/gm, '');
+
+        limpio = limpio.replace(/^(NO repitas esta herramienta|Continua con el siguiente paso|Continua con tu mensaje de seguimiento|Pregunta si quiere|Preguntame por|Recomienda una opcion).*$/gm, '');
+
+        limpio = limpio.replace(/\n{3,}/g, '\n\n');
+        limpio = limpio.trim();
+
+        return limpio;
     }
 
     /**
@@ -329,8 +348,17 @@ export class WebhookService implements OnModuleInit {
         leadUuid: string,
         from: string
     ) {
+        // Limpiar marcadores internos antes de enviar al cliente
+        const respuestaLimpia = this.limpiarMarcadoresInternos(respuestaIA);
+
+        if (!respuestaLimpia) {
+            this.logger.warn(`Respuesta quedó vacía tras limpiar marcadores internos. Original: ${respuestaIA}`);
+            return;
+        }
+
         // Smart Split & Envío
-        const mensajesSplit = await this.smartSplitService.splitMessage(respuestaIA);
+        this.logger.debug(`[SmartSplit Input] "${respuestaLimpia}" (Len: ${respuestaLimpia.length}) - Validando si SmartSplit debe ejecutarse.`);
+        const mensajesSplit = await this.smartSplitService.splitMessage(respuestaLimpia);
 
         let conversacionFacturable = 0;
 

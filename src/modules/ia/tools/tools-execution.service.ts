@@ -378,26 +378,29 @@ ${precioStr}
 
         const tipoTexto = tipoCitaNormalizado === 'VIRTUAL' ? 'videollamada virtual' : 'visita presencial';
 
-        let mensajeExito = `Perfecto, tu cita ${tipoCitaNormalizado} quedó CONFIRMADA:
-
-        📅 Fecha: **${fecha_cita}**
-        🕐 Hora: **${hora_cita}**`;
+        let outputMsg = `[ACCION_COMPLETADA] Cita ${tipoTexto} AGENDADA EXITOSAMENTE.
+        
+DATOS DE LA CITA:
+- 📅 Fecha: ${fecha_cita}
+- 🕐 Hora: ${hora_cita}
+- 👥 Tipo: ${tipoCitaNormalizado}`;
 
         if (direccion) {
-            mensajeExito += `\n📍 Dirección: **${direccion}**`;
+            outputMsg += `\n- 📍 Dirección: ${direccion}`;
         }
-
         if (mapaUrl) {
-            mensajeExito += `\n🔗 Ver en mapa: ${mapaUrl}`;
+            outputMsg += `\n- Link Mapa: ${mapaUrl}`;
         }
 
-        mensajeExito += `
+        outputMsg += `\n\nTe esperamos para que conozcas el departamento y resolvamos cualquier duda en persona.`;
 
-        [ACCION_COMPLETADA] Cita ${tipoCitaNormalizado.toLowerCase()} programada. NO repitas esta herramienta.`;
+        if (!direccion && !mapaUrl) {
+            outputMsg += ` Te enviaré la ubicación exacta más adelante.`;
+        }
 
         return {
             success: true,
-            mensaje: mensajeExito
+            mensaje: outputMsg
         };
     }
 

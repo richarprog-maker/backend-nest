@@ -83,6 +83,15 @@ json
                 return [text];
             }
 
+            const inputNormalized = text.replace(/\s+/g, '').toLowerCase();
+            const outputNormalized = parsed.messages.join('').replace(/\s+/g, '').toLowerCase();
+            if (Math.abs(inputNormalized.length - outputNormalized.length) > 10) {
+                this.logger.warn(`SmartSplit intentó modificar el contenido (Diff: ${Math.abs(inputNormalized.length - outputNormalized.length)}). Retornando original.`);
+                this.logger.debug(`Original: ${text}`);
+                this.logger.debug(`Generado: ${parsed.messages.join('|')}`);
+                return [text];
+            }
+
             return parsed.messages;
         } catch (error) {
             this.logger.error('Error splitting message, returning original', error);
