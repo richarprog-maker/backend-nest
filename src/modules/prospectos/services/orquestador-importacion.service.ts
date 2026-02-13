@@ -180,25 +180,19 @@ export class OrquestadorImportacionService {
                                 continue;
                             }
 
-                            const components = [];
-                            if (plantilla.parametros && Array.isArray(plantilla.parametros) && plantilla.parametros.length > 0) {
-                                // La plantilla solo usa {{name}} - mapear el nombre del lead
-                                const bodyParams = plantilla.parametros.map(param => {
-                                    if (param === 'name' || param === 'nombre') {
-                                        return { type: 'text', text: lead.nombre || 'Cliente' };
-                                    }
-                                    // Para cualquier otro parámetro futuro, buscar en los datos de la fila
-                                    const valor = fila[param];
-                                    return valor ? { type: 'text', text: String(valor) } : null;
-                                }).filter(p => p !== null && p.text && p.text.length > 0);
-
-                                if (bodyParams.length > 0) {
-                                    components.push({
-                                        type: 'body',
-                                        parameters: bodyParams
-                                    });
+                            // Construir components para Meta WhatsApp API
+                            // La plantilla PRIMER_CONTACTO usa {{1}} = nombre del cliente
+                            const nombreCliente = lead.nombre || 'Cliente';
+                            const components = [
+                                {
+                                    type: 'body',
+                                    parameters: [
+                                        { type: 'text', text: nombreCliente }
+                                    ]
                                 }
-                            }
+                            ];
+
+                            this.logger.debug(`[Importacion] Components para Meta: ${JSON.stringify(components)}`);
 
                             const telefonoEnvio = lead.telefono;
                             this.logger.log(`[Importacion] Intentando enviar primer mensaje a Lead ID: ${lead.id}, Telefono: ${telefonoEnvio}`);
