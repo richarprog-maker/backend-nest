@@ -181,13 +181,13 @@ export class OrquestadorImportacionService {
                             }
 
                             // Construir components para Meta WhatsApp API
-                            // La plantilla PRIMER_CONTACTO usa {{1}} = nombre del cliente
+                            // La plantilla PRIMER_CONTACTO usa {{name}} = nombre del cliente
                             const nombreCliente = lead.nombre || 'Cliente';
                             const components = [
                                 {
                                     type: 'body',
                                     parameters: [
-                                        { type: 'text', text: nombreCliente }
+                                        { type: 'text', parameter_name: 'name', text: nombreCliente }
                                     ]
                                 }
                             ];
