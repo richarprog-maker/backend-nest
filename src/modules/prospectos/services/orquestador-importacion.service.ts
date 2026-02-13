@@ -175,15 +175,42 @@ export class OrquestadorImportacionService {
                                 mensajeContenido = mensajeContenido.replace('{{name}}', nombreCliente);
                             }
 
-                            // Enviar Mensaje
+                            if (!plantilla.nombre) {
+                                this.logger.error(`[Importacion] La plantilla ID ${plantilla.id} no tiene nombre configurado. No se puede enviar como Template.`);
+                                continue;
+                            }
+
+                            const components = [];
+                            if (plantilla.parametros && Array.isArray(plantilla.parametros) && plantilla.parametros.length > 0) {
+                                const bodyParams = plantilla.parametros.map(param => {
+                                    if (param === 'name') {
+                                        return { type: 'text', text: lead.nombre || 'Cliente' };
+                                    }
+                                    return { type: 'text', text: '' };
+                                });
+
+                                if (bodyParams.length > 0) {
+                                    components.push({
+                                        type: 'body',
+                                        parameters: bodyParams
+                                    });
+                                }
+                            }
+
                             const telefonoEnvio = lead.telefono;
                             this.logger.log(`[Importacion] Intentando enviar primer mensaje a Lead ID: ${lead.id}, Telefono: ${telefonoEnvio}`);
 
                             if (telefonoEnvio) {
                                 try {
-                                    // WapiService.sendMessage might be void or return object. Adjusting to safe call.
-                                    this.logger.log(`[Importacion] Enviando a WAPI... CodigoEmpresa: ${codigoEmpresa}, Destino: ${telefonoEnvio}`);
-                                    const response: any = await this.wapiService.sendMessage(codigoEmpresa, telefonoEnvio, mensajeContenido);
+                                    this.logger.log(`[Importacion] Enviando a WAPI (Template)... CodigoEmpresa: ${codigoEmpresa}, Destino: ${telefonoEnvio}, Template: ${plantilla.nombre}`);
+
+                                    const response: any = await this.wapiService.sendTemplate(
+                                        codigoEmpresa,
+                                        telefonoEnvio,
+                                        plantilla.nombre,
+                                        plantilla.idioma || 'es_PE',
+                                        components
+                                    );
                                     this.logger.log(`[Importacion] Respuesta WAPI: ${JSON.stringify(response)}`);
 
                                     let wamid = null;
