@@ -1105,7 +1105,14 @@ RESPUESTA PRECISA:`);
             // INTENTO 5: Ultra-fallback - Listar todo sin filtros especificos (solo semantico)
             this.logger.log(`${logPrefix} Intento 5: Busqueda semantica sin filtros estrictos`);
             const ultraFallbackFilters: any = {};
-            if (params.tipo_unidad) ultraFallbackFilters.tipoUnidad = params.tipo_unidad;
+            if (params.tipo_unidad) {
+                let tipo = params.tipo_unidad.toString().trim();
+                // Normalizacion para Dúplex
+                if (tipo.toLowerCase() === 'duplex') {
+                    tipo = 'Dúplex';
+                }
+                ultraFallbackFilters.tipoUnidad = tipo;
+            }
             const allResults = await this.qdrantVectorService.searchPropertiesWithFilters(
                 collectionName,
                 'departamento disponible',
@@ -1140,7 +1147,7 @@ RESPUESTA PRECISA:`);
                     return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
                 }).join('\n');
 
-                return `[ACCION_COMPLETADA] Aqui tienes las opciones de departamentos disponibles (tipologias: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\nPreguntame por una tipologia especifica o cuantos dormitorios buscas.`;
+                return `[ACCION_COMPLETADA] No encontré departamentos de ${dormsNumber} dormitorios tipo ${params.tipo_unidad || ''}, pero aquí tienes las opciones disponibles (tipologias: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\nPreguntame por una tipologia especifica o cuantos dormitorios buscas.`;
             }
 
             return "[ACCION_COMPLETADA] Lo siento, no encontre nada disponible ni siquiera relajando la busqueda. Pregunta si quiere ver departamentos de otra cantidad de dormitorios.";
@@ -1192,7 +1199,14 @@ RESPUESTA PRECISA:`);
         if (params.precio_min !== undefined) filters.precioMin = params.precio_min;
         if (params.precio_max !== undefined) filters.precioMax = params.precio_max;
         if (params.vista) filters.vista = params.vista;
-        if (params.tipo_unidad) filters.tipoUnidad = params.tipo_unidad;
+        if (params.tipo_unidad) {
+            let tipo = params.tipo_unidad.toString().trim();
+            // Normalizacion para Dúplex (Qdrant tiene "Dúplex" con tilde)
+            if (tipo.toLowerCase() === 'duplex') {
+                tipo = 'Dúplex';
+            }
+            filters.tipoUnidad = tipo;
+        }
 
         if (params.tipologia) {
             let tipologiaNormalizada = params.tipologia.toString().trim();
