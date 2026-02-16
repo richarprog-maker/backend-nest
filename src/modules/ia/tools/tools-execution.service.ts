@@ -353,23 +353,32 @@ ${precioStr}
 
             this.logger.log(`[AgendarCita] Proyecto buscado: "${nombre_proyecto}" -> Encontrado: ${proyectoFinal?.nombre || 'NO'}`);
 
-            if (proyectoFinal && proyectoFinal.ubicacion) {
-                const ubicacionRaw = proyectoFinal.ubicacion;
-                const urlRegex = /(https?:\/\/[^\s]+)/g;
-                const match = ubicacionRaw.match(urlRegex);
+            if (proyectoFinal) {
+                let foundInJson = false;
+                if (proyectoFinal.jsonData && proyectoFinal.jsonData['direccion_sala_ventas']) {
+                    direccion = proyectoFinal.jsonData['direccion_sala_ventas'];
+                    foundInJson = true;
+                }
 
-                if (match) {
-                    mapaUrl = match[0];
-                    let cleanAddr = ubicacionRaw.replace(urlRegex, '').replace(/Google Maps:?/i, '').trim();
-                    cleanAddr = cleanAddr.replace(/^[:\-\s]+|[:\-\s]+$/g, '');
 
-                    if (cleanAddr.length > 3) {
-                        direccion = cleanAddr;
+                if (!foundInJson && proyectoFinal.ubicacion) {
+                    const ubicacionRaw = proyectoFinal.ubicacion;
+                    const urlRegex = /(https?:\/\/[^\s]+)/g;
+                    const match = ubicacionRaw.match(urlRegex);
+
+                    if (match) {
+                        mapaUrl = match[0];
+                        let cleanAddr = ubicacionRaw.replace(urlRegex, '').replace(/Google Maps:?/i, '').trim();
+                        cleanAddr = cleanAddr.replace(/^[:\-\s]+|[:\-\s]+$/g, '');
+
+                        if (cleanAddr.length > 3) {
+                            direccion = cleanAddr;
+                        }
+                    } else {
+                        direccion = ubicacionRaw;
+                        const encodedAddress = encodeURIComponent(direccion);
+                        mapaUrl = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`;
                     }
-                } else {
-                    direccion = ubicacionRaw;
-                    const encodedAddress = encodeURIComponent(direccion);
-                    mapaUrl = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`;
                 }
             }
         } catch (e) {
