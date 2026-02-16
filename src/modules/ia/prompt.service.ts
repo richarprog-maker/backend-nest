@@ -55,14 +55,14 @@ export class PromptService {
     private buildInstruccionSaludo(tieneHistorial: boolean): string {
         if (tieneHistorial) {
             return `
-            ## PROHIBIDO SALUDAR (HAY HISTORIAL PREVIO)
             - Este cliente YA tiene conversación previa contigo.
             - **PROHIBIDO** decir "Hola", "Hola, claro", "Hola, aquí tienes", "Hola, como estas" o cualquier saludo.
             - **PROHIBIDO** empezar mensajes con "Hola," seguido de información.
             - **PROHIBIDO** usar emojis de saludo como 👋.
             - Ve DIRECTO al punto, el cliente ya te conoce.
-            - Si el cliente dice "Hola", responde: "Claro, dime" o "En que te ayudo" SIN saludar de vuelta.
-            - Cuando des información, empieza directo: "Esta es la info..." o "Aquí están los datos..." SIN "Hola".`;
+            - Si el cliente dice "Hola" o te contacta después de tiempo, NO preguntes "En qué te ayudo".
+            - En su lugar, revisa el historial y retoma el flujo en el paso donde se quedaron de forma proactiva.
+            - Empieza directo: "Continuando con la búsqueda de tu depa..." o "Retomando lo que conversábamos..." seguido del paso pendiente.`;
         }
 
         return `
@@ -123,13 +123,36 @@ ${campos.join('\n')}
         if (!cita) return '';
 
         // Usar zona horaria de Perú para comparaciones correctas
-        const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-        const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
-        const fechaCita = new Date(`${cita.fechaCita}T${cita.horaCita}`);
-        const esFutura = fechaCita > ahoraPeru;
+        const fechaActualPeru = new Date().toLocaleString('en-US', { timeZone: 'America/Lima' });
+        const datePeru = new Date(fechaActualPeru);
+
+        const anio = datePeru.getFullYear();
+        const mes = String(datePeru.getMonth() + 1).padStart(2, '0');
+        const dia = String(datePeru.getDate()).padStart(2, '0');
+        const hoyISO = `${anio}-${mes}-${dia}`;
+
+        const horas = datePeru.getHours();
+        const minutos = datePeru.getMinutes();
+        const horaActualMinutos = horas * 60 + minutos;
+
+        // Info cita
+        const fechaCitaISO = cita.fechaCita; // se asume formato YYYY-MM-DD
+        const [hCita, mCita] = cita.horaCita.split(':').map(Number);
+        const horaCitaMinutos = hCita * 60 + mCita;
+
+        let esFutura = false;
+
+        // Lógica estricta de comparación
+        if (fechaCitaISO > hoyISO) {
+            esFutura = true;
+        } else if (fechaCitaISO === hoyISO) {
+            if (horaCitaMinutos > horaActualMinutos) {
+                esFutura = true;
+            }
+        }
 
         // Calcular etiqueta legible de la fecha
-        const tomorrowPeru = new Date(ahoraPeru);
+        const tomorrowPeru = new Date(datePeru);
         tomorrowPeru.setDate(tomorrowPeru.getDate() + 1);
         const mananaISO = `${tomorrowPeru.getFullYear()}-${String(tomorrowPeru.getMonth() + 1).padStart(2, '0')}-${String(tomorrowPeru.getDate()).padStart(2, '0')}`;
 
@@ -147,8 +170,8 @@ ${campos.join('\n')}
 
         if (esFutura && citaActiva) {
             return `
-## CITA PROGRAMADA ACTIVA
-El cliente YA TIENE UNA CITA AGENDADA:
+## CITA PROGRAMADA ACTIVA (FUTURA)
+El cliente YA TIENE UNA CITA CONFIRMADA:
 - Fecha: ${etiquetaFecha} (${cita.fechaCita})
 - Hora: ${cita.horaCita}
 - Tipo: ${cita.tipoCita || 'No especificado'}
@@ -156,15 +179,20 @@ El cliente YA TIENE UNA CITA AGENDADA:
 ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
 
 **INSTRUCCIÓN**: 
-- NO ofrezcas agendar otra cita (ya tiene una)
-- Si pregunta por su cita, dile que es ${etiquetaFecha} a las ${cita.horaCita}
+- NO ofrezcas agendar otra cita (ya tiene una).
+- Si pregunta por su cita, confírmale que es ${etiquetaFecha} a las ${cita.horaCita}.
 `;
         } else {
             // Cita pasada o cancelada/realizada
             return `
-## HISTORIAL DE CITAS
-- Tuvo una cita el ${cita.fechaCita} a las ${cita.horaCita} (estado: ${cita.estadoCita}) — YA PASÓ.
-- NO la menciones como futura. Puedes ofrecer agendar una NUEVA si muestra interés.
+## HISTORIAL DE CITAS (CITA VENCIDA / PASADA)
+- Tuvo una cita el ${cita.fechaCita} a las ${cita.horaCita} (estado: ${cita.estadoCita}).
+- **ESTA CITA YA PASÓ**. NO ES UNA CITA ACTIVA.
+- Aunque el estado diga "pendiente", la fecha ya venció.
+- **INSTRUCCIÓN CRÍTICA**:
+  - NO digas "tienes una cita programada".
+  - Asume que la cita ya ocurrió o se perdió.
+  - Pregunta: "¿Pudiste asistir a la visita del ${etiquetaFecha}?" o "¿Te gustaría reagendar tu visita?".
 `;
         }
     }
