@@ -136,10 +136,19 @@ export class WebhookService implements OnModuleInit {
         const waId = contact?.wa_id;
         const from = message.from;
         const type = message.type;
-        const body = message.text?.body || message.button?.text || '[Multimedia]';
+        let body = message.text?.body || message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || message.button?.text;
+
+        let contenidoParaIA = body;
+        let contenidoParaBD = body;
+
+        if (!body) {
+            contenidoParaBD = `[Archivo adjunto: ${type}]`;
+            contenidoParaIA = `[SISTEMA: El usuario ha enviado un archivo multimedia de tipo "${type}" (imagen, audio, video, sticker, o ubicación). TÚ NO PUEDES VERLO NI ESCUCHARLO. Responde de manera NATURAL y AMABLE (como una persona, no un robot) diciéndole que por este medio no puedes abrir archivos ni escuchar audios, y pídele que por favor te escriba su consulta en texto.]`;
+        }
+
         const timestamp = new Date(parseInt(message.timestamp) * 1000);
 
-        this.logger.log(`Mensaje recibido de ${from}: ${body}`);
+        this.logger.log(`Mensaje recibido de ${from}: ${contenidoParaBD}`);
 
         // 1. Buscar o Crear Lead (Identidad)
         let lead = await this.leadRepo.findOne({
@@ -176,7 +185,7 @@ export class WebhookService implements OnModuleInit {
             codigoEmpresa,
             leadUuid: lead.uuid, // Vinculamos al Lead
             idEmisorTipo: 1, // 1 = Lead/Cliente
-            contenido: body,
+            contenido: contenidoParaBD,
             numeroTelefono: from,
             fechaRecibido: new Date(),
             fechaCreacion: new Date(),
@@ -209,12 +218,9 @@ export class WebhookService implements OnModuleInit {
         // 3. Enviar "Escribiendo..." / Marcar Leído (Legacy Style)
         await this.wapiService.markAsReadAndTyping(codigoEmpresa, message.id);
 
-        // ============================================================
-        // LÓGICA DE BUFFERING (REDIS + DEBOUNCE)
-        // ============================================================
 
         // Agregar mensaje actual al buffer de Redis
-        await this.redisService.appendMessageToBuffer(lead.uuid, body);
+        await this.redisService.appendMessageToBuffer(lead.uuid, contenidoParaIA);
 
         // Configuración de tiempo de espera
         const bufferSeconds = parseInt(this.configService.get<string>('MESSAGE_BUFFER_SECONDS', '5'));

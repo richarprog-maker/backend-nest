@@ -519,9 +519,10 @@ REGLAS GENERALES:
     return undefined;
   }
 
+
   /**
-   * Extrae información relevante del mensaje del usuario usando patrones
-   * y la guarda en el resumen de conversación (sin usar LLM extra)
+   * Extrae información relevante del mensaje del usuario usando LLM
+   * y la guarda en el resumen de conversación
    */
   private async extraerYGuardarResumen(
     mensaje: string,
@@ -529,154 +530,90 @@ REGLAS GENERALES:
     codigoEmpresa: number
   ): Promise<void> {
     try {
-      const msgLower = mensaje.toLowerCase().trim();
+      // Schema para extracción estructurada
+      const InfoResumenSchema = z.object({
+        dormitorios: z.array(z.number()).describe('Lista de cantidad de dormitorios mencionados (ej: [2, 3]). Si no hay, array vacio.'),
+        proposito: z.enum(['vivir', 'inversion', 'mix_uso']).nullable().describe('Propósito de compra si se menciona. Null si no hay.'),
+        zonas: z.array(z.string()).describe('Distritos o zonas de interés mencionados. Si no hay, array vacios.'),
+        tiempo_compra: z.string().nullable().describe('Tiempo estimado de compra (ej: "este mes", "2026", "pronto"). Null si no hay.'),
+        financiamiento: z.enum(['hipotecario', 'banco', 'directo', 'contado']).nullable().describe('Tipo de financiamiento mencionado. Null si no hay.'),
+        presupuesto: z.string().nullable().describe('Presupuesto o cuota mencionada (ej: "500k", "cuota 3000"). Null si no hay.'),
+        intereses_adicionales: z.array(z.string()).describe('Temas adicionales: estacionamiento, mascota, entrega, areas_comunes, inicial. Si no hay, array vacio.'),
+      });
+
+      const extractor = this.llm.withStructuredOutput(InfoResumenSchema);
+
+      const prompt = `
+      Analiza el siguiente mensaje del cliente inmobiliario y extrae SOLO la información nueva relevante o cambios de preferencias.
+      Ignora saludos o ruido. Si no hay información de un tipo, déjalo vacío.
+      
+      Mensaje: "${mensaje}"
+      `;
+
+      const result = await extractor.invoke(prompt);
       const puntos: string[] = [];
 
-      // Patrones para detectar información clave del flujo de descubrimiento
-
-      // PASO 1: Dormitorios (Detectar múltiples)
-      const numberMap: { [key: string]: string } = { 'un': '1', 'uno': '1', 'dos': '2', 'tres': '3', 'cuatro': '4', '1': '1', '2': '2', '3': '3', '4': '4' };
-      const dormsRegex = /(\d+|un|uno|dos|tres|cuatro)\s*(?:dormitorio|dorm|cuarto|habitaci[oó]n)/gi;
-      const dormsMatches = [...msgLower.matchAll(dormsRegex)];
-
-      // Intentar también patrón "de 2 y 3"
-      const combinedRegex = /de\s+((?:[0-9]|un|uno|dos|tres|cuatro)(?:\s*y\s*(?:[0-9]|un|uno|dos|tres|cuatro))*)/i;
-
-      const foundDorms = new Set<string>();
-
-      // Estrategia 1: Match directo "2 dormitorios", "3 habitaciones"
-      for (const m of dormsMatches) {
-        const val = numberMap[m[1].toLowerCase()] || m[1];
-        foundDorms.add(val);
-      }
-
-      // Estrategia 2: Patrón "de 2 y 3"
-      const combinedMatch = msgLower.match(combinedRegex);
-      if (combinedMatch) {
-        const parts = combinedMatch[1].split(/\s*y\s*/);
-        parts.forEach(p => {
-          const val = numberMap[p.trim()] || p.trim();
-          if (val) foundDorms.add(val);
-        });
-      }
-
-      // Estrategia 3: Si dice "2 y 3" sin palabra clave inmediata pero contexto claro
-      if (foundDorms.size === 0) {
-        const looseMatch = msgLower.match(/(\d+)\s*y\s*(\d+)/);
-        if (looseMatch && (msgLower.includes('dorm') || msgLower.includes('habitaci'))) {
-          foundDorms.add(looseMatch[1]);
-          foundDorms.add(looseMatch[2]);
-        }
-      }
-
-      if (foundDorms.size > 0) {
-        const dormsList = Array.from(foundDorms).sort();
-        const dormsStr = dormsList.join(' y ');
+      // Mapear resultados a formato de resumen
+      if (result.dormitorios && result.dormitorios.length > 0) {
+        const dormsStr = result.dormitorios.sort().join(' y ');
         puntos.push(`Busca depa de ${dormsStr} dormitorio(s)`);
       }
 
-      // PASO 2A: Para vivir / invertir (uso/propósito)
-      if (msgLower.includes('vivir') || msgLower.includes('vivo') || msgLower.includes('vivienda')) {
-        puntos.push('Propósito: para vivir');
-      } else if (msgLower.includes('invertir') || msgLower.includes('inversi')) {
-        puntos.push('Propósito: inversión');
+      if (result.proposito) {
+        const mapa: Record<string, string> = { 'vivir': 'para vivir', 'inversion': 'inversión', 'mix_uso': 'uso mixto' };
+        puntos.push(`Propósito: ${mapa[result.proposito] || result.proposito}`);
       }
 
-      // PASO 2B: Zona/Distrito
-      const distritos = [
-        'santa catalina', 'surquillo', 'surco', 'miraflores', 'san borja', 'san isidro',
-        'barranco', 'jesus maria', 'jesús maría', 'lince', 'magdalena', 'lima',
-        'la molina', 'san miguel', 'pueblo libre', 'chorrillos', 'san juan de lurigancho',
-        'sjl', 'ate', 'breña', 'la victoria', 'rimac', 'san luis'
-      ];
-
-      const distritosEncontrados = [];
-
-      for (const distrito of distritos) {
-        if (msgLower.includes(distrito)) {
-          const distritoCapitalizado = distrito
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-
-          distritosEncontrados.push(distritoCapitalizado);
-        }
+      if (result.zonas && result.zonas.length > 0) {
+        // Capitalizar
+        const zonasCap = result.zonas.map(z => z.charAt(0).toUpperCase() + z.slice(1).toLowerCase()).join(', ');
+        puntos.push(`Zona preferida: ${zonasCap}`);
       }
 
-      const distritosUnicos = [...new Set(distritosEncontrados)];
-
-      if (distritosUnicos.length > 0) {
-        puntos.push(`Zona preferida: ${distritosUnicos.join(', ')}`);
+      if (result.tiempo_compra) {
+        puntos.push(`Tiempo de compra: ${result.tiempo_compra}`);
       }
 
-      // PASO 3: Tiempo estimado de compra
-      const tiempoCompraPatterns = [
-        // Expresiones específicas de tiempo
-        /(?:en|para|dentro\s+de)\s+(este|el\s+pr[oó]ximo|el)\s+(mes|año|semestre|trimestre)/i,
-        /(?:en|para)\s+(\d{4})/i, // Año específico: "en 2026"
-        /(?:dentro\s+de|en)\s+(\d+)\s+(mes|meses|d[ií]a|d[ií]as|semana|semanas)/i,
-        /(?:lo\s+antes\s+posible|pronto|urgente|ya|inmediato)/i,
-        /(?:este|pr[oó]ximo)\s+(mes|año)/i,
-      ];
-
-      for (const pattern of tiempoCompraPatterns) {
-        const match = mensaje.match(pattern); // Usar mensaje original para conservar capitalización
-        if (match) {
-          const tiempoDescripcion = match[0];
-          puntos.push(`Tiempo de compra: ${tiempoDescripcion}`);
-          break; // Solo el primer match para evitar duplicados
-        }
+      if (result.financiamiento) {
+        const mapa: Record<string, string> = {
+          'hipotecario': 'crédito hipotecario',
+          'banco': 'crédito hipotecario',
+          'directo': 'directo con Checor',
+          'contado': 'al contado'
+        };
+        puntos.push(`Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
       }
 
-      // PASO 4: Tipo de financiamiento
-      if (msgLower.includes('hipotecario') || msgLower.includes('banco') || msgLower.includes('crédito')) {
-        puntos.push('Financiamiento: crédito hipotecario');
-      } else if (msgLower.includes('checor') || msgLower.includes('directo') || msgLower.includes('financiamiento directo')) {
-        puntos.push('Financiamiento: directo con Checor');
+      if (result.presupuesto) {
+        puntos.push(`Presupuesto/Cuota: ${result.presupuesto}`);
       }
 
-      // PASO 5: Presupuesto / Cuota mensual
-      const cuotaMatch = msgLower.match(/cuota.*?(\d[\d,\.]*)/i) ||
-        msgLower.match(/(\d[\d,\.]*)\s*(soles|s\/|mensual)/i) ||
-        msgLower.match(/pagar.*?(\d[\d,\.]*)/i);
-      if (cuotaMatch) {
-        const monto = cuotaMatch[1].replace(/[,\.]/g, '');
-        puntos.push(`Cuota mensual: ~S/${parseInt(monto).toLocaleString('es-PE')}`);
-      }
+      // Intereses adicionales mapeados
+      if (result.intereses_adicionales && result.intereses_adicionales.length > 0) {
+        const mapaInteres: Record<string, string> = {
+          'estacionamiento': 'Preguntó por estacionamiento',
+          'mascota': 'Preguntó por política de mascotas',
+          'entrega': 'Preguntó por fecha de entrega',
+          'areas_comunes': 'Preguntó por áreas comunes',
+          'inicial': 'Preguntó por cuota inicial'
+        };
 
-      // Precio máximo total (diferente de cuota mensual)
-      const precioMatch = msgLower.match(/presupuesto.*?(\d[\d,\.]*)/i) ||
-        msgLower.match(/(\d{3,}).*?(mil|k)/i);
-      if (precioMatch && !cuotaMatch) {
-        const monto = precioMatch[1].replace(/[,\.]/g, '');
-        puntos.push(`Presupuesto: ~S/${parseInt(monto).toLocaleString('es-PE')}`);
-      }
-
-      // Preguntas específicas (capturar temas de interés adicionales)
-      if (msgLower.includes('estacionamiento') || msgLower.includes('parking') || msgLower.includes('cochera')) {
-        puntos.push('Preguntó por estacionamiento');
-      }
-      if (msgLower.includes('mascota') || msgLower.includes('perro') || msgLower.includes('gato')) {
-        puntos.push('Preguntó por política de mascotas');
-      }
-      if (msgLower.includes('entrega') || msgLower.includes('cuando entregan') || msgLower.includes('listo')) {
-        puntos.push('Preguntó por fecha de entrega');
-      }
-      if (msgLower.includes('areas comunes') || msgLower.includes('áreas comunes') || msgLower.includes('amenidades')) {
-        puntos.push('Preguntó por áreas comunes');
-      }
-      if (msgLower.includes('inicial') || msgLower.includes('enganche') || msgLower.includes('cuota inicial')) {
-        puntos.push('Preguntó por cuota inicial');
+        result.intereses_adicionales.forEach(interes => {
+          // Buscar match parcial o directo en el mapa
+          const key = Object.keys(mapaInteres).find(k => interes.toLowerCase().includes(k));
+          if (key) puntos.push(mapaInteres[key]);
+        });
       }
 
       // Solo guardar si hay puntos nuevos
       if (puntos.length > 0) {
         await this.resumenService.agregarPuntos(leadUuid, codigoEmpresa, puntos);
-        this.logger.debug(`Resumen actualizado con ${puntos.length} puntos: ${puntos.join(', ')}`);
+        this.logger.debug(`Resumen actualizado (LLM) con ${puntos.length} puntos: ${puntos.join(', ')}`);
       }
+
     } catch (error) {
-      this.logger.warn(`Error extrayendo resumen: ${error.message}`);
-      // No lanzamos error para no interrumpir el flujo
+      this.logger.warn(`Error extrayendo resumen con LLM: ${error.message}`);
+      // Fallback a regex básico o simplemente ignorar error para no detener flujo
     }
   }
 }

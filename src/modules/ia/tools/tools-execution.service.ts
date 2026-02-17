@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { z } from 'zod';
 import { CitasService } from '../../citas/citas.service';
 import { ConfigService } from '@nestjs/config';
 import { QdrantVectorService } from '../qdrant-vector.service';
@@ -789,7 +790,7 @@ RESPUESTA PRECISA:`);
         try {
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
 
-            const ocupacionCorregida = this.corregirOcupacion(params.ocupacion);
+            const ocupacionCorregida = await this.corregirOcupacion(params.ocupacion);
             const ingresosFormateados = this.formatearMonto(params.ingresos);
             const precioFormateado = this.formatearMonto(params.precio);
 
@@ -1746,60 +1747,27 @@ RESPUESTA PRECISA:`);
     }
 
     /**
-     * Corrige errores ortográficos comunes en profesiones/ocupaciones
+     * Corrige errores ortográficos y normaliza ocupaciones usando LLM
      */
-    private corregirOcupacion(ocupacion: string): string {
+    private async corregirOcupacion(ocupacion: string): Promise<string> {
         if (!ocupacion) return ocupacion;
-        const texto = ocupacion.trim();
-        const correcciones: Record<string, string> = {
-            'ingeniro': 'Ingeniero', 'ingenero': 'Ingeniero', 'injeniero': 'Ingeniero',
-            'injniero': 'Ingeniero', 'ingeniro de sistemas': 'Ingeniero de Sistemas',
-            'ingeniero de sistemas': 'Ingeniero de Sistemas', 'ing de sistemas': 'Ingeniero de Sistemas',
-            'ing sistemas': 'Ingeniero de Sistemas', 'ing civil': 'Ingeniero Civil',
-            'ingeniro civil': 'Ingeniero Civil', 'ingeniero civil': 'Ingeniero Civil',
-            'abogdo': 'Abogado', 'abogda': 'Abogada', 'avogado': 'Abogado',
-            'contador': 'Contador', 'contadora': 'Contadora', 'comtador': 'Contador',
-            'arquitecto': 'Arquitecto', 'arquitecta': 'Arquitecta', 'arqutecto': 'Arquitecto',
-            'doctor': 'Doctor', 'doctora': 'Doctora', 'dotor': 'Doctor',
-            'enfermera': 'Enfermera', 'enfermero': 'Enfermero', 'emfermera': 'Enfermera',
-            'profesor': 'Profesor', 'profesora': 'Profesora', 'profsor': 'Profesor',
-            'policia': 'Policía', 'polisia': 'Policía',
-            'administrador': 'Administrador', 'administradora': 'Administradora', 'aministrador': 'Administrador',
-            'economista': 'Economista', 'econmista': 'Economista',
-            'comerciante': 'Comerciante', 'comersiante': 'Comerciante',
-            'independiente': 'Independiente', 'indepediente': 'Independiente', 'independente': 'Independiente',
-            'empresario': 'Empresario', 'empresaria': 'Empresaria', 'enpresario': 'Empresario',
-            'mecanico': 'Mecánico', 'mecanica': 'Mecánica',
-            'tecnico': 'Técnico', 'tecnica': 'Técnica', 'tecnco': 'Técnico',
-            'vendedor': 'Vendedor', 'vendedora': 'Vendedora',
-            'militar': 'Militar', 'miltiar': 'Militar',
-            'chofer': 'Chofer', 'choffer': 'Chofer',
-            'psicologo': 'Psicólogo', 'psicologa': 'Psicóloga', 'sicologo': 'Psicólogo',
-            'nutricionista': 'Nutricionista', 'nutriscionista': 'Nutricionista',
-            'diseñador': 'Diseñador', 'diseñadora': 'Diseñadora',
-            'programador': 'Programador', 'programadora': 'Programadora',
-            'obrero': 'Obrero', 'obrera': 'Obrera',
-            'secretaria': 'Secretaria', 'secretario': 'Secretario',
-            'biologo': 'Biólogo', 'biologa': 'Bióloga',
-            'dentista': 'Dentista', 'demtista': 'Dentista',
-        };
 
-        const textoLower = texto.toLowerCase();
+        try {
+            const OcupacionSchema = z.object({
+                ocupacion_normalizada: z.string().describe('La ocupación corregida y con mayúsculas capitalizadas, ej: "Ingeniero De Sistemas"')
+            });
 
-        // Buscar match exacto
-        if (correcciones[textoLower]) {
-            return correcciones[textoLower];
+            const extractor = this.llm.withStructuredOutput(OcupacionSchema);
+            const prompt = `Corrige la ortografía y normaliza esta ocupación profesional: "${ocupacion}". Si no es una ocupación clara, devuélvela como está pero capitalizada. Ejemplo: "ing sistemas" -> "Ingeniero de Sistemas".`;
+
+            const result = await extractor.invoke(prompt);
+            return result.ocupacion_normalizada;
+
+        } catch (error) {
+            this.logger.warn(`Error corrigiendo ocupación con LLM: ${error.message}`);
+            // Fallback simple: Capitalizar
+            return ocupacion.trim().replace(/\b\w/g, c => c.toUpperCase());
         }
-
-        // Buscar match parcial (ej: "ingeniro de sistemas" -> buscar "ingeniro")
-        for (const [error, correccion] of Object.entries(correcciones)) {
-            if (textoLower.includes(error)) {
-                return texto.replace(new RegExp(error, 'i'), correccion);
-            }
-        }
-
-        // Si no hay match, capitalizar primera letra de cada palabra
-        return texto.replace(/\b\w/g, c => c.toUpperCase());
     }
 
     /**
