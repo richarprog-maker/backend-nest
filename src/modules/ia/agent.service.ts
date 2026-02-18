@@ -186,7 +186,7 @@ export class AgentService {
     //  Enviar UBICACIÓN del proyecto (Google Maps link)
     const enviarUbicacionTool = new DynamicStructuredTool({
       name: 'enviar_ubicacion_proyecto',
-      description: 'Envía la UBICACIÓN del proyecto en Google Maps. Usa SOLO cuando el cliente pida: "ubicación", "dónde está", "link de google maps", "dirección", "cómo llegar". NO uses para planos de departamentos.',
+      description: 'DEPRECADA - NO USAR. Para ubicación, dirección o Google Maps del proyecto, usa buscar_preguntas_frecuentes con query ["direccion del proyecto", "ubicacion Google Maps"]. Esta herramienta solo existe como respaldo.',
       schema: z.object({
         nombre_proyecto: z.string().describe('Nombre del proyecto'),
       }),
@@ -199,7 +199,7 @@ export class AgentService {
     // Enviar VIDEOS del proyecto (archivos MP4)
     const enviarVideosProyectoTool = new DynamicStructuredTool({
       name: 'enviar_videos_proyecto',
-      description: 'Envía los VIDEOS promocionales del proyecto por WhatsApp. Usa SOLO cuando el cliente pida: "videos", "recorrido virtual", "tour", "quiero ver videos", "muéstrame videos", "envíame un video". ENVÍA AMBOS VIDEOS AUTOMÁTICAMENTE. NO confundir con brochure (PDF) ni con planos (imágenes).',
+      description: 'Envía los VIDEOS promocionales del proyecto por WhatsApp (archivos MP4). Usa SOLO cuando el cliente pida: "videos", "quiero ver videos", "muéstrame videos", "envíame un video". ENVÍA AMBOS VIDEOS AUTOMÁTICAMENTE. NO confundir con brochure (PDF), planos (imágenes), ni con RECORRIDO VIRTUAL (para recorrido virtual usa buscar_preguntas_frecuentes).',
       schema: z.object({
         nombre_proyecto: z.string().describe('Nombre del proyecto'),
       }),
@@ -544,8 +544,14 @@ REGLAS GENERALES:
       const extractor = this.llm.withStructuredOutput(InfoResumenSchema);
 
       const prompt = `
-      Analiza el siguiente mensaje del cliente inmobiliario y extrae SOLO la información nueva relevante o cambios de preferencias.
-      Ignora saludos o ruido. Si no hay información de un tipo, déjalo vacío.
+      Analiza el siguiente mensaje del cliente inmobiliario. Un solo mensaje puede contener MULTIPLES datos de distintas categorias. Extrae TODOS los datos que encuentres, no solo uno.
+
+      IMPORTANTE: Si el mensaje tiene varios datos juntos, captúralos TODOS. Ejemplos:
+      - "para inversión en Lince" → proposito: "inversion" Y zonas: ["Lince"]
+      - "busco 2 dormitorios para vivir en Surco o Miraflores" → dormitorios: [2] Y proposito: "vivir" Y zonas: ["Surco", "Miraflores"]
+      - "quiero un depa de 3 cuartos, mi presupuesto es 3000 soles de cuota, crédito hipotecario" → dormitorios: [3] Y presupuesto: "3000 soles cuota" Y financiamiento: "hipotecario"
+
+      Si no hay información de un tipo, déjalo vacío. Ignora saludos o ruido.
       
       Mensaje: "${mensaje}"
       `;

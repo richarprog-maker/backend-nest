@@ -167,7 +167,7 @@ export class ToolsExecutionService {
             const { results, filters_applied } = resultado;
 
             if (results.length === 0) {
-                return "[ACCION_COMPLETADA] No encontre propiedades con esas caracteristicas especificas. Pregunta si quiere ver otras opciones similares.";
+                return "[ACCION_COMPLETADA] No encontre propiedades con esas caracteristicas especificas. <<INSTRUCCION_IA: Pregunta si quiere ver otras opciones similares.>>";
             }
 
             // Formatear respuesta para el LLM final
@@ -583,7 +583,7 @@ RESPUESTA PRECISA:`);
             this.logger.debug(`Respuesta LLM FAQ: ${resultado}`);
 
             if (!resultado || resultado.toLowerCase().includes("no encontré") || resultado.toLowerCase().includes("no tengo información")) {
-                return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. Continua la conversacion.";
+                return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. <<INSTRUCCION_IA: Continua la conversacion con naturalidad.>>";
             }
 
             return `[ACCION_COMPLETADA] ${resultado}`;
@@ -615,7 +615,7 @@ RESPUESTA PRECISA:`);
             await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { dni });
         }
 
-        return { success: true, mensaje: "[ACCION_COMPLETADA] DNI validado correctamente. Continua con el siguiente paso." };
+        return { success: true, mensaje: "[ACCION_COMPLETADA] DNI validado correctamente. <<INSTRUCCION_IA: Continua con el siguiente paso del flujo.>>" };
     }
 
     async buscarPorCuota(params: { cuota_mensual: number }) {
@@ -737,7 +737,7 @@ RESPUESTA PRECISA:`);
 
             if (resultados.length === 0) {
                 this.logger.warn(`No se encontraron resultados para dormitorios: ${params.dormitorios}`);
-                return "[ACCION_COMPLETADA] No encontre departamentos disponibles con esas caracteristicas. Pregunta si quiere ver otras opciones.";
+                return "[ACCION_COMPLETADA] No encontre departamentos disponibles con esas caracteristicas. <<INSTRUCCION_IA: Pregunta si quiere ver otras opciones.>>";
             }
             // Mostrar lista de resultados
             const lista = resultados.map((r, idx) => {
@@ -763,7 +763,7 @@ RESPUESTA PRECISA:`);
                 return `${idx + 1}. Unidad ${m.unit_number} - ${dormitoriosText}, ${m.area_total}m² - Precio: ${precioMostrar}`;
             }).join('\n');
 
-            const respuesta = `[ACCION_COMPLETADA] Hay ${resultados.length} departamento${resultados.length > 1 ? 's' : ''} disponible${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\nPregunta si quiere agendar visita.`;
+            const respuesta = `[ACCION_COMPLETADA] Hay ${resultados.length} departamento${resultados.length > 1 ? 's' : ''} disponible${resultados.length > 1 ? 's' : ''}:\n\n${lista}\n\n<<INSTRUCCION_IA: Pregunta si quiere agendar visita.>>`;
 
             return respuesta;
 
@@ -865,7 +865,7 @@ RESPUESTA PRECISA:`);
                 }
             }
 
-            return `[ACCION_COMPLETADA] Proforma generada y ENVIADA al cliente por WhatsApp. Dile que ya se la enviaste y pregunta si quiere ver el recorrido virtual.`;
+            return `[ACCION_COMPLETADA] Proforma generada y enviada al cliente por WhatsApp. <<INSTRUCCION_IA: Dile que ya se la enviaste y pregunta si quiere ver el recorrido virtual.>>`;
 
         } catch (error) {
             this.logger.error(`Error generando proforma: ${error.message}`);
@@ -1157,10 +1157,10 @@ RESPUESTA PRECISA:`);
                     return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
                 }).join('\n');
 
-                return `[ACCION_COMPLETADA] No encontré departamentos de ${dormsNumber} dormitorios tipo ${params.tipo_unidad || ''}, pero aquí tienes las opciones disponibles (tipologias: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\nPreguntame por una tipologia especifica o cuantos dormitorios buscas.`;
+                return `[ACCION_COMPLETADA] No encontré departamentos de ${dormsNumber} dormitorios tipo ${params.tipo_unidad || ''}, pero aquí tienes las opciones disponibles (tipologias: ${tipologiasDisponibles.join(', ')}):\n\n${lista}\n\n<<INSTRUCCION_IA: Pregunta por una tipologia especifica o cuantos dormitorios busca.>>`;
             }
 
-            return "[ACCION_COMPLETADA] Lo siento, no encontre nada disponible ni siquiera relajando la busqueda. Pregunta si quiere ver departamentos de otra cantidad de dormitorios.";
+            return "[ACCION_COMPLETADA] Lo siento, no encontre nada disponible ni siquiera relajando la busqueda. <<INSTRUCCION_IA: Pregunta si quiere ver departamentos de otra cantidad de dormitorios.>>";
 
         } catch (error) {
             this.logger.error(`Error en buscarDepartamentoUniversal: ${error.message}`, error.stack);
@@ -1314,7 +1314,7 @@ RESPUESTA PRECISA:`);
             return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
         }).join('\n');
 
-        return `[ACCION_COMPLETADA] ${mensajeIntro}\n\n${lista}\n\nRecomienda una opcion y pregunta si quiere ver el plano o agendar visita.`;
+        return `[ACCION_COMPLETADA] ${mensajeIntro}\n\n${lista}\n\n<<INSTRUCCION_IA: Recomienda una opcion y pregunta si quiere ver el plano o agendar visita.>>`;
     }
 
     private formatearDetalleUnidad(m: any) {
@@ -1350,7 +1350,7 @@ RESPUESTA PRECISA:`);
         if (m.storage) detalles.push(`- Deposito: ${m.storage}`);
 
         detalles.push('');
-        detalles.push('Ya se envio el plano al cliente. Muestra TODOS los datos de arriba en tu respuesta y continua con el flujo de venta.');
+        detalles.push('<<INSTRUCCION_IA: Ya se envio el plano al cliente. Muestra TODOS los datos de arriba en tu respuesta y continua con el flujo de venta.>>');
 
         return detalles.join('\n');
     }
@@ -1440,7 +1440,7 @@ RESPUESTA PRECISA:`);
                 errorWapi: errorDetails
             });
 
-            return `[ACCION_COMPLETADA] Brochure del proyecto ${params.nombre_proyecto} enviado exitosamente al cliente. NO vuelvas a ejecutar esta herramienta. Continua con tu mensaje de seguimiento.`;
+            return `[ACCION_COMPLETADA] Brochure del proyecto ${params.nombre_proyecto} enviado exitosamente al cliente. <<INSTRUCCION_IA: No ejecutes esta herramienta de nuevo. Continua con tu mensaje de seguimiento.>>`;
 
         } catch (error) {
             this.logger.error(`Error enviando brochure: ${error.message}`);
@@ -1517,7 +1517,7 @@ RESPUESTA PRECISA:`);
                             }
                         }
 
-                        return `[ACCION_COMPLETADA] Plano del departamento ${params.unidad_id} enviado exitosamente. NO repitas esta herramienta.`;
+                        return `[ACCION_COMPLETADA] Plano del departamento ${params.unidad_id} enviado exitosamente. <<INSTRUCCION_IA: No ejecutes esta herramienta de nuevo.>>`;
                     } catch (error) {
                         this.logger.error(`Error enviando plano: ${error.message}`);
                         return `[ACCION_COMPLETADA] Tuve un problema enviando el plano. Aqui esta el link: ${metadata.url_floor_plan}`;
@@ -1669,7 +1669,7 @@ RESPUESTA PRECISA:`);
 
             // Generar respuesta según resultados
             if (videosEnviados.length === videosDisponibles.length) {
-                return `[ACCION_COMPLETADA] Videos del proyecto ${params.nombre_proyecto} enviados exitosamente. NO vuelvas a ejecutar esta herramienta. Pregunta qué le parecieron los videos.`;
+                return `[ACCION_COMPLETADA] Videos del proyecto ${params.nombre_proyecto} enviados exitosamente. <<INSTRUCCION_IA: No ejecutes esta herramienta de nuevo. Pregunta que le parecieron los videos.>>`;
             } else if (videosEnviados.length > 0) {
                 return `[ACCION_COMPLETADA] Se enviaron ${videosEnviados.length} de ${videosDisponibles.length} videos. Algunos tuvieron problemas, pero ya tienes material para revisar.`;
             } else {

@@ -332,13 +332,18 @@ export class WebhookService implements OnModuleInit {
     private limpiarMarcadoresInternos(texto: string): string {
         let limpio = texto;
 
+        // 1. Eliminar tags de estado de herramientas
         limpio = limpio.replace(/\[ACCION_COMPLETADA\]\s*/gi, '');
         limpio = limpio.replace(/\[ACCION_REQUERIDA\]\s*/gi, '');
 
+        // 2. Eliminar instrucciones internas del sistema IA (tag universal)
+        limpio = limpio.replace(/<<INSTRUCCION_IA:.*?>>/gs, '');
+
+        // 3. Limpieza legacy (por si quedan mensajes antiguos en caché)
         limpio = limpio.replace(/^INSTRUCCION:.*$/gm, '');
+        limpio = limpio.replace(/^(NO repitas esta herramienta|NO vuelvas a ejecutar esta herramienta|Continua con el siguiente paso|Continua con tu mensaje de seguimiento|Continua la conversacion|Pregunta si quiere|Preguntame por|Recomienda una opcion|Dile que ya se la enviaste|Ya se envio el plano al cliente|Muestra TODOS los datos).*$/gm, '');
 
-        limpio = limpio.replace(/^(NO repitas esta herramienta|Continua con el siguiente paso|Continua con tu mensaje de seguimiento|Pregunta si quiere|Preguntame por|Recomienda una opcion).*$/gm, '');
-
+        // 4. Limpiar líneas vacías excesivas
         limpio = limpio.replace(/\n{3,}/g, '\n\n');
         limpio = limpio.trim();
 
