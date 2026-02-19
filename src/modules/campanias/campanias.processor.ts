@@ -14,6 +14,7 @@ import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { WapiService } from '../webhook_meta/wapi.service';
 import * as xlsx from 'xlsx';
 import * as fs from 'fs';
+import * as path from 'path';
 
 @Processor('campanias', { concurrency: 5 })
 export class CampaniasProcessor extends WorkerHost {
@@ -388,7 +389,7 @@ export class CampaniasProcessor extends WorkerHost {
             let tipoEnvio = 'text';
 
             if (usarTemplate && templateName) {
-                const components = this.buildTemplateComponents(detalle.variables, templateParams, tipoMultimedia, urlMultimedia);
+                const components = await this.buildTemplateComponents(detalle.variables, templateParams, tipoMultimedia, urlMultimedia, codigoEmpresa);
                 response = await this.wapiService.sendTemplate(
                     codigoEmpresa,
                     detalle.telefono,
@@ -492,7 +493,7 @@ export class CampaniasProcessor extends WorkerHost {
         }
     }
 
-    private buildTemplateComponents(variables: any, paramNames: string[], tipoMultimedia?: string, urlMultimedia?: string): any[] {
+    private async buildTemplateComponents(variables: any, paramNames: string[], tipoMultimedia?: string, urlMultimedia?: string, codigoEmpresa?: number): Promise<any[]> {
         const components = [];
 
         if (tipoMultimedia && tipoMultimedia !== 'none' && urlMultimedia) {
@@ -505,16 +506,44 @@ export class CampaniasProcessor extends WorkerHost {
             };
 
             const metaMediaType = mediaTypeMap[tipoMultimedia.toLowerCase()] || 'image';
-            const baseUrl = process.env.BASE_URL || 'http://localhost:3007';
-            const mediaUrl = urlMultimedia.startsWith('http') ? urlMultimedia : `${baseUrl}${urlMultimedia}`;
+
+            // Subir media a WhatsApp API y usar ID en vez de link URL
+            // Esto es más robusto: no depende de que Meta pueda descargar desde nuestra URL
+            let mediaParam: any = null;
+
+            if (codigoEmpresa && !urlMultimedia.startsWith('http')) {
+                try {
+                    const filePath = urlMultimedia.startsWith('/')
+                        ? path.join(process.cwd(), urlMultimedia)
+                        : path.join(process.cwd(), 'storage', urlMultimedia);
+                    const filename = path.basename(filePath);
+
+                    if (fs.existsSync(filePath)) {
+                        const mediaId = await this.wapiService.uploadMedia(codigoEmpresa, filePath, filename);
+                        if (mediaId) {
+                            mediaParam = { id: mediaId };
+                            this.logger.log(`Media subida a WhatsApp API. ID: ${mediaId}`);
+                        }
+                    } else {
+                        this.logger.warn(`Archivo multimedia no encontrado: ${filePath}`);
+                    }
+                } catch (uploadError) {
+                    this.logger.error(`Error subiendo media a WhatsApp API: ${uploadError.message}`);
+                }
+            }
+
+            // Fallback a link URL si no se pudo subir via API
+            if (!mediaParam) {
+                const baseUrl = (process.env.BASE_URL || 'https://checor.novalyapp.com').trim();
+                const mediaUrl = urlMultimedia.startsWith('http') ? urlMultimedia : `${baseUrl}${urlMultimedia}`;
+                mediaParam = { link: encodeURI(mediaUrl) };
+            }
 
             components.push({
                 type: 'header',
                 parameters: [{
                     type: metaMediaType,
-                    [metaMediaType]: {
-                        link: mediaUrl
-                    }
+                    [metaMediaType]: mediaParam
                 }]
             });
         }

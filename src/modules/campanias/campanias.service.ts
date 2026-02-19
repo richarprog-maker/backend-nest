@@ -10,6 +10,15 @@ import { PlantillasCampaniasService } from '../plantillas-campanias/plantillas-c
 import * as fs from 'fs';
 import * as path from 'path';
 
+function sanitizeFileName(name: string): string {
+    return name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') // Quitar tildes: á→a, ó→o, etc.
+        .replace(/ñ/gi, 'n')
+        .replace(/[^a-zA-Z0-9._-]/g, '_') // Solo caracteres seguros para URL
+        .replace(/_+/g, '_'); // Colapsar múltiples guiones bajos
+}
+
 @Injectable()
 export class CampaniasService {
     private readonly logger = new Logger(CampaniasService.name);
@@ -52,7 +61,7 @@ export class CampaniasService {
                 const storageDir = path.join(process.cwd(), 'storage', 'multimedia', 'campaigns');
                 if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
 
-                const fileName = `img_${Date.now()}_${imgFile.originalname}`;
+                const fileName = `img_${Date.now()}_${sanitizeFileName(imgFile.originalname)}`;
                 const filePath = path.join(storageDir, fileName);
 
                 fs.writeFileSync(filePath, imgFile.buffer);
@@ -109,7 +118,7 @@ export class CampaniasService {
                 const uploadDir = path.join(process.cwd(), 'storage', 'campaigns', 'documents');
                 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-                const fileName = `audiencia_${Date.now()}_${excelFile.originalname}`;
+                const fileName = `audiencia_${Date.now()}_${sanitizeFileName(excelFile.originalname)}`;
                 const filePath = path.join(uploadDir, fileName);
 
                 fs.writeFileSync(filePath, excelFile.buffer);
