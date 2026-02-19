@@ -8,7 +8,7 @@ const DB_CONFIG = {
     host: process.env.DB_HOST,
     port: parseInt(process.env.DB_PORT || '3306'),
     user: process.env.DB_USER,
-    password: process.env.DB_PASS, 
+    password: process.env.DB_PASS,
     database: process.env.DB_NAME,
 };
 
@@ -50,6 +50,11 @@ async function migrate() {
         }
 
         // 3. Insertar unidades
+        console.log('🗑️ Truncando tabla tbl_unidades_proyectos...');
+        await connection.query('SET FOREIGN_KEY_CHECKS = 0');
+        await connection.query('TRUNCATE TABLE tbl_unidades_proyectos');
+        await connection.query('SET FOREIGN_KEY_CHECKS = 1');
+
         let insertedCount = 0;
 
         // Preparar query

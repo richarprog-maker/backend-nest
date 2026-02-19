@@ -538,6 +538,7 @@ REGLAS GENERALES:
         tiempo_compra: z.string().nullable().describe('Tiempo estimado de compra (ej: "este mes", "2026", "pronto"). Null si no hay.'),
         financiamiento: z.enum(['hipotecario', 'banco', 'directo', 'contado']).nullable().describe('Tipo de financiamiento mencionado. Null si no hay.'),
         presupuesto: z.string().nullable().describe('Presupuesto o cuota mencionada (ej: "500k", "cuota 3000"). Null si no hay.'),
+        ingresos: z.string().nullable().describe('Ingresos mensuales del cliente. MANTÉN RANGOS si existen (ej: "5000-6000", "5k a 6k"). Null si no hay.'),
         intereses_adicionales: z.array(z.string()).describe('Temas adicionales: estacionamiento, mascota, entrega, areas_comunes, inicial. Si no hay, array vacio.'),
       });
 
@@ -550,6 +551,8 @@ REGLAS GENERALES:
       - "para inversión en Lince" → proposito: "inversion" Y zonas: ["Lince"]
       - "busco 2 dormitorios para vivir en Surco o Miraflores" → dormitorios: [2] Y proposito: "vivir" Y zonas: ["Surco", "Miraflores"]
       - "quiero un depa de 3 cuartos, mi presupuesto es 3000 soles de cuota, crédito hipotecario" → dormitorios: [3] Y presupuesto: "3000 soles cuota" Y financiamiento: "hipotecario"
+      - "mis ingresos son 5000-6000" → ingresos: "5000-6000"
+      - "gano 8k" → ingresos: "8k"
 
       Si no hay información de un tipo, déjalo vacío. Ignora saludos o ruido.
       
@@ -592,6 +595,10 @@ REGLAS GENERALES:
 
       if (result.presupuesto) {
         puntos.push(`Presupuesto/Cuota: ${result.presupuesto}`);
+      }
+
+      if (result.ingresos) {
+        puntos.push(`Ingresos mensuales: ${result.ingresos}`);
       }
 
       // Intereses adicionales mapeados
