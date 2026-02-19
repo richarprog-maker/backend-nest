@@ -16,6 +16,7 @@ import { TimeUtils } from '../../../common/utils/time.utils';
 @Injectable()
 export class RecoveryTasksService {
     private readonly logger = new Logger(RecoveryTasksService.name);
+    private isRunning = false; // Mutex para evitar ejecuciones concurrentes del cron
 
     // Constantes de tiempo (en minutos) - VALORES DE PRODUCCIÓN
     // 1 hora = 60 minutos
@@ -45,12 +46,19 @@ export class RecoveryTasksService {
 
     @Cron(CronExpression.EVERY_MINUTE)
     async handleRecoveryMessages() {
+        // MUTEX: Evitar ejecuciones concurrentes del cron
+        if (this.isRunning) {
+            this.logger.debug('Recovery cron ya en ejecución. Saltando.');
+            return;
+        }
+
         // VALIDACION DE HORARIO (BLOCKING)
         if (!TimeUtils.isWithinOperatingHours()) {
             this.logger.debug('Fuera de horario operativo (10am-7pm). Cron pausado.');
             return;
         }
 
+        this.isRunning = true;
         this.logger.log('Verificando sesiones para recuperación...');
 
         try {
@@ -69,6 +77,8 @@ export class RecoveryTasksService {
 
         } catch (error) {
             this.logger.error('Error en cron de recuperación', error);
+        } finally {
+            this.isRunning = false;
         }
     }
 
@@ -149,6 +159,12 @@ export class RecoveryTasksService {
             return;
         }
 
+        // ANTI-DUPLICADOS: Actualizar estado ANTES de enviar
+        // Así si hay solapamiento de cron, la sesión ya no será elegible
+        sesion.proximoMensajeMinutos = nextMinutes;
+        sesion.fechaHoraUltimoMsj = new Date();
+        await this.sesionRepo.save(sesion);
+
         // 3. Enviar Mensaje
         const contenido = plantilla.contenido;
         let resultado;
@@ -177,13 +193,7 @@ export class RecoveryTasksService {
             historial.estado = 'ENVIADO';
             historial.metadata = resultado;
 
-            // Actualizar estado para la siguiente recuperación
-            sesion.proximoMensajeMinutos = nextMinutes;
-
-            // ACTULIZAMOS la fecha de último mensaje
-            sesion.fechaHoraUltimoMsj = new Date();
-
-            await this.sesionRepo.save(sesion);
+            // Estado ya actualizado arriba (ANTI-DUPLICADOS)
 
             // LOGICA DE REGISTRO EN TBL_MENSAJES
             try {
