@@ -97,6 +97,11 @@ export class CampaniasProcessor extends WorkerHost {
                         pais: row['country'] || row['pais'] || '',
                         ciudad: row['city'] || row['ciudad'] || '',
                         departamento: row['department'] || row['departamento'] || '',
+                        fechaNacimiento: row['date_of_birth'] || row['fecha_nacimiento'] || row['fechaNacimiento'] || '',
+                        projectId: row['project_id'] || row['proyecto_id'] || '',
+                        utmSource: row['utm_source'] || '',
+                        utmMedium: row['utm_medium'] || '',
+                        utmCampaign: row['utm_campaign'] || '',
                         observacion: row['observacion'] || row['observaciones'] || '',
                         variables: row
                     })).filter(d => d.telefono);
@@ -142,6 +147,11 @@ export class CampaniasProcessor extends WorkerHost {
                                 pais: d.pais,
                                 ciudad: d.ciudad,
                                 observacion: d.observacion,
+                                fechaNacimiento: d.fechaNacimiento,
+                                projectId: d.projectId,
+                                utmSource: d.utmSource,
+                                utmMedium: d.utmMedium,
+                                utmCampaign: d.utmCampaign,
                             }
                         );
 
@@ -273,6 +283,11 @@ export class CampaniasProcessor extends WorkerHost {
             pais?: string;
             ciudad?: string;
             observacion?: string;
+            fechaNacimiento?: string | Date;
+            projectId?: string | number;
+            utmSource?: string;
+            utmMedium?: string;
+            utmCampaign?: string;
         }
     ): Promise<{ lead: Lead | null; prospecto: Prospecto | null; clasificacion: string | null }> {
         try {
@@ -293,6 +308,7 @@ export class CampaniasProcessor extends WorkerHost {
                     genero: datosExtra?.genero || null,
                     pais: datosExtra?.pais || null,
                     ciudad: datosExtra?.ciudad || null,
+                    fechaNacimiento: datosExtra?.fechaNacimiento ? new Date(datosExtra.fechaNacimiento) : null,
                     codigoEmpresa
                 });
                 lead = await this.leadRepo.save(lead);
@@ -303,14 +319,22 @@ export class CampaniasProcessor extends WorkerHost {
 
             // SOLO crear nuevo prospecto si es carga de Excel
             if (tipoAudiencia === 'excel') {
+                const json_data = {
+                    ...(datosExtra?.utmSource && { utm_source: datosExtra.utmSource }),
+                    ...(datosExtra?.utmMedium && { utm_medium: datosExtra.utmMedium }),
+                    ...(datosExtra?.utmCampaign && { utm_campaign: datosExtra.utmCampaign })
+                };
+
                 prospecto = this.prospectoRepo.create({
                     idLead: lead.id,
                     codigoEmpresa,
                     origenDato: 'Campaña',
                     interesNombre: nombreCampania,
+                    interesTipoId: datosExtra?.projectId ? Number(datosExtra?.projectId) : null,
                     estadoGestion: 'nuevo',
                     contadorCampanias: 1,
-                    observacion: datosExtra?.observacion || null
+                    observacion: datosExtra?.observacion || null,
+                    json_data: Object.keys(json_data).length > 0 ? json_data : null
                 });
                 prospecto = await this.prospectoRepo.save(prospecto);
             } else {
