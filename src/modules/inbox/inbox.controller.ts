@@ -35,9 +35,9 @@ export class InboxController {
         const user = req.user;
         const empresaId = user?.empresaId || 91;
 
-        this.logger.log(`GET conversations - User: ${user?.username}, EmpresaId: ${empresaId}, Filter: ${filter}, Search: ${search}`);
+        this.logger.log(`GET conversations - User: ${user?.username}, EmpresaId: ${empresaId}, Filter: ${filter}, Search: ${search}, Rol: ${user?.rol}`);
 
-        return this.inboxService.getConversaciones(empresaId, page, limit, filter, search);
+        return this.inboxService.getConversaciones(empresaId, page, limit, filter, search, user?.userId, user?.rol);
     }
 
     @Get('messages/:leadUuid')

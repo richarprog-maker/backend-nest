@@ -91,8 +91,9 @@ export class AgentService {
         queries_de_busqueda: z.array(z.string()).describe('Lista de preguntas o palabras clave'),
         nombre_proyecto: z.string().describe('Nombre del proyecto'),
       }),
-      func: async (input) => {
-        const result = await this.toolsExecutionService.buscarPreguntasFrecuentes(input);
+      func: async (input, config) => {
+        const metadata = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.buscarPreguntasFrecuentes(input, metadata.proyectoId);
         return result;
       },
     });
@@ -242,7 +243,8 @@ export class AgentService {
         };
         return await this.toolsExecutionService.buscarDepartamentoUniversal({
           ...paramsWithContext,
-          dormitorios: input.dormitorios
+          dormitorios: input.dormitorios,
+          proyectoId: metadata.proyectoId
         });
       },
     });
@@ -265,19 +267,32 @@ export class AgentService {
       },
     });
 
-    // Agregar todas las tools al array
+    const guardarProyectoTool = new DynamicStructuredTool({
+      name: 'guardar_proyecto',
+      description: 'ACTUALIZA el proyecto del cliente en la base de datos. OBLIGATORIO ejecutar cuando: (1) El cliente elige un proyecto por primera vez, (2) El cliente CONFIRMA que quiere cambiarse a otro proyecto. NO ejecutes solo porque pidio un brochure o info de otro proyecto. Pero si despues de dar info el cliente dice "si me interesa ese", "cambienme", "prefiero ese" -> EJECUTA INMEDIATAMENTE para actualizar la BD.',
+      schema: z.object({
+        nombre_proyecto: z.string().describe('Nombre del proyecto que eligio o al que quiere cambiarse'),
+      }),
+      func: async (input, config) => {
+        const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.guardarProyecto(input, codigoEmpresa, leadUuid);
+        return JSON.stringify(result);
+      },
+    });
+
     this.tools = [
-      buscarDepartamentoUniversalTool,  //ÚNICA herramienta para TODAS las búsquedas de departamentos
+      buscarDepartamentoUniversalTool,
       agendarCitaTool,
-      reagendarCitaTool,                // Nueva herramienta para reagendar citas existentes
-      buscarPreguntasFrecuentesTool,    // Para FAQs, características, amenidades
+      reagendarCitaTool,
+      buscarPreguntasFrecuentesTool,
       validarDniTool,
       generarProformaTool,
       enviarBrochureTool,
-      enviarPlanoTool,                  // PLANO del departamento (imagen)
-      enviarUbicacionTool,              // UBICACIÓN del proyecto (Google Maps)
-      enviarVideosProyectoTool,         // VIDEOS promocionales del proyecto (MP4)
-      descartarClienteTool,             // DESCARTAR cliente que no quiere ser contactado
+      enviarPlanoTool,
+      enviarUbicacionTool,
+      enviarVideosProyectoTool,
+      descartarClienteTool,
+      guardarProyectoTool,
     ];
 
     this.logger.log(`Agente inicializado con ${this.tools.length} herramientas`);
@@ -303,6 +318,7 @@ export class AgentService {
       nombreLead?: string;
       proyectoInteres?: string;
       phoneNumber?: string;
+      proyectoId?: number;
     }
   ): Promise<{
     output: string;
@@ -439,6 +455,15 @@ REGLAS GENERALES:
               // Marcar como ejecutada
               accionesEjecutadas.add(toolCall.name);
               toolsEjecutados.push(toolCall.name);
+
+              // Auto-sincronizar proyecto en sesión si la tool usó un nombre_proyecto
+              if (toolCall.args?.nombre_proyecto && metadata.leadUuid && metadata.codigoEmpresa) {
+                await this.toolsExecutionService.sincronizarProyectoSesion(
+                  toolCall.args.nombre_proyecto,
+                  metadata.codigoEmpresa,
+                  metadata.leadUuid
+                );
+              }
 
               // Guardar en historial
               try {

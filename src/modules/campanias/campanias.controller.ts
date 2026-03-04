@@ -38,6 +38,7 @@ export class CampaniasController {
             plantillaParametros: body.plantillaParametros ? JSON.parse(body.plantillaParametros) : null,
             codigoEmpresa: safeInt(body.codigoEmpresa) || 1,
             usuarioId: safeInt(body.usuarioId),
+            proyectoId: safeInt(body.proyectoId),
             filtrosAudiencia: body.filtrosAudiencia ? JSON.parse(body.filtrosAudiencia) : null,
             fechaProgramada: body.fechaProgramada || null
         };
@@ -73,7 +74,7 @@ export class CampaniasController {
 
     @Patch(':id/toggle')
     async toggleCampania(
-        @Param('id') id: string, 
+        @Param('id') id: string,
         @Body() body: { activar: boolean }
     ) {
         const nuevoEstado = body.activar ? 'habilitado' : 'deshabilitado';

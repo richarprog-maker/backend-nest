@@ -5,12 +5,13 @@ import { PreguntasFrecuentesService } from './preguntas-frecuentes.service';
 import { PreguntasFrecuentesController } from './preguntas-frecuentes.controller';
 import { AiModule } from '../ia/ia.module';
 import { ProyectosModule } from '../proyectos/proyectos.module';
+import { ColeccionQdrant } from '../proyectos/entities/coleccion-qdrant.entity';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([PreguntaFrecuente]),
+        TypeOrmModule.forFeature([PreguntaFrecuente, ColeccionQdrant]),
         AiModule,
-        forwardRef(() => ProyectosModule)
+        forwardRef(() => ProyectosModule) // importación cruzada
     ],
     controllers: [PreguntasFrecuentesController],
     providers: [PreguntasFrecuentesService],

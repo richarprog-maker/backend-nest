@@ -2,6 +2,7 @@ import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Proyecto } from './entities/proyecto.entity';
+import { VendedorProyecto } from './entities/asesor-proyecto.entity';
 import { PreguntasFrecuentesService } from '../preguntas-frecuentes/preguntas-frecuentes.service';
 
 @Injectable()
@@ -11,6 +12,8 @@ export class ProyectosService {
     constructor(
         @InjectRepository(Proyecto)
         private proyectoRepo: Repository<Proyecto>,
+        @InjectRepository(VendedorProyecto)
+        private vendedorProyectoRepo: Repository<VendedorProyecto>,
         @Inject(forwardRef(() => PreguntasFrecuentesService))
         private preguntasFrecuentesService: PreguntasFrecuentesService,
     ) { }
@@ -21,11 +24,9 @@ export class ProyectosService {
                 where: { codigoEmpresa, estado: 'activo' }
             });
 
-            // Mapear al formato esperado por el frontend
             return proyectos.map(p => ({
                 codigoProyecto: p.id,
                 nombreProyecto: p.nombre,
-                // Otros campos si fueran necesarios
             }));
         } catch (error) {
             this.logger.error(`Error obteniendo proyectos empresa ${codigoEmpresa}: ${error.message}`);
@@ -44,7 +45,6 @@ export class ProyectosService {
                 return null;
             }
 
-            // Extraer datos del json_data si existen
             const jsonData = proyecto.jsonData || {};
 
             return {
@@ -55,11 +55,8 @@ export class ProyectosService {
                 tipos_unidades: jsonData.tipos_unidades || proyecto.tipoInmueble,
                 exhibicion_unidades: jsonData.exhibicion_unidades || '',
                 etapa_actual: jsonData.etapa_actual || '',
-
-                // Direcciones
-                direccion_proyecto: proyecto.ubicacion, // En BD se guarda unificado o separado, aquí devolvemos lo que hay
+                direccion_proyecto: proyecto.ubicacion,
                 direccion_sala_ventas: jsonData.direccion_sala_ventas || '',
-
                 horario_atencion: jsonData.horario_atencion,
                 unidades_disponibles: jsonData.unidades_disponibles,
                 recorrido_virtual: jsonData.recorrido_virtual
@@ -80,12 +77,10 @@ export class ProyectosService {
                 throw new Error('Proyecto no encontrado');
             }
 
-            // Actualizar campos base
             if (data.nombre_proyecto) proyecto.nombre = data.nombre_proyecto;
             if (data.acerca_proyecto) proyecto.descripcion = data.acerca_proyecto;
             if (data.direccion_proyecto) proyecto.ubicacion = data.direccion_proyecto;
 
-            // Actualizar JSON Data preservando lo existente
             const currentJson = proyecto.jsonData || {};
             const newJson = {
                 ...currentJson,
@@ -105,15 +100,71 @@ export class ProyectosService {
 
             try {
                 await this.preguntasFrecuentesService.syncQdrant(id);
-                this.logger.log(`Qdrant sincronizado después de actualizar proyecto ${id}`);
+                this.logger.log(`Qdrant sincronizado despues de actualizar proyecto ${id}`);
             } catch (syncError) {
-                this.logger.error(`Error sincronizando Qdrant después de actualizar proyecto ${id}: ${syncError.message}`);
+                this.logger.error(`Error sincronizando Qdrant: ${syncError.message}`);
             }
 
             return { success: true, message: 'Proyecto actualizado correctamente' };
 
         } catch (error) {
             this.logger.error(`Error actualizando proyecto ${id}: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async obtenerVendedoresPorProyecto(proyectoId: number) {
+        try {
+            const asignaciones = await this.vendedorProyectoRepo.find({
+                where: { proyectoId },
+                relations: ['vendedor', 'proyecto']
+            });
+            return asignaciones;
+        } catch (error) {
+            this.logger.error(`Error obteniendo vendedores del proyecto ${proyectoId}: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async asignarVendedor(proyectoId: number, idVendedor: number) {
+        try {
+            const existente = await this.vendedorProyectoRepo.findOne({
+                where: { proyectoId, idVendedor }
+            });
+            if (existente) {
+                return { success: false, message: 'El vendedor ya esta asignado a este proyecto' };
+            }
+            const asignacion = this.vendedorProyectoRepo.create({ proyectoId, idVendedor });
+            await this.vendedorProyectoRepo.save(asignacion);
+            return { success: true, message: 'Vendedor asignado correctamente' };
+        } catch (error) {
+            this.logger.error(`Error asignando vendedor: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async desasignarVendedor(proyectoId: number, idVendedor: number) {
+        try {
+            await this.vendedorProyectoRepo.delete({ proyectoId, idVendedor });
+            return { success: true, message: 'Vendedor desasignado correctamente' };
+        } catch (error) {
+            this.logger.error(`Error desasignando vendedor: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async obtenerProyectosPorVendedor(idVendedor: number) {
+        try {
+            const asignaciones = await this.vendedorProyectoRepo.find({
+                where: { idVendedor },
+                relations: ['proyecto']
+            });
+            return asignaciones.map(a => ({
+                codigoProyecto: a.proyecto.id,
+                nombreProyecto: a.proyecto.nombre,
+            }));
+        } catch (error) {
+            this.logger.error(`Error obteniendo proyectos del vendedor ${idVendedor}: ${error.message}`);
             throw error;
         }
     }

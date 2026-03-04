@@ -17,11 +17,13 @@ import { HistorialClasificacionLead } from '../../clasificacion-leads/entities/h
 import { Lead } from '../../inbox/entities/lead.entity';
 import { ResumenConversacionService } from '../resumen-conversacion.service';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
+import { ColeccionQdrant } from '../../proyectos/entities/coleccion-qdrant.entity';
 
 @Injectable()
 export class ToolsExecutionService {
     private readonly logger = new Logger(ToolsExecutionService.name);
     private llm: ChatOpenAI;
+    private cacheColecciones: Map<string, string> = new Map();
 
     constructor(
         private citasService: CitasService,
@@ -34,14 +36,134 @@ export class ToolsExecutionService {
         @InjectRepository(HistorialClasificacionLead) private clasificacionRepo: Repository<HistorialClasificacionLead>,
         @InjectRepository(Lead) private leadRepo: Repository<Lead>,
         @InjectRepository(Proyecto) private proyectosRepo: Repository<Proyecto>,
+        @InjectRepository(ColeccionQdrant) private coleccionQdrantRepo: Repository<ColeccionQdrant>,
         private resumenService: ResumenConversacionService,
     ) {
-        // LLM para el RAG Chain
         this.llm = new ChatOpenAI({
             modelName: 'gpt-4o-mini',
             temperature: 0,
             openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
         });
+    }
+
+    /**
+     * Auto-sincroniza el proyecto de la sesión cuando una herramienta
+     * usa un nombre_proyecto diferente al que tiene la sesión actual.
+     */
+    async sincronizarProyectoSesion(
+        nombreProyecto: string,
+        codigoEmpresa: number,
+        leadUuid: string
+    ): Promise<void> {
+        try {
+            if (!nombreProyecto?.trim()) return;
+
+            const proyecto = await this.proyectosRepo.findOne({
+                where: { nombre: ILike(`%${nombreProyecto.trim()}%`), codigoEmpresa }
+            });
+
+            if (!proyecto) return;
+
+            const sesion = await this.sesionRepo.findOne({
+                where: { leadUuid, codigoEmpresa }
+            });
+
+            if (!sesion) return;
+
+            // Solo actualizar si el proyecto es diferente al actual
+            if (sesion.proyectoId !== proyecto.id) {
+                const proyectoAnteriorId = sesion.proyectoId;
+                sesion.proyectoId = proyecto.id;
+                await this.sesionRepo.save(sesion);
+                this.logger.log(
+                    `[SyncProyecto] Sesión actualizada: proyecto ${proyectoAnteriorId} -> ${proyecto.id} (${proyecto.nombre}) para lead ${leadUuid}`
+                );
+            }
+        } catch (error) {
+            this.logger.warn(`[SyncProyecto] Error sincronizando proyecto: ${error.message}`);
+        }
+    }
+
+    async obtenerColeccionFaq(proyectoId: number): Promise<string> {
+        if (!proyectoId) return this.configService.get<string>('QDRANT_COLLECTION_NAME', 'checor-faq-1');
+        const cacheKey = `faq-${proyectoId}`;
+        if (this.cacheColecciones.has(cacheKey)) return this.cacheColecciones.get(cacheKey);
+        try {
+            const col = await this.coleccionQdrantRepo.findOne({
+                where: { idProyecto: proyectoId, tipoColeccion: 'faq', estado: 'activo' }
+            });
+            const nombre = col?.nombreColeccion || `checor-faq-${proyectoId}`;
+            this.cacheColecciones.set(cacheKey, nombre);
+            return nombre;
+        } catch {
+            return `checor-faq-${proyectoId}`;
+        }
+    }
+
+    async obtenerColeccionInventario(proyectoId: number): Promise<string> {
+        if (!proyectoId) return this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME', 'checor-inventory-1');
+        const cacheKey = `inventario-${proyectoId}`;
+        if (this.cacheColecciones.has(cacheKey)) return this.cacheColecciones.get(cacheKey);
+        try {
+            const col = await this.coleccionQdrantRepo.findOne({
+                where: { idProyecto: proyectoId, tipoColeccion: 'inventario', estado: 'activo' }
+            });
+            const nombre = col?.nombreColeccion || `checor-inventory-${proyectoId}`;
+            this.cacheColecciones.set(cacheKey, nombre);
+            return nombre;
+        } catch {
+            return `checor-inventory-${proyectoId}`;
+        }
+    }
+
+    async guardarProyecto(params: { nombre_proyecto: string }, codigoEmpresa: number, leadUuid: string): Promise<any> {
+        try {
+            const nombre = params.nombre_proyecto?.trim();
+            if (!nombre) {
+                return { success: false, mensaje: 'No se proporciono nombre de proyecto.' };
+            }
+
+            const proyecto = await this.proyectosRepo.findOne({
+                where: { nombre: ILike(`%${nombre}%`), codigoEmpresa }
+            });
+
+            if (!proyecto) {
+                return { success: false, mensaje: `No se encontro un proyecto con el nombre "${nombre}".` };
+            }
+
+            const sesion = await this.sesionRepo.findOne({
+                where: { leadUuid, codigoEmpresa }
+            });
+
+            if (sesion) {
+                sesion.proyectoId = proyecto.id;
+                await this.sesionRepo.save(sesion);
+            } else {
+                const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
+                const nuevaSesion = this.sesionRepo.create({
+                    leadUuid,
+                    codigoEmpresa,
+                    numeroTelefono: lead?.telefono || '',
+                    proyectoId: proyecto.id,
+                    idEstado: 1,
+                    proximoMensajeMinutos: 60,
+                    fechaHoraUltimoMsj: new Date(),
+                });
+                await this.sesionRepo.save(nuevaSesion);
+            }
+
+            this.logger.log(`Proyecto ${proyecto.nombre} (ID: ${proyecto.id}) asignado a lead ${leadUuid}`);
+
+            return {
+                success: true,
+                mensaje: `[ACCION_COMPLETADA] Proyecto "${proyecto.nombre}" registrado correctamente.`,
+                proyectoId: proyecto.id,
+                nombreProyecto: proyecto.nombre
+            };
+        } catch (error) {
+            this.logger.error(`Error guardando proyecto: ${error.message}`);
+            return { success: false, mensaje: 'Error al guardar el proyecto.' };
+        }
     }
 
     /**
@@ -302,46 +424,17 @@ ${precioStr}
         if (dormitorios) observacion += ` | Dorms: ${dormitorios}`;
         if (precio_referencial) observacion += ` | Precio: S/${precio_referencial}`;
 
-        // Crear Cita
-        await this.citasService.crearCita({
-            codigoEmpresa,
-            leadUuid: leadUuid,
-            fechaCita: fecha_cita,
-            horaCita: hora_cita,
-            tipoCita: tipoCitaNormalizado,
-            observacion: observacion,
-            estadoCita: 'pendiente'
-        });
-
-        // Actualizar Estado Sesion y Clasificacion
-        try {
-            const sesion = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
-            if (sesion) {
-                sesion.idEstado = 2;
-                await this.sesionRepo.save(sesion);
-
-                const historial = this.clasificacionRepo.create({
-                    idSesion: sesion.id,
-                    clasificacion: 'alto',
-                    razon: 'Agendó cita satisfactoriamente',
-                });
-                await this.clasificacionRepo.save(historial);
-                this.logger.log(`[AgendarCita] Lead clasificado como ALTO y Sesion actualizada a estado 2`);
-            }
-        } catch (err) {
-            this.logger.error(`[AgendarCita] Error actualizando clasificacion: ${err.message}`);
-        }
-
-
+        // Buscar proyecto en BD para obtener ID y datos de ubicación
         let direccion = '';
         let mapaUrl = '';
+        let proyectoFinal: Proyecto | undefined;
 
         try {
             const proyectoDb = await this.proyectosRepo.findOne({
                 where: { nombre: ILike(`%${nombre_proyecto}%`), codigoEmpresa }
             });
 
-            let proyectoFinal = proyectoDb;
+            proyectoFinal = proyectoDb;
 
             if (!proyectoFinal) {
                 const palabras = nombre_proyecto.split(' ').filter((p: string) => p.length > 3);
@@ -360,7 +453,6 @@ ${precioStr}
                     direccion = proyectoFinal.jsonData['direccion_sala_ventas'];
                     foundInJson = true;
                 }
-
 
                 if (!foundInJson && proyectoFinal.ubicacion) {
                     const ubicacionRaw = proyectoFinal.ubicacion;
@@ -386,14 +478,49 @@ ${precioStr}
             this.logger.error(`Error buscando proyecto para ubicacion: ${e.message}`);
         }
 
+        // Crear Cita con proyecto
+        await this.citasService.crearCita({
+            codigoEmpresa,
+            leadUuid: leadUuid,
+            fechaCita: fecha_cita,
+            horaCita: hora_cita,
+            tipoCita: tipoCitaNormalizado,
+            observacion: observacion,
+            estadoCita: 'pendiente',
+            proyectoId: proyectoFinal?.id || null,
+            nombreProyecto: proyectoFinal?.nombre || nombre_proyecto,
+        });
+
+        // Actualizar Estado Sesion y Clasificacion
+        try {
+            const sesion = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
+            if (sesion) {
+                sesion.idEstado = 2;
+                await this.sesionRepo.save(sesion);
+
+                const historial = this.clasificacionRepo.create({
+                    idSesion: sesion.id,
+                    clasificacion: 'alto',
+                    razon: 'Agendó cita satisfactoriamente',
+                });
+                await this.clasificacionRepo.save(historial);
+                this.logger.log(`[AgendarCita] Lead clasificado como ALTO y Sesion actualizada a estado 2`);
+            }
+        } catch (err) {
+            this.logger.error(`[AgendarCita] Error actualizando clasificacion: ${err.message}`);
+        }
+
+
         const tipoTexto = tipoCitaNormalizado === 'VIRTUAL' ? 'videollamada virtual' : 'visita presencial';
+        const nombreProyectoFinal = proyectoFinal?.nombre || nombre_proyecto;
 
         let outputMsg = `[ACCION_COMPLETADA] Cita ${tipoTexto} AGENDADA EXITOSAMENTE.
         
 DATOS DE LA CITA:
 - 📅 Fecha: ${fecha_cita}
 - 🕐 Hora: ${hora_cita}
-- 👥 Tipo: ${tipoCitaNormalizado}`;
+- 👥 Tipo: ${tipoCitaNormalizado}
+- 🏢 Proyecto: ${nombreProyectoFinal}`;
 
         if (direccion) {
             outputMsg += `\n- 📍 Dirección: ${direccion}`;
@@ -520,29 +647,42 @@ DATOS DE LA CITA:
      * Gestión de Preguntas Frecuentes (FAQs) y Datos Generales del Proyecto
      * Busca en la colección de documentos/FAQs (NO en inventario de departamentos)
      */
-    async buscarPreguntasFrecuentes(params: any) {
+    async buscarPreguntasFrecuentes(params: any, proyectoId?: number) {
         try {
             const { queries_de_busqueda, nombre_proyecto } = params;
             this.logger.log(`Buscando FAQ: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto}`);
 
             const queryPrincipal = queries_de_busqueda[0];
-            // Colección de Documentos/FAQs (texto)
-            const collectionName = this.configService.get<string>('QDRANT_COLLECTION_NAME', 'checor-los-lirios-e2c76d6a');
+            const collectionName = await this.obtenerColeccionFaq(proyectoId);
 
-            // Threshold más alto para evitar ruido
-            const docs = await this.qdrantVectorService.similaritySearch(collectionName, queryPrincipal, 3);
+            let docs = [];
+            try {
+                // Threshold más alto para evitar ruido
+                docs = await this.qdrantVectorService.similaritySearch(collectionName, queryPrincipal, 3);
+            } catch (qdrantError) {
+                this.logger.warn(`Error buscando FAQ en Qdrant (posible colección inexistente): ${qdrantError.message}`);
+                return `No se encontró información frecuente para el proyecto ${nombre_proyecto}.`;
+            }
 
             const contexto = docs.map(d => {
                 const meta = d.metadata || {};
+                const content = d.pageContent || '';
 
-                // Prioridad 1: Formato FAQ explícito
+                // Prioridad 1: Formato FAQ explícito en metadata
                 if (meta.pregunta && meta.respuesta) {
                     return `PREGUNTA FRECUENTE (Oficial):\nP: ${meta.pregunta}\nR: ${meta.respuesta}\n(Prioridad Alta)`;
                 }
 
+                // Prioridad 2: Detectar formato "Pregunta: X\nRespuesta: Y" en pageContent
+                const matchPregunta = content.match(/Pregunta:\s*(.+?)(?:\n|$)/i);
+                const matchRespuesta = content.match(/Respuesta:\s*(.+?)(?:\n|$)/i);
+                if (matchPregunta && matchRespuesta) {
+                    return `PREGUNTA FRECUENTE (Oficial):\nP: ${matchPregunta[1].trim()}\nR: ${matchRespuesta[1].trim()}\n(Prioridad Alta)`;
+                }
+
                 // Contenido general
                 if (meta.content) return meta.content;
-                return d.pageContent || meta.text || '';
+                return content || meta.text || '';
             }).filter(c => c.trim()).join("\n\n---\n\n");
 
             this.logger.log(`FAQ RAG - Docs encontrados: ${docs.length}`);
@@ -553,21 +693,21 @@ DATOS DE LA CITA:
             }
 
             const promptTemplate = ChatPromptTemplate.fromTemplate(`
-Eres el asistente oficial del proyecto inmobiliario. Tu única fuente de verdad es el siguiente CONTEXTO.
+Eres el asistente del proyecto inmobiliario "{project_name}". Responde la pregunta del usuario usando EXCLUSIVAMENTE la informacion del contexto.
 
-CONTEXTO RECUPERADO DE BASE DE DATOS:
+CONTEXTO (informacion oficial del proyecto {project_name}):
 {context}
 
 PREGUNTA DEL USUARIO: {question}
 
-INSTRUCCIONES OBLIGATORIAS:
-1. Responde SOLO basándote en el Contexto.
-2. Si el contexto dice "No contamos con...", tu respuesta debe ser "No contamos con...". NO inventes que sí hay.
-3. Si hay una sección marcada como "PREGUNTA FRECUENTE (Oficial)", esa es la respuesta definitiva.
-4. No menciones "según la base de datos", responde natural como si tú supieras.
-5. Si no hay información en el contexto, di "No tengo información sobre eso".
+REGLAS:
+- USA la informacion del contexto para responder. Si alguna pregunta frecuente trata un tema similar o relacionado a lo que pregunta el usuario, USA esa respuesta.
+- Por ejemplo: si el usuario pregunta "direccion" y el contexto tiene info sobre "ubicacion", SON LO MISMO, responde con esa info.
+- Si el contexto dice "No contamos con...", responde "No contamos con...".
+- Responde de forma natural, NO menciones "segun la base de datos" ni "segun el contexto".
+- SOLO di "No tengo informacion sobre eso" si NINGUNA de las preguntas frecuentes del contexto tiene relacion alguna con lo que pregunta el usuario.
 
-RESPUESTA PRECISA:`);
+RESPUESTA:`);
 
             const chain = RunnableSequence.from([
                 promptTemplate,
@@ -578,6 +718,7 @@ RESPUESTA PRECISA:`);
             const resultado = await chain.invoke({
                 context: contexto,
                 question: queryPrincipal,
+                project_name: nombre_proyecto || 'el proyecto',
             });
 
             this.logger.debug(`Respuesta LLM FAQ: ${resultado}`);
@@ -618,7 +759,7 @@ RESPUESTA PRECISA:`);
         return { success: true, mensaje: "[ACCION_COMPLETADA] DNI validado correctamente. <<INSTRUCCION_IA: Continua con el siguiente paso del flujo.>>" };
     }
 
-    async buscarPorCuota(params: { cuota_mensual: number }) {
+    async buscarPorCuota(params: { cuota_mensual: number; proyectoId?: number }) {
         try {
             this.logger.log(`Buscando por cuota mensual: S/${params.cuota_mensual}`);
 
@@ -628,7 +769,7 @@ RESPUESTA PRECISA:`);
 
             this.logger.log(`Precio máximo estimado: S/${precioMaxAprox}`);
 
-            const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const collectionName = await this.obtenerColeccionInventario(params.proyectoId);
 
             const queryText = `departamentos disponibles precio hasta ${precioMaxAprox} soles`;
 
@@ -703,11 +844,11 @@ RESPUESTA PRECISA:`);
         }
     }
 
-    async mostrarDepartamentos(params: { dormitorios?: number, piso?: number }) {
+    async mostrarDepartamentos(params: { dormitorios?: number, piso?: number, proyectoId?: number }) {
         try {
             this.logger.log(`Buscando departamentos - Dormitorios: ${params.dormitorios}, Piso: ${params.piso}`);
 
-            const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const collectionName = await this.obtenerColeccionInventario(params.proyectoId);
 
             let queryText = 'departamento disponible';
             if (params.dormitorios) {
@@ -892,9 +1033,10 @@ RESPUESTA PRECISA:`);
         phoneNumber?: string;
         codigoEmpresa?: number;
         leadUuid?: string;
+        proyectoId?: number;
     }) {
         try {
-            const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const collectionName = await this.obtenerColeccionInventario(params.proyectoId);
             const logPrefix = `[BusquedaUniversal]`;
 
             this.logger.log(`${logPrefix} Params: ${JSON.stringify(params)}`);
@@ -1335,7 +1477,7 @@ RESPUESTA PRECISA:`);
         // Construir detalle completo con TODOS los campos disponibles
         const detalles: string[] = [
             `[ACCION_COMPLETADA] **Unidad ${m.unit_number}**`,
-            `- Proyecto: ${m.project_name || 'Residencial Los Lirios'}`,
+            `- Proyecto: ${m.project_name || 'el proyecto'}`,
             `- Tipo: ${m.unit_type || 'Departamento'} (${m.typology || 'Standard'})`,
             `- Piso: ${m.floor}`,
             `- Dormitorios: ${m.bedrooms}`,
@@ -1396,8 +1538,20 @@ RESPUESTA PRECISA:`);
         leadUuid?: string;
     }) {
         try {
+            let fileName = 'brochure-los-lirios.pdf'; // fallback
+            if (params.nombre_proyecto) {
+                const nombreNormalizado = params.nombre_proyecto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                if (nombreNormalizado.includes('cerezo')) {
+                    fileName = 'brochure_los_cerezos.pdf';
+                } else if (nombreNormalizado.includes('porta') || nombreNormalizado.includes('360')) {
+                    fileName = 'brochure_porta_360.pdf';
+                } else if (nombreNormalizado.includes('lirio')) {
+                    fileName = 'brochure-los-lirios.pdf';
+                }
+            }
+
             const path = require('path');
-            const brochurePath = path.join(process.cwd(), 'storage', 'multimedia', 'brochure-los-lirios.pdf');
+            const brochurePath = path.join(process.cwd(), 'storage', 'multimedia', fileName);
 
             if (!params.phoneNumber || !params.leadUuid) {
                 return `Aqui esta el brochure del proyecto ${params.nombre_proyecto}`;
@@ -1428,7 +1582,7 @@ RESPUESTA PRECISA:`);
 
             // Guardar el mensaje en la base de datos para el inbox
             // Usar ruta relativa web para que el frontend pueda renderizar
-            const urlRelativa = '/storage/multimedia/brochure-los-lirios.pdf';
+            const urlRelativa = `/storage/multimedia/${fileName}`;
             await this.inboxService.guardarMensajeBot({
                 leadUuid: params.leadUuid,
                 codigoEmpresa: codigoEmpresa,
@@ -1456,15 +1610,21 @@ RESPUESTA PRECISA:`);
         leadUuid?: string;
     }) {
         try {
-            const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const collectionName = await this.obtenerColeccionInventario(null);
 
             // Buscar la unidad en Qdrant
-            const resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
-                collectionName,
-                `unidad ${params.unidad_id}`,
-                {},
-                { limit: 20, threshold: 0.3 }
-            );
+            let resultados = [];
+            try {
+                resultados = await this.qdrantVectorService.searchPropertiesWithFilters(
+                    collectionName,
+                    `unidad ${params.unidad_id}`,
+                    {},
+                    { limit: 20, threshold: 0.3 }
+                );
+            } catch (qdrantError) {
+                this.logger.warn(`Error buscando unidad en Qdrant: ${qdrantError.message}`);
+                return `No encontré información de la unidad ${params.unidad_id}`;
+            }
 
             // Encontrar unidad exacta
             const unidadExacta = resultados.find(r =>
@@ -1541,7 +1701,7 @@ RESPUESTA PRECISA:`);
      */
     async enviarUbicacionGoogleMaps(params: { nombre_proyecto: string, unidad_id?: string }) {
         try {
-            const collectionName = this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME') || 'checor-projects-v1';
+            const collectionName = await this.obtenerColeccionInventario(null);
             const buildFaqQuery = () => ([
                 `¿Dónde se encuentra ubicado el proyecto ${params.nombre_proyecto}?`,
                 `ubicación del proyecto ${params.nombre_proyecto}`,

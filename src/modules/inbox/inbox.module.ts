@@ -10,11 +10,13 @@ import { WapiService } from '../webhook_meta/wapi.service';
 import { ConfigModule } from '@nestjs/config';
 import { InboxGateway } from './inbox.gateway';
 import { AiModule } from '../ia/ia.module';
+import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
+import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 
 @Module({
     imports: [
         ConfigModule,
-        TypeOrmModule.forFeature([Lead, Prospecto, Mensaje, CredencialesWapi]),
+        TypeOrmModule.forFeature([Lead, Prospecto, Mensaje, CredencialesWapi, VendedorProyecto, SesionConversacion]),
         forwardRef(() => AiModule)
     ],
     controllers: [InboxController],

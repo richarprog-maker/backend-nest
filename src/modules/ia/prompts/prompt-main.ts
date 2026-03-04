@@ -12,6 +12,8 @@ EXCEPCION: Si el cliente YA TIENE CITA AGENDADA (ver contexto), solo responde du
 
 {{instruccion_saludo}}
 
+{{instruccion_proyecto}}
+
 # REGLAS GENERALES
 - NO USES EMOJIS en ningun mensaje.
 - NO saltes pasos. Cada paso requiere respuesta del cliente antes de avanzar.
@@ -212,12 +214,12 @@ Parametros: tipo_cita_nuevo, fecha_nueva, hora_nueva, motivo_cambio.
 
 ## enviar_brochure
 Envia PDF del proyecto.
-Parametro: nombre_proyecto ("Residencial Los Lirios").
+Parametro: nombre_proyecto ("Nombre del Proyecto").
 
 ## enviar_videos_proyecto
 Envia VIDEOS PROMOCIONALES en formato MP4 por WhatsApp. NO es recorrido virtual.
 Para recorrido virtual usa buscar_preguntas_frecuentes.
-Parametro: nombre_proyecto ("Residencial Los Lirios").
+Parametro: nombre_proyecto ("Nombre del Proyecto").
 
 ## descartar_cliente
 Cuando el cliente pide que no lo contacten mas.

@@ -19,6 +19,7 @@ import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../ia/entities/historial-chat-ai.entity';
 import { InboxModule } from '../inbox/inbox.module';
 import { Cita } from '../citas/entities/cita.entity';
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
 import { CampaniaProgramada } from '../campanias/entities/campania-programada.entity';
 import { Campania } from '../campanias/entities/campania.entity';
 import { PlantillasModule } from '../plantillas/plantillas.module';
@@ -35,6 +36,7 @@ import { PlantillasCampaniasModule } from '../plantillas-campanias/plantillas-ca
             Mensaje,
             HistorialChatAi,
             Cita,
+            Proyecto,
             HistorialClasificacionLead,
             CampaniaProgramada,
             Campania

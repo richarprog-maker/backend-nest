@@ -13,7 +13,8 @@ export class PromptService {
         resumenProyectos: string,
         tieneHistorial: boolean = false,
         leadData?: Lead,
-        citaData?: Cita
+        citaData?: Cita,
+        proyectoId?: number
     ): string {
 
         const listaProyectos = metadataEmpresa
@@ -23,14 +24,13 @@ export class PromptService {
         const nombreEmpresa = metadataEmpresa[0]?.nombre_empresa || "Inmobiliaria";
         const instruccionAgendamiento = "Agendamiento 10am-5pm L-D";
 
-        // Instrucción de saludo basada en historial
         const instruccionSaludo = this.buildInstruccionSaludo(tieneHistorial);
 
-        // Construir contexto inteligente del lead
         const metadatosCliente = this.buildMetadatosCliente(leadData);
         const infoCita = this.buildInfoCita(citaData);
 
-        // Construir prompt con reemplazos
+        const instruccionProyecto = this.buildInstruccionProyecto(metadataEmpresa, proyectoId);
+
         let prompt = PROMPT_SYSTEM_MAIN;
         const replacements: Record<string, string> = {
             "{{nombre_asistente}}": nombreAsistente,
@@ -40,7 +40,8 @@ export class PromptService {
             "{{instruccion_agendamiento}}": instruccionAgendamiento,
             "{{metadatos_cliente}}": metadatosCliente,
             "{{info_cita}}": infoCita,
-            "{{instruccion_saludo}}": instruccionSaludo
+            "{{instruccion_saludo}}": instruccionSaludo,
+            "{{instruccion_proyecto}}": instruccionProyecto
         };
 
         for (const [key, value] of Object.entries(replacements)) {
@@ -195,5 +196,46 @@ ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
   - Pregunta: "¿Pudiste asistir a la visita del ${etiquetaFecha}?" o "¿Te gustaría reagendar tu visita?".
 `;
         }
+    }
+
+    private buildInstruccionProyecto(metadataEmpresa: any[], proyectoId?: number): string {
+        if (proyectoId) {
+            // Buscar el proyecto asignado por su ID
+            const proyecto = metadataEmpresa.find(p => p.id === proyectoId);
+            const nombre = proyecto?.nombre_proyecto || metadataEmpresa[0]?.nombre_proyecto || '';
+
+            // Construir lista de otros proyectos disponibles para cambio
+            const otrosProyectos = metadataEmpresa.filter(p => p.id !== proyectoId);
+            const listaOtros = otrosProyectos.map(p => `- ${p.nombre_proyecto}`).join('\n');
+
+            return `
+## PROYECTO ASIGNADO
+- El cliente esta interesado en: **${nombre}**
+- Responde principalmente sobre este proyecto.
+
+## CAMBIO DE PROYECTO
+${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros proyectos disponibles)'}
+
+**REGLAS DE CAMBIO DE PROYECTO**:
+1. Si el cliente pide info, brochure, videos o preguntas de OTRO proyecto: dale lo que pide, PERO NO cambies su proyecto. Despues de atender su solicitud, PREGUNTA: "Por cierto, tu proyecto actual es ${nombre}. Te gustaria que te cambie al proyecto [otro]?"
+2. SOLO ejecuta guardar_proyecto cuando el cliente diga EXPLICITAMENTE: "si cambienme", "prefiero ese", "me interesa mas ese proyecto".
+3. Pedir un brochure o info de otro proyecto NO ES confirmar cambio. Es solo curiosidad.
+4. Despues de enviar info de otro proyecto, SIEMPRE retoma la conversacion sobre ${nombre} a menos que el cliente confirme que quiere cambiar.`;
+        }
+
+        if (metadataEmpresa.length > 1) {
+            const lista = metadataEmpresa.map((p, i) => `${i + 1}. ${p.nombre_proyecto}`).join('\n');
+            return `
+## SELECCION DE PROYECTO (PASO OBLIGATORIO)
+- El cliente AUN NO ha elegido un proyecto.
+- ANTES de continuar con cualquier otro paso, pregunta:
+  "Tenemos los siguientes proyectos disponibles:
+${lista}
+  Cual te interesa?"
+- Una vez que el cliente elija, usa la herramienta guardar_proyecto para registrar su eleccion.
+- Despues de guardar el proyecto, continua con el flujo normal.`;
+        }
+
+        return '';
     }
 }

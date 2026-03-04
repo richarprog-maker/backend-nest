@@ -22,7 +22,7 @@ export class Cita {
             from: (value: Date | string): string => {
                 if (!value) return null;
                 if (typeof value === 'string') return value;
-                
+
                 // Si es Date, extraer solo YYYY-MM-DD sin problemas de timezone
                 const year = value.getFullYear();
                 const month = String(value.getMonth() + 1).padStart(2, '0');
@@ -43,6 +43,12 @@ export class Cita {
 
     @Column({ name: 'estado_cita', default: 'pendiente' })
     estadoCita: string; // pendiente, confirmada, cancelada, realizada
+
+    @Column({ name: 'proyecto_id', nullable: true })
+    proyectoId: number;
+
+    @Column({ name: 'nombre_proyecto', length: 100, nullable: true })
+    nombreProyecto: string;
 
     @Column({ type: 'text', nullable: true })
     observacion: string;

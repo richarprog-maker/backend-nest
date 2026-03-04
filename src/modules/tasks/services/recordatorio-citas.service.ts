@@ -1,7 +1,7 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, Between, LessThan, MoreThan, In } from 'typeorm';
+import { Repository, In, MoreThan } from 'typeorm';
 import { Cita } from '../../citas/entities/cita.entity';
 import { PlantillaMensaje, TipoPlantilla } from '../../plantillas/entities/plantilla.entity';
 import { WapiService } from '../../webhook_meta/wapi.service';
@@ -10,20 +10,21 @@ import { HistorialPlantillas } from '../../plantillas/entities/historial-plantil
 import { Mensaje } from '../../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../../ia/entities/historial-chat-ai.entity';
 import { InboxGateway } from '../../inbox/inbox.gateway';
+import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 
 @Injectable()
 export class RecordatorioCitasService {
     private readonly logger = new Logger(RecordatorioCitasService.name);
 
-    // Nombres de plantillas VIRTUAL (Deben coincidir con DB)
-    private readonly TEMPLATE_24H_VIRTUAL = 'recordatorio_cita_24horas_virtual_lirios';
-    private readonly TEMPLATE_3H_VIRTUAL = 'recordatorio_cita_3horas_virtual_lirios';
-    private readonly TEMPLATE_30MIN_VIRTUAL = 'recordatorio_cita_30min_virtual_lirios';
+    // Nombres de plantillas VIRTUAL
+    private readonly TEMPLATE_24H_VIRTUAL = 'recordatorio_cita_24horas_virtual_2';
+    private readonly TEMPLATE_3H_VIRTUAL = 'recordatorio_cita_3horas_virtual_2';
+    private readonly TEMPLATE_30MIN_VIRTUAL = 'recordatorio_cita_30min_virtual_2';
 
-    // Nombres de plantillas PRESENCIAL (Deben coincidir con DB)
-    private readonly TEMPLATE_24H_PRESENCIAL = 'recordatorio_cita_24horas';
-    private readonly TEMPLATE_3H_PRESENCIAL = 'recordatorio_cita_3horas';
-    private readonly TEMPLATE_30MIN_PRESENCIAL = 'recordatorio_cita_30min';
+    // Nombres de plantillas PRESENCIAL
+    private readonly TEMPLATE_24H_PRESENCIAL = 'recordatorio_cita_24horas2';
+    private readonly TEMPLATE_3H_PRESENCIAL = 'recordatorio_cita_3horas2';
+    private readonly TEMPLATE_30MIN_PRESENCIAL = 'recordatorio_cita_30min2';
 
     constructor(
         @InjectRepository(Cita)
@@ -38,6 +39,8 @@ export class RecordatorioCitasService {
         private mensajeRepo: Repository<Mensaje>,
         @InjectRepository(HistorialChatAi)
         private historialAiRepo: Repository<HistorialChatAi>,
+        @InjectRepository(Proyecto)
+        private proyectoRepo: Repository<Proyecto>,
         @Inject(forwardRef(() => InboxGateway))
         private inboxGateway: InboxGateway,
         private wapiService: WapiService,
@@ -47,7 +50,6 @@ export class RecordatorioCitasService {
     async handleAppointmentReminders() {
         this.logger.log('Verificando recordatorios de citas...');
         try {
-            // Buscamos citas PENDIENTES o CONFIRMADAS
             const citas = await this.citaRepo.find({
                 where: {
                     estadoCita: In(['pendiente', 'confirmada'])
@@ -57,37 +59,31 @@ export class RecordatorioCitasService {
             const now = new Date();
 
             for (const cita of citas) {
-                // Combinar fecha y hora para tener un objeto Date completo
                 const fechaStr = cita.fechaCita;
                 const horaStr = cita.horaCita;
                 if (!fechaStr || !horaStr) continue;
 
-                const citaDate = new Date(`${fechaStr}T${horaStr}`); // Cuidado con la zona horaria, asumimos server time = local time para simplificar o UTC correcto
-
-                // Calcular diferencia en minutos
+                const citaDate = new Date(`${fechaStr}T${horaStr}`);
                 const diffMs = citaDate.getTime() - now.getTime();
                 const diffMinutes = Math.floor(diffMs / 60000);
 
-                // Si la diferencia es negativa, la cita ya pasó
                 if (diffMinutes < 0) continue;
 
-                // LOGICA DE RECORDATORIOS
                 const isVirtual = cita.tipoCita?.toUpperCase() === 'VIRTUAL';
 
-                // 24 HORAS (1440 min)
-                // Rango aceptable: entre 1435 y 1445
+                // 24 HORAS (1440 min) - Rango aceptable: 1435..1445
                 if (diffMinutes >= 1435 && diffMinutes <= 1445) {
                     const templateName = isVirtual ? this.TEMPLATE_24H_VIRTUAL : this.TEMPLATE_24H_PRESENCIAL;
                     await this.sendReminder(cita, templateName, TipoPlantilla.RECORDATORIO_CITA_24H);
                 }
 
-                // 3 HORAS (180 min)
+                // 3 HORAS (180 min) - Rango: 175..185
                 if (diffMinutes >= 175 && diffMinutes <= 185) {
                     const templateName = isVirtual ? this.TEMPLATE_3H_VIRTUAL : this.TEMPLATE_3H_PRESENCIAL;
                     await this.sendReminder(cita, templateName, TipoPlantilla.RECORDATORIO_CITA_3H);
                 }
 
-                // 30 MINUTOS
+                // 30 MINUTOS - Rango: 25..35
                 if (diffMinutes >= 25 && diffMinutes <= 35) {
                     const templateName = isVirtual ? this.TEMPLATE_30MIN_VIRTUAL : this.TEMPLATE_30MIN_PRESENCIAL;
                     await this.sendReminder(cita, templateName, TipoPlantilla.RECORDATORIO_CITA_30MIN);
@@ -100,37 +96,38 @@ export class RecordatorioCitasService {
     }
 
     private async sendReminder(cita: Cita, templateName: string, logicalType: TipoPlantilla) {
-        // Verificar si ya se envió este recordatorio de este TIPO LOGICO
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
-        let leadId: number = 0;
-        let leadUuid: string = cita.leadUuid;
-
-        const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid } });
+        const lead = await this.leadRepo.findOne({ where: { uuid: cita.leadUuid } });
         if (!lead) {
             this.logger.warn(`Lead no encontrado para cita ${cita.id}`);
             return;
         }
-        leadId = lead.id;
 
         const yaEnviado = await this.historialRepo.findOne({
             where: {
-                leadUid: leadId,
+                leadUid: lead.id,
                 tipoMensaje: logicalType,
                 fechaEnvio: MoreThan(oneHourAgo)
             }
         });
+        if (yaEnviado) return;
 
-        if (yaEnviado) {
-            return;
+        // Obtener datos del proyecto
+        let nombreProyecto = cita.nombreProyecto || 'Nuestro Proyecto';
+        let direccionProyecto = '';
+
+        if (cita.proyectoId) {
+            const proyecto = await this.proyectoRepo.findOne({ where: { id: cita.proyectoId } });
+            if (proyecto) {
+                nombreProyecto = proyecto.nombre || nombreProyecto;
+                direccionProyecto = proyecto.ubicacion || '';
+            }
         }
 
-        // Obtener Plantilla por NOMBRE
+        // Obtener plantilla
         const plantilla = await this.plantillaRepo.findOne({
-            where: {
-                nombre: templateName,
-                codigoEmpresa: cita.codigoEmpresa
-            }
+            where: { nombre: templateName, codigoEmpresa: cita.codigoEmpresa }
         });
 
         if (!plantilla) {
@@ -138,43 +135,50 @@ export class RecordatorioCitasService {
             return;
         }
 
-        // Preparar Componentes para Plantilla (HSM)
+        // Construir componentes dinámicamente según parámetros de la plantilla
         const components = [];
         if (plantilla.parametros && Array.isArray(plantilla.parametros) && plantilla.parametros.length > 0) {
             const bodyParams = [];
 
-            // Iterar params en orden definido en BD para mantener la secuencia de {{1}}, {{2}}, etc.
             for (const param of plantilla.parametros) {
-                if (param === 'name') {
-                    // Validar que el nombre no esté vacío, null o undefined
-                    const nombre = (lead.nombre && lead.nombre.trim()) || 'Cliente';
-                    bodyParams.push({
-                        type: 'text',
-                        parameter_name: 'name',
-                        text: nombre
-                    });
-                } else if (param === 'hora') {
-                    const horaSimple = cita.horaCita.substring(0, 5);
-                    bodyParams.push({
-                        type: 'text',
-                        parameter_name: 'hora',
-                        text: horaSimple
-                    });
+                switch (param) {
+                    case 'name':
+                        bodyParams.push({
+                            type: 'text',
+                            parameter_name: 'name',
+                            text: (lead.nombre && lead.nombre.trim()) || 'Cliente'
+                        });
+                        break;
+                    case 'project':
+                        bodyParams.push({
+                            type: 'text',
+                            parameter_name: 'project',
+                            text: nombreProyecto
+                        });
+                        break;
+                    case 'hora':
+                        bodyParams.push({
+                            type: 'text',
+                            parameter_name: 'hora',
+                            text: cita.horaCita.substring(0, 5)
+                        });
+                        break;
+                    case 'direccion':
+                        bodyParams.push({
+                            type: 'text',
+                            parameter_name: 'direccion',
+                            text: direccionProyecto || 'Por confirmar'
+                        });
+                        break;
                 }
             }
 
             if (bodyParams.length > 0) {
-                components.push({
-                    type: 'body',
-                    parameters: bodyParams
-                });
+                components.push({ type: 'body', parameters: bodyParams });
             }
         }
 
-        // LOG de debugging para verificar componentes antes de enviar
         this.logger.debug(`Componentes preparados para cita ${cita.id}: ${JSON.stringify(components)}`);
-
-        // ENVIAR COMO PLANTILLA
         this.logger.log(`Enviando recordatorio ${logicalType} a ${lead.telefono} usando Plantilla: ${plantilla.nombre}`);
 
         const resultado = await this.wapiService.sendTemplate(
@@ -189,23 +193,28 @@ export class RecordatorioCitasService {
         let contenidoProcesado = plantilla.contenido;
         if (plantilla.parametros && Array.isArray(plantilla.parametros)) {
             for (const param of plantilla.parametros) {
-                if (param === 'name') {
-                    const nombre = (lead.nombre && lead.nombre.trim()) || 'Cliente';
-                    contenidoProcesado = contenidoProcesado.replace(/\{\{name\}\}/g, nombre);
-                } else if (param === 'hora') {
-                    const horaSimple = cita.horaCita.substring(0, 5);
-                    contenidoProcesado = contenidoProcesado.replace(/\{\{hora\}\}/g, horaSimple);
+                const regex = new RegExp(`\\{\\{${param}\\}\\}`, 'g');
+                switch (param) {
+                    case 'name':
+                        contenidoProcesado = contenidoProcesado.replace(regex, (lead.nombre && lead.nombre.trim()) || 'Cliente');
+                        break;
+                    case 'project':
+                        contenidoProcesado = contenidoProcesado.replace(regex, nombreProyecto);
+                        break;
+                    case 'hora':
+                        contenidoProcesado = contenidoProcesado.replace(regex, cita.horaCita.substring(0, 5));
+                        break;
+                    case 'direccion':
+                        contenidoProcesado = contenidoProcesado.replace(regex, direccionProyecto || 'Por confirmar');
+                        break;
                 }
             }
         }
 
-        // REGISTRAR HISTORIAL con el TIPO LOGICO y contenido procesado
         await this.logHistory(lead, cita.codigoEmpresa, logicalType, plantilla.id, contenidoProcesado, resultado);
     }
 
     private async logHistory(lead: Lead, codigoEmpresa: number, tipo: TipoPlantilla, plantillaId: number, contenido: string, resultado: any) {
-
-        // 1. Historial Plantillas
         const historial = new HistorialPlantillas();
         historial.leadUid = lead.id;
         historial.plantillaId = plantillaId;
@@ -227,16 +236,14 @@ export class RecordatorioCitasService {
         }
         await this.historialRepo.save(historial);
 
-        // 2. Tbl Mensajes & WebSocket
         try {
-            // Fix: Capturar el detalle del error, no el booleano
             const errorData = resultado?.error ? (resultado.details || resultado) : null;
 
             const nuevoMensaje = this.mensajeRepo.create({
                 codigoEmpresa: codigoEmpresa,
                 leadUuid: lead.uuid,
                 idUsuario: null,
-                idEmisorTipo: 2, // Bot
+                idEmisorTipo: 2,
                 contenido: contenido,
                 numeroTelefono: lead.telefono,
                 tipoMultimedia: 'text',
@@ -265,7 +272,6 @@ export class RecordatorioCitasService {
             });
             this.inboxGateway.notifyConversationsUpdate(codigoEmpresa);
 
-            // 3. Historial Chat AI
             const historialAi = this.historialAiRepo.create({
                 leadUuid: lead.uuid,
                 codigoEmpresa: codigoEmpresa,

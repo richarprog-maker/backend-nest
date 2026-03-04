@@ -16,6 +16,7 @@ import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../ia/entities/historial-chat-ai.entity';
 import { HistorialClasificacionLead } from '../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
 
 @Module({
     imports: [
@@ -27,7 +28,8 @@ import { Cita } from '../citas/entities/cita.entity';
             Mensaje,
             HistorialChatAi,
             HistorialClasificacionLead,
-            Cita
+            Cita,
+            Proyecto
         ]),
         PlantillasModule,
         HistorialEnviosModule,

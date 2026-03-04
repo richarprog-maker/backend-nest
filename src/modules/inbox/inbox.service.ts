@@ -7,6 +7,8 @@ import { Prospecto } from './entities/prospecto.entity';
 import { WapiService } from '../webhook_meta/wapi.service';
 import { InboxGateway } from './inbox.gateway';
 import { HistorialChatService } from '../ia/historial-chat.service';
+import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
+import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 
 @Injectable()
 export class InboxService {
@@ -19,13 +21,17 @@ export class InboxService {
         private leadRepo: Repository<Lead>,
         @InjectRepository(Prospecto)
         private prospectoRepo: Repository<Prospecto>,
+        @InjectRepository(VendedorProyecto)
+        private vendedorProyectoRepo: Repository<VendedorProyecto>,
+        @InjectRepository(SesionConversacion)
+        private sesionRepo: Repository<SesionConversacion>,
         private wapiService: WapiService,
         private inboxGateway: InboxGateway,
         @Inject(forwardRef(() => HistorialChatService))
         private historialChatService: HistorialChatService,
     ) { }
 
-    async getConversaciones(codigoEmpresa: number, page: number = 1, limit: number = 50, filter: string = 'all', search: string = '') {
+    async getConversaciones(codigoEmpresa: number, page: number = 1, limit: number = 50, filter: string = 'all', search: string = '', vendedorId?: number, rol?: string) {
         try {
             const skip = (page - 1) * limit;
 
@@ -96,30 +102,33 @@ export class InboxService {
                 .limit(limit)
                 .getRawMany();
 
-            this.logger.log(`Conversaciones encontradas (${filter}): ${rawResults.length}`);
+            // Filtrar por proyectos del vendedor si no es admin
+            let resultadosFiltrados = rawResults;
+            if (vendedorId && rol && rol !== 'admin' && rol !== 'super_admin') {
+                const proyectosVendedor = await this.vendedorProyectoRepo.find({
+                    where: { idVendedor: vendedorId }
+                });
+                const idsProyectos = proyectosVendedor.map(vp => vp.proyectoId);
 
-            // 5. Calculate Total for Pagination
-            const totalQuery = this.mensajeRepo.createQueryBuilder('m')
-                .select('COUNT(DISTINCT m.leadUuid)', 'total')
-                .leftJoin('tbl_leads', 'l', 'l.uuid = m.leadUuid')
-                .where('m.codigoEmpresa = :codigoEmpresa', { codigoEmpresa });
+                if (idsProyectos.length > 0) {
+                    const sesiones = await this.sesionRepo.find({
+                        where: { codigoEmpresa }
+                    });
+                    const sesionMap = new Map(sesiones.map(s => [s.leadUuid, s.proyectoId]));
 
-            if (search) {
-                totalQuery.andWhere(
-                    '(l.nombre LIKE :search OR l.nombre_meta LIKE :search OR l.apellido LIKE :search OR l.telefono LIKE :search OR CONCAT(COALESCE(l.nombre, l.nombre_meta, \'\'), " ", COALESCE(l.apellido, \'\')) LIKE :search)',
-                    { search: `%${search}%` }
-                );
+                    resultadosFiltrados = rawResults.filter(raw => {
+                        const proyectoSesion = sesionMap.get(raw.leadUuid);
+                        return !proyectoSesion || idsProyectos.includes(proyectoSesion);
+                    });
+                }
             }
 
-            if (filter === 'unread') {
-                totalQuery.andWhere('m.leido = 0 AND m.idEmisorTipo IN (1, 2)');
-            }
+            this.logger.log(`Conversaciones encontradas (${filter}): ${resultadosFiltrados.length}`);
 
-            const totalResult = await totalQuery.getRawOne();
-            const total = parseInt(totalResult?.total || 0);
+            const totalFiltrado = resultadosFiltrados.length;
 
             // 6. Map to DTO
-            const conversations = rawResults.map(raw => ({
+            const conversations = resultadosFiltrados.map(raw => ({
                 leadUuid: raw.leadUuid,
                 numeroTelefono: raw.numeroTelefono,
                 nombreCompleto: `${raw.nombre || ''} ${raw.apellido || ''}`.trim() || 'Sin nombre',
@@ -143,10 +152,10 @@ export class InboxService {
                 success: true,
                 data: conversations,
                 meta: {
-                    total,
+                    total: totalFiltrado,
                     page,
                     limit,
-                    totalPages: Math.ceil(total / limit)
+                    totalPages: Math.ceil(totalFiltrado / limit)
                 }
             };
         } catch (error) {
@@ -416,7 +425,7 @@ export class InboxService {
 
             // Notificar actualización de conversaciones
             this.inboxGateway.notifyConversationsUpdate(dto.codigoEmpresa);
-           // gurdamos en la tbal de hsitorial lo que se esciebe desde la bandeja
+            // gurdamos en la tbal de hsitorial lo que se esciebe desde la bandeja
             try {
                 let contenidoHistorial = dto.contenido || '';
                 if (dto.tipoMultimedia && dto.urlMultimedia) {

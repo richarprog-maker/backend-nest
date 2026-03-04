@@ -43,11 +43,15 @@ export class DashboardController {
     @Get('resumen')
     async getEstadisticasResumen(
         @Req() req,
-        @Query('fechaDesde') fechaDesde: string,
-        @Query('fechaHasta') fechaHasta: string
+        @Query('fdesde') fechaDesde: string,
+        @Query('fhasta') fechaHasta: string,
+        @Query('proyectoId') proyectoId: string
     ) {
         const user = req.user;
         const empresaId = user?.empresaId || 1;
-        return this.dashboardService.getEstadisticasResumen(empresaId, fechaDesde, fechaHasta);
+        const vendedorId = user?.userId || null;
+        const rol = user?.rol || 'vendedor';
+        const proyectoIdNum = proyectoId ? Number(proyectoId) : null;
+        return this.dashboardService.getEstadisticasResumen(empresaId, fechaDesde, fechaHasta, proyectoIdNum, vendedorId, rol);
     }
 }

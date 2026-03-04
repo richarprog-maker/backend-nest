@@ -148,7 +148,7 @@ export class CampaniasProcessor extends WorkerHost {
                                 ciudad: d.ciudad,
                                 observacion: d.observacion,
                                 fechaNacimiento: d.fechaNacimiento,
-                                projectId: d.projectId,
+                                projectId: campania.proyectoId || d.projectId,
                                 utmSource: d.utmSource,
                                 utmMedium: d.utmMedium,
                                 utmCampaign: d.utmCampaign,
@@ -220,7 +220,8 @@ export class CampaniasProcessor extends WorkerHost {
                         templateParams: campania.plantilla?.parametros,
                         tipoMultimedia: detalle.tipoMultimedia,
                         urlMultimedia: detalle.urlMultimedia,
-                        leadUuid: leadUuidMap.get(detalle.id) || null
+                        leadUuid: leadUuidMap.get(detalle.id) || null,
+                        proyectoId: campania.proyectoId || null
                     },
                     opts: {
                         removeOnComplete: true,
@@ -366,6 +367,7 @@ export class CampaniasProcessor extends WorkerHost {
                 const nuevaSesion = this.sesionRepo.create({
                     leadUuid: lead.uuid,
                     codigoEmpresa,
+                    numeroTelefono: lead.telefono,
                     idEstado: 1,
                     proximoMensajeMinutos: 60,
                     fechaHoraUltimoMsj: new Date(),
@@ -394,6 +396,7 @@ export class CampaniasProcessor extends WorkerHost {
         tipoMultimedia?: string;
         urlMultimedia?: string;
         leadUuid?: string;
+        proyectoId?: number;
     }) {
         const { detalleId, campaniaId, plantillaCuerpo, codigoEmpresa, usarTemplate, templateName, templateLanguage, templateParams, tipoMultimedia, urlMultimedia, leadUuid } = data;
 
@@ -487,9 +490,9 @@ export class CampaniasProcessor extends WorkerHost {
                     estadoMensaje: 'enviado',
                 });
 
-                // Resetear o crear sesión de conversación para reiniciar ciclo de recuperación
+                // Resetear o crear sesion de conversacion para reiniciar ciclo de recuperacion
                 if (leadUuid) {
-                    await this.resetearOCrearSesion(leadUuid, codigoEmpresa);
+                    await this.resetearOCrearSesion(leadUuid, codigoEmpresa, data.proyectoId);
                 }
 
                 if (detalle.prospectoId) {
@@ -693,33 +696,35 @@ export class CampaniasProcessor extends WorkerHost {
      * Resetea la sesión de conversación existente o crea una nueva
      * para que el ciclo de recuperación (1h -> 8h -> 24h) se reinicie
      */
-    private async resetearOCrearSesion(leadUuid: string, codigoEmpresa: number): Promise<void> {
+    private async resetearOCrearSesion(leadUuid: string, codigoEmpresa: number, proyectoId?: number): Promise<void> {
         try {
             let sesion = await this.sesionRepo.findOne({
                 where: { leadUuid, codigoEmpresa }
             });
 
             if (sesion) {
-                // Resetear sesión existente: activar y reiniciar ciclo de recuperación
-                sesion.idEstado = 1; // Activo
-                sesion.proximoMensajeMinutos = 60; // 1 hora para primer mensaje de recuperación
+                sesion.idEstado = 1;
+                sesion.proximoMensajeMinutos = 60;
                 sesion.fechaHoraUltimoMsj = new Date();
+                if (proyectoId) sesion.proyectoId = proyectoId;
                 await this.sesionRepo.save(sesion);
-                this.logger.debug(`[Campaña] Sesión ${sesion.id} reseteada: estado=1, próximo=60min`);
+                this.logger.debug(`[Campania] Sesion ${sesion.id} reseteada: estado=1, proximo=60min, proyecto=${proyectoId || 'sin cambio'}`);
             } else {
-                // Crear nueva sesión para este lead
+                const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
                 const nuevaSesion = this.sesionRepo.create({
                     leadUuid,
                     codigoEmpresa,
+                    numeroTelefono: lead?.telefono || '',
                     idEstado: 1,
                     proximoMensajeMinutos: 60,
                     fechaHoraUltimoMsj: new Date(),
+                    proyectoId: proyectoId || null,
                 });
                 await this.sesionRepo.save(nuevaSesion);
-                this.logger.debug(`[Campaña] Nueva sesión creada para lead ${leadUuid}: estado=1, próximo=60min`);
+                this.logger.debug(`[Campania] Nueva sesion creada para lead ${leadUuid}: estado=1, proximo=60min, proyecto=${proyectoId || 'ninguno'}`);
             }
         } catch (error) {
-            this.logger.error(`Error reseteando/creando sesión para lead ${leadUuid}: ${error.message}`);
+            this.logger.error(`Error reseteando/creando sesion para lead ${leadUuid}: ${error.message}`);
         }
     }
 

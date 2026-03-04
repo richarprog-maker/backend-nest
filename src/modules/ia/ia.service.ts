@@ -8,6 +8,8 @@ import { Repository } from 'typeorm';
 import { Bot } from './entities/bot.entity';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
+import { SesionConversacion } from './entities/sesion-conversacion.entity';
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
 import { BaseMessage, HumanMessage } from '@langchain/core/messages';
 import { RedisService } from '../common/redis/redis.service';
 
@@ -24,6 +26,10 @@ export class AiService {
         private leadRepo: Repository<Lead>,
         @InjectRepository(Cita)
         private citaRepo: Repository<Cita>,
+        @InjectRepository(SesionConversacion)
+        private sesionRepo: Repository<SesionConversacion>,
+        @InjectRepository(Proyecto)
+        private proyectoRepo: Repository<Proyecto>,
         private configService: ConfigService,
         private historialChatService: HistorialChatService,
         private redisService: RedisService,
@@ -95,23 +101,38 @@ export class AiService {
             const botName = botConfig?.nombre || 'Checor advisor';
             const botGender = botConfig?.genero || 'female';
 
-            const metadatosEmpresaMock = [{
-                nombre_proyecto: "Residencial Los Lirios",
-                nombre_empresa: "Inmobiliaria Checor"
-            }];
-            const resumenProyectosMock = "Residencial Los Lirios: Departamentos de 1, 2 y 3 dormitorios en preventa.";
+            const sesion = await this.sesionRepo.findOne({
+                where: { leadUuid, codigoEmpresa }
+            });
+            const proyectoId = sesion?.proyectoId || null;
 
-            // Detectar si hay historial previo para controlar saludo
+            let metadatosEmpresa: any[] = [];
+            let resumenProyectos = '';
+
+            // Siempre cargar TODOS los proyectos activos para que el LLM pueda ofrecer cambio
+            const proyectosActivos = await this.proyectoRepo.find({
+                where: { codigoEmpresa, estado: 'activo' }
+            });
+            metadatosEmpresa = proyectosActivos.map(p => ({
+                id: p.id,
+                nombre_proyecto: p.nombre,
+                nombre_empresa: 'Inmobiliaria Checor'
+            }));
+            resumenProyectos = proyectosActivos.map(p =>
+                `${p.nombre}: ${p.descripcion || p.tipoInmueble || 'Proyecto inmobiliario'}`
+            ).join('. ');
+
             const tieneHistorial = historialFormateado.length > 0;
 
             const systemPrompt = this.promptService.buildSystemPrompt(
                 botName,
                 botGender,
-                metadatosEmpresaMock,
-                resumenProyectosMock,
+                metadatosEmpresa,
+                resumenProyectos,
                 tieneHistorial,
                 leadData,
-                citaData
+                citaData,
+                proyectoId
             );
 
             const resultado = await this.agentService.ejecutarAgente(
@@ -121,10 +142,38 @@ export class AiService {
                 {
                     codigoEmpresa,
                     leadUuid,
-                    nombreLead: botName, // TODO: Obtener nombre real del lead
-                    phoneNumber: phoneNumber, // Número de teléfono para enviar imágenes
+                    nombreLead: botName,
+                    phoneNumber: phoneNumber,
+                    proyectoId: proyectoId,
                 }
             );
+
+            // Auto-detectar proyecto desde la respuesta del LLM y actualizar sesión
+            try {
+                const respuestaLower = resultado.output.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                let proyectoDetectado: typeof proyectosActivos[0] | null = null;
+
+                for (const p of proyectosActivos) {
+                    const nombreLower = p.nombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                    if (respuestaLower.includes(nombreLower)) {
+                        proyectoDetectado = p;
+                        break;
+                    }
+                }
+
+                if (proyectoDetectado && proyectoDetectado.id !== proyectoId) {
+                    const sesionActual = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
+                    if (sesionActual) {
+                        sesionActual.proyectoId = proyectoDetectado.id;
+                        await this.sesionRepo.save(sesionActual);
+                        this.logger.log(
+                            `[AutoSync] Proyecto actualizado: ${proyectoId} -> ${proyectoDetectado.id} (${proyectoDetectado.nombre}) para lead ${leadUuid}`
+                        );
+                    }
+                }
+            } catch (syncError) {
+                this.logger.warn(`[AutoSync] Error detectando proyecto: ${syncError.message}`);
+            }
 
             await this.historialChatService.guardarMensaje({
                 leadUuid,

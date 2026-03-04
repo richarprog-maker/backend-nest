@@ -25,6 +25,16 @@ export class ProspectosService {
         const limit = query.limit || 50;
         const skip = (page - 1) * limit;
 
+        let proyectosPermitidos: number[] | null = null;
+        if (query.rol && query.rol !== 'admin' && query.rol !== 'super_admin' && query.vendedorId) {
+            const rows = await this.dataSource.query(
+                'SELECT proyecto_id FROM tbl_vendedores_proyectos WHERE id_vendedor = ?',
+                [query.vendedorId]
+            );
+            proyectosPermitidos = rows.map((r: any) => r.proyecto_id);
+            if (proyectosPermitidos.length === 0) proyectosPermitidos = [0]; // sin acceso a nada
+        }
+
         // Query principal con subqueries para clasificación y citas
         const qb = this.dataSource.createQueryBuilder()
             .select([
@@ -71,6 +81,17 @@ export class ProspectosService {
             .orderBy('p.fecha_registro', 'DESC')
             .offset(skip)
             .limit(limit);
+
+        // RBAC Filter
+        if (proyectosPermitidos !== null) {
+            qb.andWhere(`
+                EXISTS (
+                    SELECT 1 FROM tbl_sesion_conversacion sc_rbac
+                    WHERE sc_rbac.lead_uuid = l.uuid
+                    AND sc_rbac.proyecto_id IN (:...proyectosPermitidos)
+                )
+            `, { proyectosPermitidos });
+        }
 
         // Filtro de búsqueda
         if (query.search) {
@@ -121,6 +142,16 @@ export class ProspectosService {
             .leftJoin('tbl_leads', 'l', 'l.id_lead = p.id_lead');
 
         countQb.andWhere('p.id_prospecto IN (SELECT MAX(p2.id_prospecto) FROM tbl_prospectos p2 GROUP BY p2.id_lead)');
+
+        if (proyectosPermitidos !== null) {
+            countQb.andWhere(`
+                EXISTS (
+                    SELECT 1 FROM tbl_sesion_conversacion sc_rbac
+                    WHERE sc_rbac.lead_uuid = l.uuid
+                    AND sc_rbac.proyecto_id IN (:...proyectosPermitidos)
+                )
+            `, { proyectosPermitidos });
+        }
 
         if (query.search) {
             countQb.andWhere(

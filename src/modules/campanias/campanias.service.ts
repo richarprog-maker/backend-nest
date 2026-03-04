@@ -43,6 +43,7 @@ export class CampaniasService {
             plantillaParametros?: string[];
             codigoEmpresa: number;
             usuarioId?: number;
+            proyectoId?: number;
             tipoAudiencia?: TipoAudiencia;
             filtrosAudiencia?: any;
             fechaProgramada?: string;

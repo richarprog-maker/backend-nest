@@ -2,6 +2,7 @@ import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PreguntaFrecuente } from './entities/pregunta-frecuente.entity';
+import { ColeccionQdrant } from '../proyectos/entities/coleccion-qdrant.entity';
 import { QdrantVectorService } from '../ia/qdrant-vector.service';
 import { ProyectosService } from '../proyectos/proyectos.service';
 import { Document } from '@langchain/core/documents';
@@ -13,6 +14,8 @@ export class PreguntasFrecuentesService {
     constructor(
         @InjectRepository(PreguntaFrecuente)
         private fqaRepo: Repository<PreguntaFrecuente>,
+        @InjectRepository(ColeccionQdrant)
+        private coleccionQdrantRepo: Repository<ColeccionQdrant>,
         private qdrantService: QdrantVectorService,
         @Inject(forwardRef(() => ProyectosService))
         private proyectosService: ProyectosService
@@ -33,9 +36,19 @@ export class PreguntasFrecuentesService {
             const activeProjectId = proyectoId ? Number(proyectoId) : (proyectosEmpresa.length > 0 ? proyectosEmpresa[0].codigo_proyecto : null);
 
             let fqas = [];
-            let collectionName = process.env.QDRANT_COLLECTION_NAME || 'checor-default';
+            let collectionName = 'checor-default';
 
             if (activeProjectId) {
+                // Obtener nombre de coleccion real desde BD
+                const colQdrant = await this.coleccionQdrantRepo.findOne({
+                    where: { idProyecto: activeProjectId, tipoColeccion: 'faq' }
+                });
+                if (colQdrant) {
+                    collectionName = colQdrant.nombreColeccion;
+                } else {
+                    collectionName = `checor-faq-${activeProjectId}`;
+                }
+
                 const rawFqas = await this.fqaRepo.find({
                     where: { idProyecto: activeProjectId },
                     order: { orden: 'ASC' }
@@ -158,10 +171,12 @@ export class PreguntasFrecuentesService {
     }
 
     async syncQdrant(projectId: number) {
-        const collectionName = process.env.QDRANT_COLLECTION_NAME;
-        if (!collectionName) {
-            this.logger.warn('No QDRANT_COLLECTION_NAME configured, skipping sync');
-            return;
+        let collectionName = `checor-faq-${projectId}`;
+        const colQdrant = await this.coleccionQdrantRepo.findOne({
+            where: { idProyecto: projectId, tipoColeccion: 'faq' }
+        });
+        if (colQdrant) {
+            collectionName = colQdrant.nombreColeccion;
         }
 
         this.logger.log(`Iniciando sincronización Qdrant para proyecto ${projectId}...`);

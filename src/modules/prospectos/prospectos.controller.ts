@@ -1,10 +1,14 @@
-import { Controller, Post, Get, Query, Param, UseInterceptors, UploadedFile, Body, Req, BadRequestException, Res } from '@nestjs/common';
+import { Controller, Post, Get, Query, Param, UseInterceptors, UploadedFile, Body, Req, BadRequestException, Res, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
+import { ApiBearerAuth } from '@nestjs/swagger';
 import { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ServicioExcel } from './services/excel.service';
 import { OrquestadorImportacionService } from './services/orquestador-importacion.service';
 import { ProspectosService } from './services/prospectos.service';
 
+@ApiBearerAuth()
+@UseGuards(AuthGuard('jwt'))
 @Controller('prospectos')
 export class ProspectosController {
     constructor(
@@ -27,7 +31,11 @@ export class ProspectosController {
     }
 
     @Get('base-datos')
-    async getBaseDatos(@Query() query: any) {
+    async getBaseDatos(@Query() query: any, @Req() req: any) {
+        // Añadir info del usuario para RBAC en la consulta
+        query.rol = req.user?.rol || 'vendedor';
+        query.vendedorId = req.user?.userId || null;
+
         const result = await this.prospectosService.findAll(query);
         return {
             success: true,

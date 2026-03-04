@@ -10,6 +10,7 @@ import { WapiService } from '../../webhook_meta/wapi.service';
 import { PlantillasService } from '../../plantillas/services/plantillas.service';
 import { HistorialEnviosService } from '../../historial-envios/services/historial-envios.service';
 import { TipoPlantilla } from '../../plantillas/entities/plantilla.entity';
+import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 
 import { Mensaje } from '../../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../../ia/entities/historial-chat-ai.entity';
@@ -30,6 +31,7 @@ export class OrquestadorImportacionService {
         private readonly historialService: HistorialEnviosService,
         @InjectRepository(Mensaje) private mensajeRepo: Repository<Mensaje>,
         @InjectRepository(HistorialChatAi) private historialAiRepo: Repository<HistorialChatAi>,
+        @InjectRepository(Proyecto) private proyectoRepo: Repository<Proyecto>,
     ) { }
 
     async procesarArchivoExcel(buffer: Buffer, codigoEmpresa: number, proposito: string, nombreBd: string) {
@@ -146,12 +148,18 @@ export class OrquestadorImportacionService {
                     where: { leadUuid: lead.uuid, codigoEmpresa: codigoEmpresa }
                 });
 
+                const proyectoIdExcel = fila.project_id ? Number(fila.project_id) : null;
+
                 if (!sesion) {
                     sesion = new SesionConversacion();
                     sesion.leadUuid = lead.uuid;
                     sesion.codigoEmpresa = codigoEmpresa;
                     sesion.proximoMensajeMinutos = 60;
+                    if (proyectoIdExcel) sesion.proyectoId = proyectoIdExcel;
 
+                    await queryRunner.manager.save(sesion);
+                } else if (proyectoIdExcel && sesion.proyectoId !== proyectoIdExcel) {
+                    sesion.proyectoId = proyectoIdExcel;
                     await queryRunner.manager.save(sesion);
                 }
 
@@ -169,28 +177,54 @@ export class OrquestadorImportacionService {
                     if (true) {
                         const plantilla = await this.plantillasService.obtenerPlantillaPorTipo(TipoPlantilla.PRIMER_CONTACTO, codigoEmpresa);
                         if (plantilla) {
-                            let mensajeContenido = plantilla.contenido;
-                            if (plantilla.parametros && plantilla.parametros.includes('name')) {
-                                const nombreCliente = lead.nombre || 'Cliente';
-                                mensajeContenido = mensajeContenido.replace('{{name}}', nombreCliente);
-                            }
-
                             if (!plantilla.nombre) {
                                 this.logger.error(`[Importacion] La plantilla ID ${plantilla.id} no tiene nombre configurado. No se puede enviar como Template.`);
                                 continue;
                             }
 
-                            // Construir components para Meta WhatsApp API
-                            // La plantilla PRIMER_CONTACTO usa {{name}} = nombre del cliente
-                            const nombreCliente = lead.nombre || 'Cliente';
-                            const components = [
-                                {
-                                    type: 'body',
-                                    parameters: [
-                                        { type: 'text', parameter_name: 'name', text: nombreCliente }
-                                    ]
+                            // Obtener nombre del proyecto
+                            let nombreProyecto = 'Nuestro Proyecto';
+                            const proyectoIdExcel = fila.project_id ? Number(fila.project_id) : null;
+                            if (proyectoIdExcel) {
+                                const proyecto = await this.proyectoRepo.findOne({ where: { id: proyectoIdExcel } });
+                                if (proyecto) nombreProyecto = proyecto.nombre || nombreProyecto;
+                            }
+
+                            // Reemplazar variables en contenido
+                            let mensajeContenido = plantilla.contenido;
+                            if (plantilla.parametros && Array.isArray(plantilla.parametros)) {
+                                for (const param of plantilla.parametros) {
+                                    const regex = new RegExp(`\\{\\{${param}\\}\\}`, 'g');
+                                    switch (param) {
+                                        case 'name':
+                                            mensajeContenido = mensajeContenido.replace(regex, lead.nombre || 'Cliente');
+                                            break;
+                                        case 'project':
+                                            mensajeContenido = mensajeContenido.replace(regex, nombreProyecto);
+                                            break;
+                                    }
                                 }
-                            ];
+                            }
+
+                            // Construir components dinámicamente según parámetros de la plantilla
+                            const nombreCliente = lead.nombre || 'Cliente';
+                            const components = [];
+                            if (plantilla.parametros && Array.isArray(plantilla.parametros) && plantilla.parametros.length > 0) {
+                                const bodyParams = [];
+                                for (const param of plantilla.parametros) {
+                                    switch (param) {
+                                        case 'name':
+                                            bodyParams.push({ type: 'text', parameter_name: 'name', text: nombreCliente });
+                                            break;
+                                        case 'project':
+                                            bodyParams.push({ type: 'text', parameter_name: 'project', text: nombreProyecto });
+                                            break;
+                                    }
+                                }
+                                if (bodyParams.length > 0) {
+                                    components.push({ type: 'body', parameters: bodyParams });
+                                }
+                            }
 
                             this.logger.debug(`[Importacion] Components para Meta: ${JSON.stringify(components)}`);
 

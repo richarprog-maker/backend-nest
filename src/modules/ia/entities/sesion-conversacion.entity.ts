@@ -13,6 +13,12 @@ export class SesionConversacion {
     @Column({ name: 'codigo_empresa', type: 'int' })
     codigoEmpresa: number;
 
+    @Column({ name: 'numero_telefono', type: 'varchar', length: 20, nullable: true })
+    numeroTelefono: string;
+
+    @Column({ name: 'proyecto_id', type: 'int', nullable: true })
+    proyectoId: number;
+
     @Column({ name: 'id_msj_inicio', type: 'int', nullable: true })
     idMsjInicio: number;
 
