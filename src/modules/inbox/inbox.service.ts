@@ -35,6 +35,14 @@ export class InboxService {
         try {
             const skip = (page - 1) * limit;
 
+            let idsProyectos: number[] = [];
+            if (vendedorId && rol && rol !== 'admin' && rol !== 'super_admin') {
+                const proyectosVendedor = await this.vendedorProyectoRepo.find({
+                    where: { idVendedor: vendedorId }
+                });
+                idsProyectos = proyectosVendedor.map(vp => vp.proyectoId);
+            }
+
             // 1. Subquery to find the latest message ID for each conversation (most efficient grouping)
             const subQuery = this.mensajeRepo.createQueryBuilder('m_sub')
                 .select('MAX(m_sub.id)', 'max_id')
@@ -44,6 +52,7 @@ export class InboxService {
             const query = this.mensajeRepo.createQueryBuilder('mensaje')
                 .innerJoin(`(${subQuery.getQuery()})`, 'latest_msg', 'mensaje.id = latest_msg.max_id')
                 .leftJoin('tbl_leads', 'lead', 'lead.uuid = mensaje.lead_uuid')
+                .leftJoin('tbl_sesion_conversacion', 'sesion', 'sesion.lead_uuid = mensaje.lead_uuid AND sesion.codigo_empresa = :codigoEmpresa')
                 .select([
                     'mensaje.lead_uuid AS leadUuid',
                     'lead.telefono AS numeroTelefono',
@@ -92,43 +101,41 @@ export class InboxService {
             }
 
             if (filter === 'unread') {
-                query.having('noLeidos > 0');
+                query.andWhere((qb) => {
+                    const subQueryUnread = qb.subQuery()
+                        .select('1')
+                        .from('tbl_mensajes', 'm_unread')
+                        .where('m_unread.lead_uuid = mensaje.lead_uuid')
+                        .andWhere('m_unread.codigo_empresa = :codigoEmpresa')
+                        .andWhere('m_unread.leido = 0')
+                        .andWhere('m_unread.id_emisor_tipo IN (1, 2)')
+                        .getQuery();
+                    return `EXISTS ${subQueryUnread}`;
+                });
             }
 
-            // 4. Execute Main Query
+            if (vendedorId && rol && rol !== 'admin' && rol !== 'super_admin') {
+                if (idsProyectos.length > 0) {
+                    query.andWhere('(sesion.proyecto_id IS NULL OR sesion.proyecto_id IN (:...idsProyectos))', { idsProyectos });
+                } else {
+                    query.andWhere('sesion.proyecto_id IS NULL');
+                }
+            }
+
+            // 4. Count Totals Before Pagination
+            const totalFiltrado = await query.getCount();
+
+            // 5. Execute Main Query with Pagination
             const rawResults = await query
                 .orderBy('mensaje.fecha_creacion', 'DESC')
                 .offset(skip)
                 .limit(limit)
                 .getRawMany();
 
-            // Filtrar por proyectos del vendedor si no es admin
-            let resultadosFiltrados = rawResults;
-            if (vendedorId && rol && rol !== 'admin' && rol !== 'super_admin') {
-                const proyectosVendedor = await this.vendedorProyectoRepo.find({
-                    where: { idVendedor: vendedorId }
-                });
-                const idsProyectos = proyectosVendedor.map(vp => vp.proyectoId);
-
-                if (idsProyectos.length > 0) {
-                    const sesiones = await this.sesionRepo.find({
-                        where: { codigoEmpresa }
-                    });
-                    const sesionMap = new Map(sesiones.map(s => [s.leadUuid, s.proyectoId]));
-
-                    resultadosFiltrados = rawResults.filter(raw => {
-                        const proyectoSesion = sesionMap.get(raw.leadUuid);
-                        return !proyectoSesion || idsProyectos.includes(proyectoSesion);
-                    });
-                }
-            }
-
-            this.logger.log(`Conversaciones encontradas (${filter}): ${resultadosFiltrados.length}`);
-
-            const totalFiltrado = resultadosFiltrados.length;
+            this.logger.log(`Conversaciones encontradas (${filter}): ${rawResults.length} de ${totalFiltrado}`);
 
             // 6. Map to DTO
-            const conversations = resultadosFiltrados.map(raw => ({
+            const conversations = rawResults.map(raw => ({
                 leadUuid: raw.leadUuid,
                 numeroTelefono: raw.numeroTelefono,
                 nombreCompleto: `${raw.nombre || ''} ${raw.apellido || ''}`.trim() || 'Sin nombre',
