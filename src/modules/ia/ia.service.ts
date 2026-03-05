@@ -132,7 +132,8 @@ export class AiService {
                 tieneHistorial,
                 leadData,
                 citaData,
-                proyectoId
+                proyectoId,
+                sesion?.resumenConversacion
             );
 
             const resultado = await this.agentService.ejecutarAgente(

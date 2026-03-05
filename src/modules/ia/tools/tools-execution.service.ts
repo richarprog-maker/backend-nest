@@ -131,16 +131,19 @@ export class ToolsExecutionService {
                 return { success: false, mensaje: `No se encontro un proyecto con el nombre "${nombre}".` };
             }
 
-            const sesion = await this.sesionRepo.findOne({
+            let sesion = await this.sesionRepo.findOne({
                 where: { leadUuid, codigoEmpresa }
             });
+
+            const proyectoAnteriorId = sesion?.proyectoId || null;
+            const esCambio = proyectoAnteriorId !== null && proyectoAnteriorId !== proyecto.id;
 
             if (sesion) {
                 sesion.proyectoId = proyecto.id;
                 await this.sesionRepo.save(sesion);
             } else {
                 const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
-                const nuevaSesion = this.sesionRepo.create({
+                sesion = this.sesionRepo.create({
                     leadUuid,
                     codigoEmpresa,
                     numeroTelefono: lead?.telefono || '',
@@ -149,14 +152,50 @@ export class ToolsExecutionService {
                     proximoMensajeMinutos: 60,
                     fechaHoraUltimoMsj: new Date(),
                 });
-                await this.sesionRepo.save(nuevaSesion);
+                await this.sesionRepo.save(sesion);
             }
 
             this.logger.log(`Proyecto ${proyecto.nombre} (ID: ${proyecto.id}) asignado a lead ${leadUuid}`);
 
+            // Determinar paso pendiente usando el resumen de sesion
+            let instruccionContinuacion = '';
+            if (esCambio) {
+                const resumen = sesion?.resumenConversacion || '';
+                const tiene = (p: RegExp) => p.test(resumen);
+
+                const tieneDormitorios = tiene(/dormitorio/i);
+                const tieneProposito = tiene(/prop.?sito|para vivir|inversi.?n/i);
+                const tieneZona = tiene(/zona preferida/i);
+                const tienetiempoCompra = tiene(/tiempo de compra/i);
+                const tieneFinanciamiento = tiene(/financiamiento/i);
+                const tienePresupuesto = tiene(/presupuesto|cuota/i);
+                const tieneNombre = tiene(/identificado/i);
+                const tieneDni = tiene(/dni capturado/i);
+                const tieneOcupacion = tiene(/ocupaci.?n/i);
+                const tieneIngresos = tiene(/ingresos mensuales/i);
+                const tieneProforma = tiene(/cotiz.?|proforma/i);
+
+                let pasoPendiente = 1;
+                if (!tieneDormitorios) pasoPendiente = 1;
+                else if (!tieneProposito || !tieneZona) pasoPendiente = 2;
+                else if (!tienetiempoCompra) pasoPendiente = 3;
+                else if (!tieneFinanciamiento) pasoPendiente = 4;
+                else if (!tienePresupuesto) pasoPendiente = 5;
+                else if (!tieneNombre || !tieneDni) pasoPendiente = 8;
+                else if (!tieneOcupacion || !tieneIngresos) pasoPendiente = 9;
+                else if (!tieneProforma) pasoPendiente = 9;
+                else pasoPendiente = 11;
+
+                if (tieneDormitorios && tieneProposito && tieneZona && tienetiempoCompra && tieneFinanciamiento && tienePresupuesto && pasoPendiente < 6) {
+                    pasoPendiente = 6;
+                }
+
+                instruccionContinuacion = ` <<INSTRUCCION_IA: El cliente acaba de cambiarse al proyecto "${proyecto.nombre}". Los datos de fases previas (dormitorios, proposito, zona, tiempo de compra, financiamiento, presupuesto${tieneNombre ? ', nombre' : ''}${tieneDni ? ', DNI' : ''}) son VALIDOS para este nuevo proyecto. NO vuelvas a preguntar esos datos. Continua directamente desde el PASO ${pasoPendiente} del flujo. Si el paso es 6, busca departamentos en "${proyecto.nombre}" con los dormitorios que ya tienes en el resumen.>>`;
+            }
+
             return {
                 success: true,
-                mensaje: `[ACCION_COMPLETADA] Proyecto "${proyecto.nombre}" registrado correctamente.`,
+                mensaje: `[ACCION_COMPLETADA] Proyecto "${proyecto.nombre}" registrado correctamente.${instruccionContinuacion}`,
                 proyectoId: proyecto.id,
                 nombreProyecto: proyecto.nombre
             };

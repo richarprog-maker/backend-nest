@@ -14,7 +14,8 @@ export class PromptService {
         tieneHistorial: boolean = false,
         leadData?: Lead,
         citaData?: Cita,
-        proyectoId?: number
+        proyectoId?: number,
+        resumenSesion?: string
     ): string {
 
         const listaProyectos = metadataEmpresa
@@ -30,6 +31,7 @@ export class PromptService {
         const infoCita = this.buildInfoCita(citaData);
 
         const instruccionProyecto = this.buildInstruccionProyecto(metadataEmpresa, proyectoId);
+        const datosFlujo = this.buildDatosFlujo(resumenSesion);
 
         let prompt = PROMPT_SYSTEM_MAIN;
         const replacements: Record<string, string> = {
@@ -41,7 +43,8 @@ export class PromptService {
             "{{metadatos_cliente}}": metadatosCliente,
             "{{info_cita}}": infoCita,
             "{{instruccion_saludo}}": instruccionSaludo,
-            "{{instruccion_proyecto}}": instruccionProyecto
+            "{{instruccion_proyecto}}": instruccionProyecto,
+            "{{datos_flujo_previo}}": datosFlujo
         };
 
         for (const [key, value] of Object.entries(replacements)) {
@@ -200,27 +203,27 @@ ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
 
     private buildInstruccionProyecto(metadataEmpresa: any[], proyectoId?: number): string {
         if (proyectoId) {
-            // Buscar el proyecto asignado por su ID
             const proyecto = metadataEmpresa.find(p => p.id === proyectoId);
             const nombre = proyecto?.nombre_proyecto || metadataEmpresa[0]?.nombre_proyecto || '';
 
-            // Construir lista de otros proyectos disponibles para cambio
             const otrosProyectos = metadataEmpresa.filter(p => p.id !== proyectoId);
-            const listaOtros = otrosProyectos.map(p => `- ${p.nombre_proyecto}`).join('\n');
+            const listaOtros = otrosProyectos.length > 0
+                ? otrosProyectos.map(p => `- ${p.nombre_proyecto}`).join('\n')
+                : null;
 
             return `
 ## PROYECTO ASIGNADO
 - El cliente esta interesado en: **${nombre}**
-- Responde principalmente sobre este proyecto.
+- Usa este proyecto para TODAS las herramientas (buscarDepartamento, buscarPreguntasFrecuentes, etc.).
 
 ## CAMBIO DE PROYECTO
 ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros proyectos disponibles)'}
 
 **REGLAS DE CAMBIO DE PROYECTO**:
-1. Si el cliente pide info, brochure, videos o preguntas de OTRO proyecto: dale lo que pide, PERO NO cambies su proyecto. Despues de atender su solicitud, PREGUNTA: "Por cierto, tu proyecto actual es ${nombre}. Te gustaria que te cambie al proyecto [otro]?"
-2. SOLO ejecuta guardar_proyecto cuando el cliente diga EXPLICITAMENTE: "si cambienme", "prefiero ese", "me interesa mas ese proyecto".
-3. Pedir un brochure o info de otro proyecto NO ES confirmar cambio. Es solo curiosidad.
-4. Despues de enviar info de otro proyecto, SIEMPRE retoma la conversacion sobre ${nombre} a menos que el cliente confirme que quiere cambiar.`;
+1. Si el cliente pide info, brochure, videos o preguntas de OTRO proyecto: dale lo que pide, PERO NO cambies su proyecto. Despues, PREGUNTA: "Tu proyecto actual es ${nombre}. Te gustaria cambiarte al proyecto [otro]?"
+2. SOLO ejecuta guardar_proyecto cuando el cliente confirme EXPLICITAMENTE: "si", "cambienme", "prefiero ese", "me interesa mas ese".
+3. Pedir un brochure o info de otro proyecto NO ES confirmar cambio.
+4. Cuando guardar_proyecto confirme el cambio, revisa el bloque DATOS DE FASES PREVIAS del contexto. Esos datos son VALIDOS para el nuevo proyecto. NO vuelvas a preguntar nada que ya este ahi. Continua directamente desde el paso pendiente.`;
         }
 
         if (metadataEmpresa.length > 1) {
@@ -229,13 +232,65 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
 ## SELECCION DE PROYECTO (PASO OBLIGATORIO)
 - El cliente AUN NO ha elegido un proyecto.
 - ANTES de continuar con cualquier otro paso, pregunta:
-  "Tenemos los siguientes proyectos disponibles:
-${lista}
-  Cual te interesa?"
+  "Tenemos los siguientes proyectos disponibles:\n${lista}\n  Cual te interesa?"
 - Una vez que el cliente elija, usa la herramienta guardar_proyecto para registrar su eleccion.
 - Despues de guardar el proyecto, continua con el flujo normal.`;
         }
 
         return '';
+    }
+
+    /**
+     * Construye el bloque de datos de fases previas a partir del resumen de sesion.
+     * Permite que al cambiar de proyecto el bot sepa que pasos ya se completaron.
+     */
+    private buildDatosFlujo(resumenSesion?: string): string {
+        if (!resumenSesion || !resumenSesion.trim()) return '';
+
+        // Detectar que datos tiene el resumen
+        const tiene = (patron: RegExp) => patron.test(resumenSesion);
+
+        const tieneDormitorios = tiene(/dormitorio/i);
+        const tieneProposito = tiene(/prop.?sito|para vivir|inversi.?n/i);
+        const tieneZona = tiene(/zona preferida/i);
+        const tienetiempoCompra = tiene(/tiempo de compra/i);
+        const tieneFinanciamiento = tiene(/financiamiento/i);
+        const tienePresupuesto = tiene(/presupuesto|cuota/i);
+        const tieneNombre = tiene(/identificado/i);
+        const tieneDni = tiene(/dni capturado/i);
+        const tieneOcupacion = tiene(/ocupaci.?n/i);
+        const tieneIngresos = tiene(/ingresos mensuales/i);
+        const tieneProforma = tiene(/cotiz.?|proforma/i);
+
+        // Determinar paso pendiente
+        let pasoPendiente = 1;
+        if (!tieneDormitorios) pasoPendiente = 1;
+        else if (!tieneProposito || !tieneZona) pasoPendiente = 2;
+        else if (!tienetiempoCompra) pasoPendiente = 3;
+        else if (!tieneFinanciamiento) pasoPendiente = 4;
+        else if (!tienePresupuesto) pasoPendiente = 5;
+        else if (!tieneNombre || !tieneDni) pasoPendiente = 8;
+        else if (!tieneOcupacion || !tieneIngresos) pasoPendiente = 9;
+        else if (!tieneProforma) pasoPendiente = 9;
+        else pasoPendiente = 11;
+
+        // Si ya tiene todo hasta paso 5 inclusive, desde paso 6 buscar depa
+        if (tieneDormitorios && tieneProposito && tieneZona && tienetiempoCompra && tieneFinanciamiento && tienePresupuesto && pasoPendiente < 6) {
+            pasoPendiente = 6;
+        }
+
+        return `
+## DATOS DE FASES PREVIAS (PORTABLES ENTRE PROYECTOS)
+Este cliente ya respondio las siguientes preguntas en proyectos anteriores. Son VALIDOS para el proyecto actual:
+
+${resumenSesion}
+
+**INSTRUCCION CRITICA**:
+- NO vuelvas a preguntar ninguno de los datos que aparecen arriba.
+- Los datos de dormitorios, proposito, zona, tiempo de compra, financiamiento y presupuesto son validos para cualquier proyecto.
+- Los datos de unidad especifica, proforma y cita son del proyecto anterior y pueden necesitar actualizacion.
+- Continua directamente desde el **PASO ${pasoPendiente}** del flujo.
+- Si el paso pendiente es 6 o mas, busca departamentos en el nuevo proyecto usando los dormitorios que ya tienes.
+`;
     }
 }
