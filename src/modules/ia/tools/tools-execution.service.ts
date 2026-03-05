@@ -368,7 +368,7 @@ ${precioStr}
      * Valida fecha y hora para agendamiento de citas
      * Retorna objeto con {valid: boolean, mensaje?: string}
      */
-    private validarFechaHoraCita(fecha_cita: string, hora_cita: string): { valid: boolean; mensaje?: string } {
+    private validarFechaHoraCita(fecha_cita: string, hora_cita: string, horario_atencion?: any): { valid: boolean; mensaje?: string } {
         const ahoraPeru = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
         const hoyISO = `${ahoraPeru.getFullYear()}-${String(ahoraPeru.getMonth() + 1).padStart(2, '0')}-${String(ahoraPeru.getDate()).padStart(2, '0')}`;
 
@@ -395,16 +395,85 @@ ${precioStr}
             }
         }
 
-        // 3. Validar horario de atención: 10:00 a 19:00
+        // 3. Validar horario de atención dinámico del proyecto
+        let horariosArray: any[] = [];
+        if (horario_atencion) {
+            try {
+                horariosArray = typeof horario_atencion === 'string' ? JSON.parse(horario_atencion) : horario_atencion;
+                if (!Array.isArray(horariosArray)) {
+                    horariosArray = [horariosArray];
+                }
+            } catch (e) {
+                this.logger.warn(`Error parseando horario_atencion: ${e.message}`);
+                horariosArray = [];
+            }
+        }
+
+        if (horariosArray.length === 0) {
+            // Default: Lun(1) a Vie(5), 09:00 - 18:00
+            horariosArray = [{
+                num_dia_semana_inicio: 1,
+                num_dia_semana_fin: 5,
+                hora_inicio: '10:00',
+                hora_fin: '19:00'
+            }];
+        }
+
+        // Obtener día de la semana de la fecha solicitada de manera local o neutra
+        const dateObj = new Date(`${fecha_cita}T12:00:00Z`);
+        const diaSemana = dateObj.getUTCDay(); // 0 Dom, 1 Lun, 2 Mar... 6 Sab
+
         const [horaNum, minNum] = hora_cita.split(':').map(Number);
         const minutosDelDia = horaNum * 60 + minNum;
-        const HORA_APERTURA = 10 * 60; // 10:00 = 600 min
-        const HORA_CIERRE = 19 * 60;   // 19:00 = 1140 min
 
-        if (minutosDelDia < HORA_APERTURA || minutosDelDia >= HORA_CIERRE) {
+        let diaHabilitado = false;
+        let bloqueValido = false;
+        let rangosDiaHabilitado: string[] = [];
+
+        for (const bloque of horariosArray) {
+            const inicioDia = parseInt(bloque.num_dia_semana_inicio ?? bloque.dia_inicio ?? 1, 10);
+            const finDia = parseInt(bloque.num_dia_semana_fin ?? bloque.dia_fin ?? 5, 10);
+
+            let dentroDelDia = false;
+            // Manejo de rangos que pueden cruzar la semana (ej. 6 = Sab a 1 = Lun)
+            if (inicioDia <= finDia) {
+                if (diaSemana >= inicioDia && diaSemana <= finDia) dentroDelDia = true;
+            } else {
+                if (diaSemana >= inicioDia || diaSemana <= finDia) dentroDelDia = true;
+            }
+
+            if (dentroDelDia) {
+                diaHabilitado = true;
+                const hInicioStr = bloque.hora_inicio || '10:00';
+                const hFinStr = bloque.hora_fin || '19:00';
+
+                const [hI, mI] = hInicioStr.split(':').map(Number);
+                const [hF, mF] = hFinStr.split(':').map(Number);
+
+                const minInicio = hI * 60 + (mI || 0);
+                const minFin = hF * 60 + (mF || 0);
+
+                rangosDiaHabilitado.push(`${hInicioStr.substring(0, 5)} a ${hFinStr.substring(0, 5)}`);
+
+                if (minutosDelDia >= minInicio && minutosDelDia < minFin) {
+                    bloqueValido = true;
+                    break;
+                }
+            }
+        }
+
+        if (!diaHabilitado) {
             return {
                 valid: false,
-                mensaje: `El horario de atención es de 10:00 a.m. a 7:00 p.m. La hora ${hora_cita} está fuera de horario. ¿Podrías elegir otro horario dentro de ese rango?`
+                mensaje: `Lo siento, el horario seleccionado no corresponde a nuestros días de atención para este proyecto. ¿Podrías elegir otro día?`
+            };
+        }
+
+        if (!bloqueValido) {
+            const rangosTexto = rangosDiaHabilitado.join(' o de ');
+            return {
+                valid: false,
+                mensaje: `El horario de atención para ese día es de ${rangosTexto}. La hora ${hora_cita} está fuera de horario. ¿Podrías elegir otro horario en ese rango?`
             };
         }
 
@@ -419,8 +488,39 @@ ${precioStr}
         // Validar y normalizar tipo de cita (PRESENCIAL por defecto)
         const tipoCitaNormalizado = tipo_cita?.toUpperCase() === 'VIRTUAL' ? 'VIRTUAL' : 'PRESENCIAL';
 
+        // Buscar proyecto en BD para obtener ID, ubicación y HORARIO DE ATENCION antes de validar
+        let direccion = '';
+        let mapaUrl = '';
+        let proyectoFinal: Proyecto | undefined;
+        let horarioAtencion = undefined;
+
+        try {
+            const proyectoDb = await this.proyectosRepo.findOne({
+                where: { nombre: ILike(`%${nombre_proyecto}%`), codigoEmpresa }
+            });
+
+            proyectoFinal = proyectoDb;
+
+            if (!proyectoFinal) {
+                const palabras = nombre_proyecto.split(' ').filter((p: string) => p.length > 3);
+                if (palabras.length > 0) {
+                    proyectoFinal = await this.proyectosRepo.findOne({
+                        where: palabras.map((p: string) => ({ nombre: ILike(`%${p}%`), codigoEmpresa }))
+                    });
+                }
+            }
+
+            this.logger.log(`[AgendarCita] Proyecto buscado: "${nombre_proyecto}" -> Encontrado: ${proyectoFinal?.nombre || 'NO'}`);
+
+            if (proyectoFinal && proyectoFinal.jsonData) {
+                horarioAtencion = proyectoFinal.jsonData['horario_atencion'];
+            }
+        } catch (e) {
+            this.logger.error(`Error buscando proyecto para horario: ${e.message}`);
+        }
+
         // === VALIDACIONES DE FECHA Y HORA ===
-        const validacion = this.validarFechaHoraCita(fecha_cita, hora_cita);
+        const validacion = this.validarFechaHoraCita(fecha_cita, hora_cita, horarioAtencion);
         if (!validacion.valid) {
             return { success: false, mensaje: validacion.mensaje };
         }
@@ -463,29 +563,8 @@ ${precioStr}
         if (dormitorios) observacion += ` | Dorms: ${dormitorios}`;
         if (precio_referencial) observacion += ` | Precio: S/${precio_referencial}`;
 
-        // Buscar proyecto en BD para obtener ID y datos de ubicación
-        let direccion = '';
-        let mapaUrl = '';
-        let proyectoFinal: Proyecto | undefined;
-
+        // Obtener detalles de ubicacion y URL
         try {
-            const proyectoDb = await this.proyectosRepo.findOne({
-                where: { nombre: ILike(`%${nombre_proyecto}%`), codigoEmpresa }
-            });
-
-            proyectoFinal = proyectoDb;
-
-            if (!proyectoFinal) {
-                const palabras = nombre_proyecto.split(' ').filter((p: string) => p.length > 3);
-                if (palabras.length > 0) {
-                    proyectoFinal = await this.proyectosRepo.findOne({
-                        where: palabras.map((p: string) => ({ nombre: ILike(`%${p}%`), codigoEmpresa }))
-                    });
-                }
-            }
-
-            this.logger.log(`[AgendarCita] Proyecto buscado: "${nombre_proyecto}" -> Encontrado: ${proyectoFinal?.nombre || 'NO'}`);
-
             if (proyectoFinal) {
                 let foundInJson = false;
                 if (proyectoFinal.jsonData && proyectoFinal.jsonData['direccion_sala_ventas']) {
@@ -623,28 +702,43 @@ DATOS DE LA CITA:
             }
         }
 
-        const fechaFinal = fecha_nueva || citaActual.fechaCita;
-        const horaFinal = hora_nueva || citaActual.horaCita;
-
+        // Validar nuevas fechas si se proporcionan
         if (fecha_nueva || hora_nueva) {
-            const validacion = this.validarFechaHoraCita(fechaFinal, horaFinal);
+            const fEvaluar = fecha_nueva || citaActual.fechaCita;
+            const hEvaluar = hora_nueva || citaActual.horaCita;
+
+            // Extraer el horario dynamico del proyecto actual de la cita
+            let horarioAtencion = undefined;
+            if (citaActual.proyectoId) {
+                try {
+                    const proyectoDb = await this.proyectosRepo.findOne({ where: { id: citaActual.proyectoId } });
+                    if (proyectoDb && proyectoDb.jsonData) {
+                        horarioAtencion = proyectoDb.jsonData['horario_atencion'];
+                    }
+                } catch (e) {
+                    this.logger.warn(`Error buscando horario en reagendarCita: ${e.message}`);
+                }
+            }
+
+            const validacion = this.validarFechaHoraCita(fEvaluar, hEvaluar, horarioAtencion);
             if (!validacion.valid) {
                 return { success: false, mensaje: validacion.mensaje };
             }
 
-            const ocupado = await this.citasService.existeCitaEnHorario(fechaFinal, horaFinal, codigoEmpresa, leadUuid);
+            // Check collisions
+            const ocupado = await this.citasService.existeCitaEnHorario(fEvaluar, hEvaluar, codigoEmpresa, citaActual.id.toString());
             if (ocupado) {
                 return {
                     success: false,
-                    mensaje: `El horario ${horaFinal} del ${fechaFinal} ya está ocupado. Elige otro.`
+                    mensaje: `Lo siento, el horario de las ${hEvaluar} para el día ${fEvaluar} ya está ocupado.`
                 };
             }
 
-            if (fecha_nueva) {
+            if (fecha_nueva && fecha_nueva !== citaActual.fechaCita) {
                 datosActualizacion.fechaCita = fecha_nueva;
                 cambios.push(`fecha a ${fecha_nueva}`);
             }
-            if (hora_nueva) {
+            if (hora_nueva && hora_nueva !== citaActual.horaCita) {
                 datosActualizacion.horaCita = hora_nueva;
                 cambios.push(`hora a ${hora_nueva}`);
             }
@@ -660,19 +754,21 @@ DATOS DE LA CITA:
             this.logger.log(`[ReagendarCita] No hay cambios que realizar`);
             return {
                 success: true,
-                mensaje: `Tu cita ya está programada para el ${fechaFinal} a las ${horaFinal}. No hay cambios que realizar.`
+                mensaje: `Tu cita ya está programada para el ${citaActual.fechaCita} a las ${citaActual.horaCita}. No hay cambios que realizar.`
             };
         }
 
         this.logger.log(`[ReagendarCita] Actualizando cita ID ${citaActual.id} con: ${JSON.stringify(datosActualizacion)}`);
         await this.citasService.reagendarCita(citaActual.id, datosActualizacion);
 
+        const fFinal = datosActualizacion.fechaCita || citaActual.fechaCita;
+        const hFinal = datosActualizacion.horaCita || citaActual.horaCita;
         const tipoFinal = datosActualizacion.tipoCita || citaActual.tipoCita;
         const tipoTexto = tipoFinal === 'VIRTUAL' ? 'virtual' : 'presencial';
 
         return {
             success: true,
-            mensaje: `[ACCION_COMPLETADA] Listo, actualicé tu cita ${cambios.length > 0 ? `(${cambios.join(', ')})` : ''}. Ahora es ${tipoTexto} para el ${fechaFinal} a las ${horaFinal}.`
+            mensaje: `[ACCION_COMPLETADA] Listo, actualicé tu cita ${cambios.length > 0 ? `(${cambios.join(', ')})` : ''}. Ahora es ${tipoTexto} para el ${fFinal} a las ${hFinal}.`
         };
     }
 
