@@ -653,6 +653,8 @@ DATOS DE LA CITA:
             outputMsg += ` Te enviaré la ubicación exacta más adelante.`;
         }
 
+        outputMsg += `\n\n<<INSTRUCCION_IA: NO menciones confirmacion por correo electronico. NO digas que enviaste confirmacion al email. Solo confirma la cita con los datos proporcionados arriba (fecha, hora, direccion, mapa). El email se usa internamente, NO se envia confirmacion por email al cliente.>>`;
+
         return {
             success: true,
             mensaje: outputMsg
