@@ -151,25 +151,27 @@ export class AiService {
 
             // Auto-detectar proyecto desde la respuesta del LLM y actualizar sesión
             try {
-                const respuestaLower = resultado.output.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                let proyectoDetectado: typeof proyectosActivos[0] | null = null;
+                if (proyectoId !== null) {
+                    const respuestaLower = resultado.output.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                    let proyectoDetectado: typeof proyectosActivos[0] | null = null;
 
-                for (const p of proyectosActivos) {
-                    const nombreLower = p.nombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                    if (respuestaLower.includes(nombreLower)) {
-                        proyectoDetectado = p;
-                        break;
+                    for (const p of proyectosActivos) {
+                        const nombreLower = p.nombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                        if (respuestaLower.includes(nombreLower)) {
+                            proyectoDetectado = p;
+                            break;
+                        }
                     }
-                }
 
-                if (proyectoDetectado && proyectoDetectado.id !== proyectoId) {
-                    const sesionActual = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
-                    if (sesionActual) {
-                        sesionActual.proyectoId = proyectoDetectado.id;
-                        await this.sesionRepo.save(sesionActual);
-                        this.logger.log(
-                            `[AutoSync] Proyecto actualizado: ${proyectoId} -> ${proyectoDetectado.id} (${proyectoDetectado.nombre}) para lead ${leadUuid}`
-                        );
+                    if (proyectoDetectado && proyectoDetectado.id !== proyectoId) {
+                        const sesionActual = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
+                        if (sesionActual) {
+                            sesionActual.proyectoId = proyectoDetectado.id;
+                            await this.sesionRepo.save(sesionActual);
+                            this.logger.log(
+                                `[AutoSync] Proyecto actualizado: ${proyectoId} -> ${proyectoDetectado.id} (${proyectoDetectado.nombre}) para lead ${leadUuid}`
+                            );
+                        }
                     }
                 }
             } catch (syncError) {
