@@ -125,6 +125,10 @@ export class RecordatorioCitasService {
             }
         }
 
+        // Valores finales que se usan tanto para Meta como para la BD (deben ser idénticos)
+        const nombreProyectoFinal = nombreProyecto;
+        const direccionFinal = direccionProyecto ? `📍 ${direccionProyecto}` : '';
+
         // Obtener plantilla
         const plantilla = await this.plantillaRepo.findOne({
             where: { nombre: templateName, codigoEmpresa: cita.codigoEmpresa }
@@ -153,7 +157,7 @@ export class RecordatorioCitasService {
                         bodyParams.push({
                             type: 'text',
                             parameter_name: 'project',
-                            text: nombreProyecto
+                            text: nombreProyectoFinal
                         });
                         break;
                     case 'hora':
@@ -167,7 +171,7 @@ export class RecordatorioCitasService {
                         bodyParams.push({
                             type: 'text',
                             parameter_name: 'direccion',
-                            text: direccionProyecto || 'Por confirmar'
+                            text: direccionFinal || ' ' // Meta requiere string no vacío en parametros
                         });
                         break;
                 }
@@ -199,13 +203,17 @@ export class RecordatorioCitasService {
                         contenidoProcesado = contenidoProcesado.replace(regex, (lead.nombre && lead.nombre.trim()) || 'Cliente');
                         break;
                     case 'project':
-                        contenidoProcesado = contenidoProcesado.replace(regex, nombreProyecto);
+                        contenidoProcesado = contenidoProcesado.replace(regex, nombreProyectoFinal);
                         break;
                     case 'hora':
                         contenidoProcesado = contenidoProcesado.replace(regex, cita.horaCita.substring(0, 5));
                         break;
                     case 'direccion':
-                        contenidoProcesado = contenidoProcesado.replace(regex, direccionProyecto || 'Por confirmar');
+                        contenidoProcesado = contenidoProcesado.replace(
+                            new RegExp(`\\n.*\\{\\{${param}\\}\\}`, 'g'),
+                            direccionFinal ? `\n${direccionFinal}` : ''
+                        );
+                        contenidoProcesado = contenidoProcesado.replace(regex, direccionFinal);
                         break;
                 }
             }

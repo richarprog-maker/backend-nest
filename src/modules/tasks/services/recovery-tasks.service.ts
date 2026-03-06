@@ -143,12 +143,18 @@ export class RecoveryTasksService {
 
         // 3. Obtener datos del proyecto
         let nombreProyecto = 'Nuestro Proyecto';
+        let direccionProyecto = '';
         if (sesion.proyectoId) {
             const proyecto = await this.proyectoRepo.findOne({ where: { id: sesion.proyectoId } });
             if (proyecto) {
                 nombreProyecto = proyecto.nombre || nombreProyecto;
+                direccionProyecto = proyecto.ubicacion || '';
             }
         }
+
+        // Valores finales - idénticos entre lo que se envía a Meta y lo que se guarda en BD
+        const nombreProyectoFinal = nombreProyecto;
+        const direccionFinal = direccionProyecto ? `📍 ${direccionProyecto}` : '';
 
         // ANTI-DUPLICADOS: Actualizar estado ANTES de enviar
         sesion.proximoMensajeMinutos = nextMinutes;
@@ -173,7 +179,14 @@ export class RecoveryTasksService {
                         bodyParams.push({
                             type: 'text',
                             parameter_name: 'project',
-                            text: nombreProyecto
+                            text: nombreProyectoFinal
+                        });
+                        break;
+                    case 'direccion':
+                        bodyParams.push({
+                            type: 'text',
+                            parameter_name: 'direccion',
+                            text: direccionFinal || ' ' // Meta requiere string no vacío
                         });
                         break;
                 }
@@ -194,7 +207,14 @@ export class RecoveryTasksService {
                         contenidoProcesado = contenidoProcesado.replace(regex, (lead.nombre && lead.nombre.trim()) || 'Cliente');
                         break;
                     case 'project':
-                        contenidoProcesado = contenidoProcesado.replace(regex, nombreProyecto);
+                        contenidoProcesado = contenidoProcesado.replace(regex, nombreProyectoFinal);
+                        break;
+                    case 'direccion':
+                        contenidoProcesado = contenidoProcesado.replace(
+                            new RegExp(`\\n.*\\{\\{${param}\\}\\}`, 'g'),
+                            direccionFinal ? `\n${direccionFinal}` : ''
+                        );
+                        contenidoProcesado = contenidoProcesado.replace(regex, direccionFinal);
                         break;
                 }
             }
