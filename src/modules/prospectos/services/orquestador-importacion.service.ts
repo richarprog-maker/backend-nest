@@ -154,13 +154,24 @@ export class OrquestadorImportacionService {
                     sesion = new SesionConversacion();
                     sesion.leadUuid = lead.uuid;
                     sesion.codigoEmpresa = codigoEmpresa;
+                    sesion.numeroTelefono = lead.telefono;
                     sesion.proximoMensajeMinutos = 60;
                     if (proyectoIdExcel) sesion.proyectoId = proyectoIdExcel;
 
                     await queryRunner.manager.save(sesion);
-                } else if (proyectoIdExcel && sesion.proyectoId !== proyectoIdExcel) {
-                    sesion.proyectoId = proyectoIdExcel;
-                    await queryRunner.manager.save(sesion);
+                } else {
+                    let necesitaActualizar = false;
+                    if (proyectoIdExcel && sesion.proyectoId !== proyectoIdExcel) {
+                        sesion.proyectoId = proyectoIdExcel;
+                        necesitaActualizar = true;
+                    }
+                    if (!sesion.numeroTelefono || sesion.numeroTelefono !== lead.telefono) {
+                        sesion.numeroTelefono = lead.telefono;
+                        necesitaActualizar = true;
+                    }
+                    if (necesitaActualizar) {
+                        await queryRunner.manager.save(sesion);
+                    }
                 }
 
                 await queryRunner.commitTransaction();

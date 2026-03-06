@@ -374,6 +374,12 @@ export class CampaniasProcessor extends WorkerHost {
                 });
                 await this.sesionRepo.save(nuevaSesion);
                 this.logger.debug(`[Excel] Sesión pre-creada para nuevo lead ${lead.uuid}`);
+            } else if (sesion && tipoAudiencia === 'excel') {
+                if (!sesion.numeroTelefono || sesion.numeroTelefono !== lead.telefono) {
+                    sesion.numeroTelefono = lead.telefono;
+                    await this.sesionRepo.save(sesion);
+                    this.logger.debug(`[Excel] Sesión actualizada con número para lead ${lead.uuid}`);
+                }
             }
 
             return { lead, prospecto, clasificacion };
@@ -707,6 +713,13 @@ export class CampaniasProcessor extends WorkerHost {
                 sesion.proximoMensajeMinutos = 60;
                 sesion.fechaHoraUltimoMsj = new Date();
                 if (proyectoId) sesion.proyectoId = proyectoId;
+
+                // Add phone number if missing
+                const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
+                if (lead && (!sesion.numeroTelefono || sesion.numeroTelefono !== lead.telefono)) {
+                    sesion.numeroTelefono = lead.telefono;
+                }
+
                 await this.sesionRepo.save(sesion);
                 this.logger.debug(`[Campania] Sesion ${sesion.id} reseteada: estado=1, proximo=60min, proyecto=${proyectoId || 'sin cambio'}`);
             } else {

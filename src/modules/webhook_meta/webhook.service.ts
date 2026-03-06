@@ -11,6 +11,7 @@ import { WapiService } from './wapi.service';
 import { SmartSplitService } from '../ia/smart-split.service';
 import { InboxGateway } from '../inbox/inbox.gateway';
 import { RedisService } from '../common/redis/redis.service';
+import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 
 @Injectable()
 export class WebhookService implements OnModuleInit {
@@ -26,6 +27,8 @@ export class WebhookService implements OnModuleInit {
         private leadRepo: Repository<Lead>,
         @InjectRepository(Prospecto)
         private prospectoRepo: Repository<Prospecto>,
+        @InjectRepository(SesionConversacion)
+        private sesionRepo: Repository<SesionConversacion>,
         private aiService: AiService,
         private wapiService: WapiService,
         private smartSplitService: SmartSplitService,
@@ -33,6 +36,7 @@ export class WebhookService implements OnModuleInit {
         private inboxGateway: InboxGateway,
         private redisService: RedisService,
     ) { }
+
 
     async onModuleInit() {
         await this.syncCredentialsFromEnv();
@@ -178,6 +182,27 @@ export class WebhookService implements OnModuleInit {
                 fechaRegistro: new Date()
             });
             await this.prospectoRepo.save(nuevoProspecto);
+        }
+
+        // 1.5 Asegurar que exista una sesión para el lead y tenga el número
+        let sesion = await this.sesionRepo.findOne({
+            where: { leadUuid: lead.uuid, codigoEmpresa }
+        });
+
+        if (!sesion) {
+            sesion = this.sesionRepo.create({
+                leadUuid: lead.uuid,
+                codigoEmpresa,
+                numeroTelefono: from,
+                proximoMensajeMinutos: 60,
+                idEstado: 1
+            });
+            await this.sesionRepo.save(sesion);
+            this.logger.log(`Nueva SesionConversacion creada: ${lead.uuid} con teléfono ${from}`);
+        } else if (!sesion.numeroTelefono || sesion.numeroTelefono !== from) {
+            sesion.numeroTelefono = from;
+            await this.sesionRepo.save(sesion);
+            this.logger.log(`SesionConversacion actualizada: ${lead.uuid} con teléfono ${from}`);
         }
 
         // 2. Guardar Mensaje en BD

@@ -12,12 +12,15 @@ import { WapiService } from './wapi.service';
 import { SmartSplitService } from '../ia/smart-split.service';
 import { InboxModule } from '../inbox/inbox.module';
 
+import { Session } from 'inspector';
+import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
+
 @Module({
     imports: [
         ConfigModule,
         AiModule,
         forwardRef(() => InboxModule),
-        TypeOrmModule.forFeature([CredencialesWapi, Mensaje, Lead, Prospecto])
+        TypeOrmModule.forFeature([CredencialesWapi, Mensaje, Lead, Prospecto, SesionConversacion])
     ],
     controllers: [WebhookController],
     providers: [WebhookService, WapiService, SmartSplitService],
