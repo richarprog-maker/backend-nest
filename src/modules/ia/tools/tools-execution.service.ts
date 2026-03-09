@@ -410,13 +410,8 @@ ${precioStr}
         }
 
         if (horariosArray.length === 0) {
-            // Default: Lun(1) a Vie(5), 09:00 - 18:00
-            horariosArray = [{
-                num_dia_semana_inicio: 1,
-                num_dia_semana_fin: 5,
-                hora_inicio: '10:00',
-                hora_fin: '19:00'
-            }];
+            this.logger.warn(`No hay horario_atencion configurado para este proyecto. Se omitirá la validación de horas.`);
+            return { valid: true };
         }
 
         // Obtener día de la semana de la fecha solicitada de manera local o neutra
@@ -444,8 +439,12 @@ ${precioStr}
 
             if (dentroDelDia) {
                 diaHabilitado = true;
-                const hInicioStr = bloque.hora_inicio || '10:00';
-                const hFinStr = bloque.hora_fin || '19:00';
+                const hInicioStr = bloque.hora_inicio;
+                const hFinStr = bloque.hora_fin;
+
+                if (!hInicioStr || !hFinStr) {
+                    continue; 
+                }
 
                 const [hI, mI] = hInicioStr.split(':').map(Number);
                 const [hF, mF] = hFinStr.split(':').map(Number);
@@ -495,18 +494,27 @@ ${precioStr}
         let horarioAtencion = undefined;
 
         try {
-            const proyectoDb = await this.proyectosRepo.findOne({
-                where: { nombre: ILike(`%${nombre_proyecto}%`), codigoEmpresa }
-            });
+            // PRIMERO intentar con el proyecto de la sesión (asegura obtener los horarios correctos del lead)
+            if (leadUuid && codigoEmpresa) {
+                const sesion = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
+                if (sesion && sesion.proyectoId) {
+                    proyectoFinal = await this.proyectosRepo.findOne({ where: { id: sesion.proyectoId } }) || undefined;
+                }
+            }
 
-            proyectoFinal = proyectoDb;
+            // Si no hay proyecto en sesión, intentar buscar por nombre
+            if (!proyectoFinal) {
+                proyectoFinal = await this.proyectosRepo.findOne({
+                    where: { nombre: ILike(`%${nombre_proyecto}%`), codigoEmpresa }
+                }) || undefined;
+            }
 
             if (!proyectoFinal) {
                 const palabras = nombre_proyecto.split(' ').filter((p: string) => p.length > 3);
                 if (palabras.length > 0) {
                     proyectoFinal = await this.proyectosRepo.findOne({
                         where: palabras.map((p: string) => ({ nombre: ILike(`%${p}%`), codigoEmpresa }))
-                    });
+                    }) || undefined;
                 }
             }
 

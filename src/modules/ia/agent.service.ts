@@ -367,7 +367,7 @@ export class AgentService {
 - ${fechaLegible}
 
 REGLAS GENERALES:
-- HORARIO DE ATENCIÓN: 10:00 a 19:00 (7pm). NO agendes fuera de ese horario.
+- RESPETA ESTRICTAMENTE los horarios de atención indicados para tu proyecto. NO agendes citas fuera de esos horarios.
 - NO agendes citas para fechas pasadas ni horas que ya pasaron hoy.
 - Para referirte a fechas: si es ${fechaISO} di "hoy", si es ${fechaMananaISO} di "mañana", si ya pasó di que "ya pasó".
 ======================================

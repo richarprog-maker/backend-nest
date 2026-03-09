@@ -202,18 +202,32 @@ ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
     }
 
     private buildInstruccionProyecto(metadataEmpresa: any[], proyectoId?: number): string {
+        const formatHorario = (horarios: any[]) => {
+            if (!horarios || horarios.length === 0) return 'Horario no especificado';
+
+            return horarios.map(h => {
+                const dias = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+                const inicio = parseInt(h.num_dia_semana_inicio ?? h.dia_inicio ?? 1, 10);
+                const fin = parseInt(h.num_dia_semana_fin ?? h.dia_fin ?? 5, 10);
+                const diaStr = inicio === fin ? dias[inicio] : `${dias[inicio]} a ${dias[fin]}`;
+                return `${diaStr}: ${h.hora_inicio} - ${h.hora_fin}`;
+            }).join(', ');
+        };
+
         if (proyectoId) {
             const proyecto = metadataEmpresa.find(p => p.id === proyectoId);
             const nombre = proyecto?.nombre_proyecto || metadataEmpresa[0]?.nombre_proyecto || '';
+            const horarioTexto = proyecto?.horario_atencion && proyecto.horario_atencion.length > 0 ? formatHorario(proyecto.horario_atencion) : 'Horario no especificado, consultar disponibilidad';
 
             const otrosProyectos = metadataEmpresa.filter(p => p.id !== proyectoId);
             const listaOtros = otrosProyectos.length > 0
-                ? otrosProyectos.map(p => `- ${p.nombre_proyecto}`).join('\n')
+                ? otrosProyectos.map(p => `- ${p.nombre_proyecto} (Atención: ${formatHorario(p.horario_atencion)})`).join('\n')
                 : null;
 
             return `
 ## PROYECTO ASIGNADO
 - El cliente esta interesado en: **${nombre}**
+- Horarios de atención: **${horarioTexto}**
 - Usa este proyecto para TODAS las herramientas (buscarDepartamento, buscarPreguntasFrecuentes, etc.).
 
 ## CAMBIO DE PROYECTO
@@ -227,7 +241,7 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
         }
 
         if (metadataEmpresa.length > 1) {
-            const lista = metadataEmpresa.map((p, i) => `${i + 1}. ${p.nombre_proyecto}`).join('\n');
+            const lista = metadataEmpresa.map((p, i) => `${i + 1}. ${p.nombre_proyecto} (Atención: ${formatHorario(p.horario_atencion)})`).join('\n');
             return `
 ## SELECCION DE PROYECTO (PASO OBLIGATORIO)
 - El cliente AUN NO ha elegido un proyecto.

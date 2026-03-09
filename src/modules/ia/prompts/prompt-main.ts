@@ -196,9 +196,9 @@ Cuando el cliente elige una unidad de la lista, ejecuta con unidad=[numero elegi
 **REGLA**: Cuando esta herramienta devuelve resultados, SIEMPRE lista las unidades una por una con todos sus datos (unidad, dormitorios, area, piso, vista, precio). JAMAS resumas los resultados en una sola frase generica.
 
 ## buscar_preguntas_frecuentes
-Para TODA informacion que no sea inventario: ubicacion, direccion del proyecto, link de Google Maps, direccion de sala de ventas, horario de atencion, etapa del proyecto, financiamiento, acabados, areas comunes, fechas de entrega, requisitos, cuotas, recorrido virtual, exhibicion de unidades.
+Para TODA informacion que no sea inventario: ubicacion, direccion del proyecto, link de Google Maps, direccion de sala de ventas, etapa del proyecto, financiamiento, acabados, areas comunes, fechas de entrega, requisitos, cuotas, recorrido virtual, exhibicion de unidades.
 Parametros: queries_de_busqueda (array), nombre_proyecto.
-Si preguntan por horarios, donde queda, cuando entregan, recorrido virtual, ubicacion, direccion, link del proyecto, o cualquier dato del proyecto, EJECUTA esta herramienta.
+Si preguntan donde queda, cuando entregan, recorrido virtual, ubicacion, direccion, link del proyecto, o cualquier dato del proyecto, EJECUTA esta herramienta.
 Si preguntan "cuanto es la cuota" o similares, ejecuta esta herramienta ANTES de preguntar presupuesto.
 Si preguntan "recorrido virtual", "tour virtual" o "ver el departamento en 3D", ejecuta con query ["recorrido virtual del proyecto"].
 Si preguntan "ubicacion", "donde queda", "direccion", "link", "como llego", ejecuta con query ["direccion del proyecto", "ubicacion Google Maps"].

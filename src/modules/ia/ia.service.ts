@@ -109,15 +109,27 @@ export class AiService {
             let metadatosEmpresa: any[] = [];
             let resumenProyectos = '';
 
-            // Siempre cargar TODOS los proyectos activos para que el LLM pueda ofrecer cambio
             const proyectosActivos = await this.proyectoRepo.find({
                 where: { codigoEmpresa, estado: 'activo' }
             });
-            metadatosEmpresa = proyectosActivos.map(p => ({
-                id: p.id,
-                nombre_proyecto: p.nombre,
-                nombre_empresa: 'Inmobiliaria Checor'
-            }));
+            metadatosEmpresa = proyectosActivos.map(p => {
+                let horarioAtencion = [];
+                if (p.jsonData && p.jsonData['horario_atencion']) {
+                    try {
+                        horarioAtencion = typeof p.jsonData['horario_atencion'] === 'string'
+                            ? JSON.parse(p.jsonData['horario_atencion'])
+                            : p.jsonData['horario_atencion'];
+                    } catch (e) {
+                        this.logger.warn(`Error parseando horario para proyecto ${p.id}`);
+                    }
+                }
+                return {
+                    id: p.id,
+                    nombre_proyecto: p.nombre,
+                    nombre_empresa: 'Inmobiliaria Checor',
+                    horario_atencion: horarioAtencion,
+                };
+            });
             resumenProyectos = proyectosActivos.map(p =>
                 `${p.nombre}: ${p.descripcion || p.tipoInmueble || 'Proyecto inmobiliario'}`
             ).join('. ');
