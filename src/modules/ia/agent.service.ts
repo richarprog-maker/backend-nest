@@ -7,19 +7,23 @@ import { ToolsExecutionService } from './tools/tools-execution.service';
 import { HistorialChatService } from './historial-chat.service';
 import { ResumenConversacionService } from './resumen-conversacion.service';
 import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
-
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private llm: ChatOpenAI;
-  private tools: DynamicStructuredTool[] = [];
+  private toolsCache = new Map<number, { tools: DynamicStructuredTool[], expiresAt: number }>();
 
   constructor(
     private configService: ConfigService,
     private toolsExecutionService: ToolsExecutionService,
     private historialChatService: HistorialChatService,
     private resumenService: ResumenConversacionService,
+    @InjectRepository(Proyecto)
+    private proyectosRepo: Repository<Proyecto>,
   ) {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
@@ -33,16 +37,31 @@ export class AgentService {
       temperature: temperature,
       openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
     });
-
-    // Inicializar tools
-    this.initializeTools();
   }
 
-  /**
-   * Define las 9 herramientas del agente usando Zod schemas
-   * Cada tool es una función que el agente puede llamar
-   */
-  private initializeTools() {
+ 
+  private async getTools(codigoEmpresa: number): Promise<DynamicStructuredTool[]> {
+    const now = Date.now();
+    const cached = this.toolsCache.get(codigoEmpresa);
+    // Cache de 30 minutos (1800000 ms) para no consultar la BD en cada ejecución
+    if (cached && cached.expiresAt > now) {
+      return cached.tools;
+    }
+
+    let nombresProyectosStr = 'Ej: "Los Lirios", "porta", "los cerezos".';
+    try {
+      const proyectos = await this.proyectosRepo.find({
+        select: ['nombre'],
+        where: { codigoEmpresa, estado: 'activo' }
+      });
+      if (proyectos.length > 0) {
+        const nombres = proyectos.map(p => `"${p.nombre}"`).join(', ');
+        nombresProyectosStr = `Proyectos activos: ${nombres}.`;
+      }
+    } catch (e) {
+      this.logger.warn(`No se pudieron cargar proyectos para tool descriptions: ${e.message}`);
+    }
+
     // 1️ Agendar Cita (Primera vez)
     const agendarCitaTool = new DynamicStructuredTool({
       name: 'agendar_cita',
@@ -231,6 +250,7 @@ export class AgentService {
         tipo_unidad: z.string().optional().describe('Tipo de unidad: "Duplex" o "Flat". Usa cuando el cliente pide específicamente duplex o flat. SIEMPRE capitalizado.'),
         area_min: z.number().optional().describe('Área mínima en m²'),
         preferencia_piso: z.enum(['bajos', 'altos']).optional().describe('"bajos" si pide pisos bajos (ordena 1,2,3...), "altos" si pide pisos altos (ordena 17,16,15...)'),
+        nombre_proyecto: z.string().optional().describe(`Nombre del proyecto si el cliente lo menciona en su consulta. ${nombresProyectosStr}`),
       }),
       func: async (input, config) => {
         const metadata = (config as any)?.metadata || {};
@@ -244,6 +264,7 @@ export class AgentService {
         return await this.toolsExecutionService.buscarDepartamentoUniversal({
           ...paramsWithContext,
           dormitorios: input.dormitorios,
+          nombre_proyecto: input.nombre_proyecto,
           proyectoId: metadata.proyectoId
         });
       },
@@ -271,7 +292,7 @@ export class AgentService {
       name: 'guardar_proyecto',
       description: 'ACTUALIZA el proyecto del cliente en la base de datos. OBLIGATORIO ejecutar cuando: (1) El cliente elige un proyecto por primera vez, (2) El cliente CONFIRMA que quiere cambiarse a otro proyecto. NO ejecutes solo porque pidio un brochure o info de otro proyecto. Pero si despues de dar info el cliente dice "si me interesa ese", "cambienme", "prefiero ese" -> EJECUTA INMEDIATAMENTE para actualizar la BD.',
       schema: z.object({
-        nombre_proyecto: z.string().describe('Nombre del proyecto que eligio o al que quiere cambiarse'),
+        nombre_proyecto: z.string().describe(`Nombre del proyecto que eligio o al que quiere cambiarse. ${nombresProyectosStr}`),
       }),
       func: async (input, config) => {
         const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
@@ -280,7 +301,7 @@ export class AgentService {
       },
     });
 
-    this.tools = [
+    const tools = [
       buscarDepartamentoUniversalTool,
       agendarCitaTool,
       reagendarCitaTool,
@@ -295,7 +316,8 @@ export class AgentService {
       guardarProyectoTool,
     ];
 
-    this.logger.log(`Agente inicializado con ${this.tools.length} herramientas`);
+    this.toolsCache.set(codigoEmpresa, { tools, expiresAt: now + 1800000 }); 
+    return tools;
   }
 
   /**
@@ -334,7 +356,8 @@ export class AgentService {
       const toolsEjecutados: string[] = [];
       let tokensAcumulados = { input: 0, output: 0 };
 
-      const modelWithTools = this.llm.bindTools(this.tools);
+      const actTools = await this.getTools(metadata.codigoEmpresa);
+      const modelWithTools = this.llm.bindTools(actTools);
 
       // Construir mensajes iniciales
       const messages: BaseMessage[] = [...historial];
@@ -443,7 +466,7 @@ REGLAS GENERALES:
           } else {
             try {
               // Encontrar tool
-              const tool = this.tools.find(t => t.name === toolCall.name);
+              const tool = actTools.find(t => t.name === toolCall.name);
 
               if (!tool) {
                 throw new Error(`Tool '${toolCall.name}' no encontrada`);

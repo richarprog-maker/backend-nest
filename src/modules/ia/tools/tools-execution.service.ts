@@ -85,14 +85,20 @@ export class ToolsExecutionService {
     }
 
     async obtenerColeccionFaq(proyectoId: number): Promise<string> {
-        if (!proyectoId) return this.configService.get<string>('QDRANT_COLLECTION_NAME', 'checor-faq-1');
+        if (!proyectoId) {
+            throw new Error('PROYECTO_NO_SELECCIONADO');
+        }
         const cacheKey = `faq-${proyectoId}`;
         if (this.cacheColecciones.has(cacheKey)) return this.cacheColecciones.get(cacheKey);
         try {
             const col = await this.coleccionQdrantRepo.findOne({
                 where: { idProyecto: proyectoId, tipoColeccion: 'faq', estado: 'activo' }
             });
-            const nombre = col?.nombreColeccion || `checor-faq-${proyectoId}`;
+            if (!col) {
+                // Si existe el proyecto pero no tiene colección específica, retornamos el default format
+                return `checor-faq-${proyectoId}`;
+            }
+            const nombre = col.nombreColeccion;
             this.cacheColecciones.set(cacheKey, nombre);
             return nombre;
         } catch {
@@ -101,18 +107,37 @@ export class ToolsExecutionService {
     }
 
     async obtenerColeccionInventario(proyectoId: number): Promise<string> {
-        if (!proyectoId) return this.configService.get<string>('QDRANT_PROJECTS_COLLECTION_NAME', 'checor-inventory-1');
+        if (!proyectoId) {
+            throw new Error('PROYECTO_NO_SELECCIONADO');
+        }
         const cacheKey = `inventario-${proyectoId}`;
         if (this.cacheColecciones.has(cacheKey)) return this.cacheColecciones.get(cacheKey);
         try {
             const col = await this.coleccionQdrantRepo.findOne({
                 where: { idProyecto: proyectoId, tipoColeccion: 'inventario', estado: 'activo' }
             });
-            const nombre = col?.nombreColeccion || `checor-inventory-${proyectoId}`;
+            if (!col) {
+                return `checor-inventory-${proyectoId}`;
+            }
+            const nombre = col.nombreColeccion;
             this.cacheColecciones.set(cacheKey, nombre);
             return nombre;
         } catch {
             return `checor-inventory-${proyectoId}`;
+        }
+    }
+
+
+    async obtenerIdProyectoPorNombre(nombreProyecto: string, codigoEmpresa: number): Promise<number | null> {
+        if (!nombreProyecto?.trim()) return null;
+        try {
+            const proyecto = await this.proyectosRepo.findOne({
+                where: { nombre: ILike(`%${nombreProyecto.trim()}%`), codigoEmpresa, estado: 'activo' }
+            });
+            return proyecto ? proyecto.id : null;
+        } catch (error) {
+            this.logger.error(`Error buscando proyecto por nombre: ${error.message}`);
+            return null;
         }
     }
 
@@ -443,7 +468,7 @@ ${precioStr}
                 const hFinStr = bloque.hora_fin;
 
                 if (!hInicioStr || !hFinStr) {
-                    continue; 
+                    continue;
                 }
 
                 const [hI, mI] = hInicioStr.split(':').map(Number);
@@ -798,7 +823,13 @@ DATOS DE LA CITA:
             this.logger.log(`Buscando FAQ: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto}`);
 
             const queryPrincipal = queries_de_busqueda[0];
-            const collectionName = await this.obtenerColeccionFaq(proyectoId);
+
+            let actualProyectoId = proyectoId;
+            if (!actualProyectoId && nombre_proyecto && params.codigoEmpresa) {
+                actualProyectoId = await this.obtenerIdProyectoPorNombre(nombre_proyecto, params.codigoEmpresa);
+            }
+
+            const collectionName = await this.obtenerColeccionFaq(actualProyectoId);
 
             let docs = [];
             try {
@@ -875,6 +906,9 @@ RESPUESTA:`);
             return `[ACCION_COMPLETADA] ${resultado}`;
 
         } catch (error) {
+            if (error.message === 'PROYECTO_NO_SELECCIONADO') {
+                return "[INFO_FALTANTE] No tengo un proyecto seleccionado en este momento. <<INSTRUCCION_IA: Pregúntale al cliente sobre qué proyecto en específico tiene esta duda.>>";
+            }
             this.logger.error(`Error en buscarPreguntasFrecuentes: ${error.message}`);
             return "Hubo un error consultando las preguntas frecuentes.";
         }
@@ -981,6 +1015,12 @@ RESPUESTA:`);
             });
 
         } catch (error) {
+            if (error.message === 'PROYECTO_NO_SELECCIONADO') {
+                return JSON.stringify({
+                    success: false,
+                    mensaje: "[INFO_FALTANTE] No tengo un proyecto seleccionado en este momento. <<INSTRUCCION_IA: Pregúntale al cliente en qué proyecto específico está buscando el departamento.>>"
+                });
+            }
             this.logger.error(`Error buscando por cuota: ${error.message}`);
             return JSON.stringify({
                 success: false,
@@ -1054,6 +1094,9 @@ RESPUESTA:`);
             return respuesta;
 
         } catch (error) {
+            if (error.message === 'PROYECTO_NO_SELECCIONADO') {
+                return "[INFO_FALTANTE] No tengo un proyecto seleccionado en este momento. <<INSTRUCCION_IA: Pregúntale al cliente en qué proyecto específico está buscando el departamento.>>";
+            }
             this.logger.error(`>>> ERROR en mostrarDepartamentos: ${error.message}`, error.stack);
             return "Ocurrio un error al buscar departamentos. Por favor intenta nuevamente en un momento.";
         }
@@ -1179,9 +1222,16 @@ RESPUESTA:`);
         codigoEmpresa?: number;
         leadUuid?: string;
         proyectoId?: number;
+        nombre_proyecto?: string;
     }) {
         try {
-            const collectionName = await this.obtenerColeccionInventario(params.proyectoId);
+            let actualProyectoId = params.proyectoId;
+
+            if (!actualProyectoId && params['nombre_proyecto'] && params.codigoEmpresa) {
+                actualProyectoId = await this.obtenerIdProyectoPorNombre(params['nombre_proyecto'], params.codigoEmpresa);
+            }
+
+            const collectionName = await this.obtenerColeccionInventario(actualProyectoId);
             const logPrefix = `[BusquedaUniversal]`;
 
             this.logger.log(`${logPrefix} Params: ${JSON.stringify(params)}`);
@@ -1450,6 +1500,9 @@ RESPUESTA:`);
             return "[ACCION_COMPLETADA] Lo siento, no encontre nada disponible ni siquiera relajando la busqueda. <<INSTRUCCION_IA: Pregunta si quiere ver departamentos de otra cantidad de dormitorios.>>";
 
         } catch (error) {
+            if (error.message === 'PROYECTO_NO_SELECCIONADO') {
+                return "[INFO_FALTANTE] No tengo un proyecto seleccionado en este momento. <<INSTRUCCION_IA: Pregúntale al cliente en qué proyecto específico está buscando el departamento.>>";
+            }
             this.logger.error(`Error en buscarDepartamentoUniversal: ${error.message}`, error.stack);
             return "Ocurrio un error tecnico al buscar. Por favor intenta de nuevo.";
         }
