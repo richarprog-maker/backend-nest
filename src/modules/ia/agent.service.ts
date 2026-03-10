@@ -39,7 +39,7 @@ export class AgentService {
     });
   }
 
- 
+
   private async getTools(codigoEmpresa: number): Promise<DynamicStructuredTool[]> {
     const now = Date.now();
     const cached = this.toolsCache.get(codigoEmpresa);
@@ -316,7 +316,7 @@ export class AgentService {
       guardarProyectoTool,
     ];
 
-    this.toolsCache.set(codigoEmpresa, { tools, expiresAt: now + 1800000 }); 
+    this.toolsCache.set(codigoEmpresa, { tools, expiresAt: now + 1800000 });
     return tools;
   }
 
@@ -455,8 +455,10 @@ REGLAS GENERALES:
 
           let toolResult: string;
 
+          const HERRAMIENTAS_REPETIBLES = ['buscar_departamento'];
+
           // Verificar si la tool ya fue ejecutada en esta sesión
-          if (accionesEjecutadas.has(toolCall.name)) {
+          if (accionesEjecutadas.has(toolCall.name) && !HERRAMIENTAS_REPETIBLES.includes(toolCall.name)) {
             this.logger.warn(`Tool ${toolCall.name} ya fue ejecutada, enviando mensaje de bloqueo`);
             toolResult = `[BLOQUEADO] La herramienta ${toolCall.name} ya fue ejecutada. Genera tu respuesta final con la información que ya tienes.`;
           } else if (HERRAMIENTAS_EXCLUYENTES[toolCall.name]?.some(excl => accionesEjecutadas.has(excl))) {
@@ -479,8 +481,8 @@ REGLAS GENERALES:
               accionesEjecutadas.add(toolCall.name);
               toolsEjecutados.push(toolCall.name);
 
-              // Auto-sincronizar proyecto en sesión si la tool usó un nombre_proyecto
-              if (toolCall.args?.nombre_proyecto && metadata.leadUuid && metadata.codigoEmpresa) {
+              
+              if (toolCall.name === 'guardar_proyecto' && toolCall.args?.nombre_proyecto && metadata.leadUuid && metadata.codigoEmpresa) {
                 await this.toolsExecutionService.sincronizarProyectoSesion(
                   toolCall.args.nombre_proyecto,
                   metadata.codigoEmpresa,

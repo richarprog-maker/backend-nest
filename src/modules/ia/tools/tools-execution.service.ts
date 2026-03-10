@@ -825,8 +825,12 @@ DATOS DE LA CITA:
             const queryPrincipal = queries_de_busqueda[0];
 
             let actualProyectoId = proyectoId;
-            if (!actualProyectoId && nombre_proyecto && params.codigoEmpresa) {
-                actualProyectoId = await this.obtenerIdProyectoPorNombre(nombre_proyecto, params.codigoEmpresa);
+            // Si el LLM envió nombre_proyecto, SIEMPRE resolver al ID correcto
+            if (nombre_proyecto && params.codigoEmpresa) {
+                const resolvedId = await this.obtenerIdProyectoPorNombre(nombre_proyecto, params.codigoEmpresa);
+                if (resolvedId) {
+                    actualProyectoId = resolvedId;
+                }
             }
 
             const collectionName = await this.obtenerColeccionFaq(actualProyectoId);
@@ -1227,8 +1231,12 @@ RESPUESTA:`);
         try {
             let actualProyectoId = params.proyectoId;
 
-            if (!actualProyectoId && params['nombre_proyecto'] && params.codigoEmpresa) {
-                actualProyectoId = await this.obtenerIdProyectoPorNombre(params['nombre_proyecto'], params.codigoEmpresa);
+            
+            if (params.nombre_proyecto && params.codigoEmpresa) {
+                const resolvedId = await this.obtenerIdProyectoPorNombre(params.nombre_proyecto, params.codigoEmpresa);
+                if (resolvedId) {
+                    actualProyectoId = resolvedId;
+                }
             }
 
             const collectionName = await this.obtenerColeccionInventario(actualProyectoId);

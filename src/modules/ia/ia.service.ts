@@ -161,9 +161,9 @@ export class AiService {
                 }
             );
 
-            // Auto-detectar proyecto desde la respuesta del LLM y actualizar sesión
+          
             try {
-                if (proyectoId !== null) {
+                if (proyectoId !== null && resultado.toolsEjecutados.includes('guardar_proyecto')) {
                     const respuestaLower = resultado.output.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
                     let proyectoDetectado: typeof proyectosActivos[0] | null = null;
 
