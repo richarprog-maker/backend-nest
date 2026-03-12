@@ -228,7 +228,8 @@ ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
 ## PROYECTO ASIGNADO
 - El cliente esta interesado en: **${nombre}**
 - Horarios de atención: **${horarioTexto}**
-- Usa este proyecto para TODAS las herramientas (buscarDepartamento, buscarPreguntasFrecuentes, etc.).
+- Usa este proyecto para herramientas OPERATIVAS como buscarDepartamento, cuota, proforma, citas y seguimiento.
+- EXCEPCION: si el cliente hace una pregunta frecuente de OTRO proyecto, responde con la info de ese proyecto PERO sin cambiar el proyecto actual.
 
 ## CAMBIO DE PROYECTO
 ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros proyectos disponibles)'}

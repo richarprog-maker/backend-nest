@@ -18,6 +18,14 @@ import { Lead } from '../../inbox/entities/lead.entity';
 import { ResumenConversacionService } from '../resumen-conversacion.service';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 import { ColeccionQdrant } from '../../proyectos/entities/coleccion-qdrant.entity';
+import {
+    buildFaqContext,
+    FaqDocumentResult,
+    isFaqMultiProjectQuery,
+    normalizeToolText,
+    resolveMentionedProjects
+} from './utils/faq-project.utils';
+import { convertGoogleDriveToDirectUrl, formatMonto } from './utils/tool-format.utils';
 
 @Injectable()
 export class ToolsExecutionService {
@@ -84,6 +92,49 @@ export class ToolsExecutionService {
         }
     }
 
+    async sincronizarProyectoSesionPorId(
+        proyectoId: number,
+        codigoEmpresa: number,
+        leadUuid: string,
+        origen: string = 'tool'
+    ): Promise<void> {
+        try {
+            if (!proyectoId || !codigoEmpresa || !leadUuid) {
+                return;
+            }
+
+            const sesion = await this.sesionRepo.findOne({
+                where: { leadUuid, codigoEmpresa }
+            });
+
+            if (!sesion) {
+                return;
+            }
+
+            if (sesion.proyectoId === proyectoId) {
+                return;
+            }
+
+            const proyecto = await this.proyectosRepo.findOne({
+                where: { id: proyectoId, codigoEmpresa, estado: 'activo' }
+            });
+
+            if (!proyecto) {
+                return;
+            }
+
+            const proyectoAnteriorId = sesion.proyectoId;
+            sesion.proyectoId = proyecto.id;
+            await this.sesionRepo.save(sesion);
+
+            this.logger.log(
+                `[SyncProyectoById][${origen}] Sesión actualizada: proyecto ${proyectoAnteriorId} -> ${proyecto.id} (${proyecto.nombre}) para lead ${leadUuid}`
+            );
+        } catch (error) {
+            this.logger.warn(`[SyncProyectoById][${origen}] Error sincronizando proyecto: ${error.message}`);
+        }
+    }
+
     async obtenerColeccionFaq(proyectoId: number): Promise<string> {
         if (!proyectoId) {
             throw new Error('PROYECTO_NO_SELECCIONADO');
@@ -125,6 +176,62 @@ export class ToolsExecutionService {
         } catch {
             return `checor-inventory-${proyectoId}`;
         }
+    }
+
+    private async obtenerProyectosActivosOrdenados(codigoEmpresa: number): Promise<Proyecto[]> {
+        if (!codigoEmpresa) {
+            return [];
+        }
+
+        return this.proyectosRepo.find({
+            where: { codigoEmpresa, estado: 'activo' },
+            order: { id: 'ASC' }
+        });
+    }
+
+    private async buscarDocumentosFaq(
+        query: string,
+        proyectosObjetivo: Proyecto[],
+        limitePorProyecto: number
+    ): Promise<FaqDocumentResult[]> {
+        const resultados = await Promise.all(proyectosObjetivo.map(async (proyecto) => {
+            const collectionName = await this.obtenerColeccionFaq(proyecto.id);
+
+            try {
+                const docsConScore = await this.qdrantVectorService.similaritySearchWithScore(
+                    collectionName,
+                    query,
+                    limitePorProyecto
+                );
+
+                return docsConScore.map(([document, score]) => ({
+                    document,
+                    score,
+                    proyectoId: proyecto.id,
+                    nombreProyecto: proyecto.nombre,
+                    collectionName
+                }));
+            } catch (error) {
+                this.logger.warn(
+                    `[FAQ] Error buscando en colección ${collectionName} del proyecto ${proyecto.nombre}: ${error.message}`
+                );
+                return [];
+            }
+        }));
+
+        const dedupe = new Map<string, FaqDocumentResult>();
+
+        for (const batch of resultados) {
+            for (const item of batch) {
+                const key = `${item.proyectoId}::${normalizeToolText(item.document.pageContent || '')}`;
+                const current = dedupe.get(key);
+                if (!current || item.score > current.score) {
+                    dedupe.set(key, item);
+                }
+            }
+        }
+
+        return Array.from(dedupe.values()).sort((a, b) => b.score - a.score);
     }
 
 
@@ -229,28 +336,6 @@ export class ToolsExecutionService {
             return { success: false, mensaje: 'Error al guardar el proyecto.' };
         }
     }
-
-    /**
-     * Convierte URL de Google Drive (view) a URL directa de imagen
-     * Ejemplo: https://drive.google.com/file/d/FILE_ID/view?usp=sharing
-     * A: https://drive.google.com/uc?export=view&id=FILE_ID
-     */
-    private convertGoogleDriveToDirectUrl(driveUrl: string): string | null {
-        if (!driveUrl || !driveUrl.includes('drive.google.com')) {
-            return null;
-        }
-
-        // Extraer FILE_ID de la URL
-        const match = driveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
-        if (match && match[1]) {
-            const fileId = match[1];
-            return `https://drive.google.com/uc?export=view&id=${fileId}`;
-        }
-
-        return null;
-    }
-
-
 
     /**
      * Actualiza datos del lead SOLO si los campos están vacíos
@@ -807,63 +892,109 @@ DATOS DE LA CITA:
         };
     }
 
-    /**     
-     * - Gestión automática de embeddings
-     * - Retry automático en errores
-     * - Logs integrados
-     * - Compatible con cualquier VectorStore (no solo Qdrant)
-     */
+
     /**
      * Gestión de Preguntas Frecuentes (FAQs) y Datos Generales del Proyecto
      * Busca en la colección de documentos/FAQs (NO en inventario de departamentos)
      */
     async buscarPreguntasFrecuentes(params: any, proyectoId?: number) {
         try {
-            const { queries_de_busqueda, nombre_proyecto } = params;
-            this.logger.log(`Buscando FAQ: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto}`);
+            const { queries_de_busqueda, nombre_proyecto, codigoEmpresa, proyectoIdSesion } = params;
+            const proyectoSesion = proyectoIdSesion || proyectoId || null;
+            this.logger.log(`Buscando FAQ: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto || 'proyecto activo'}`);
 
-            const queryPrincipal = queries_de_busqueda[0];
+            const queryPrincipal = queries_de_busqueda?.[0] || '';
+            const proyectosActivos = codigoEmpresa
+                ? await this.obtenerProyectosActivosOrdenados(codigoEmpresa)
+                : [];
+            const textoNormalizado = normalizeToolText(
+                [nombre_proyecto, ...(queries_de_busqueda || [])].filter(Boolean).join(' ')
+            );
+            const proyectosMencionados = resolveMentionedProjects(
+                textoNormalizado,
+                proyectosActivos,
+                nombre_proyecto
+            );
+            const explicitMultiProject = isFaqMultiProjectQuery(textoNormalizado, proyectosActivos.length) || proyectosMencionados.length > 1;
 
-            let actualProyectoId = proyectoId;
-            // Si el LLM envió nombre_proyecto, SIEMPRE resolver al ID correcto
-            if (nombre_proyecto && params.codigoEmpresa) {
-                const resolvedId = await this.obtenerIdProyectoPorNombre(nombre_proyecto, params.codigoEmpresa);
-                if (resolvedId) {
-                    actualProyectoId = resolvedId;
+            let modoBusqueda: 'active_only' | 'project_only' | 'multi_project' = 'active_only';
+            if (explicitMultiProject) {
+                modoBusqueda = 'multi_project';
+            } else if ((nombre_proyecto && nombre_proyecto.trim()) || proyectosMencionados.length === 1) {
+                modoBusqueda = 'project_only';
+            }
+
+            let proyectosObjetivo: Proyecto[] = [];
+
+            if (modoBusqueda === 'active_only') {
+                if (proyectoSesion) {
+                    const proyectoActual = proyectosActivos.find(p => p.id === proyectoSesion);
+                    if (proyectoActual) {
+                        proyectosObjetivo = [proyectoActual];
+                    } else if (codigoEmpresa) {
+                        const proyectoDb = await this.proyectosRepo.findOne({
+                            where: { id: proyectoSesion, codigoEmpresa, estado: 'activo' }
+                        });
+                        if (proyectoDb) {
+                            proyectosObjetivo = [proyectoDb];
+                        }
+                    }
+                } else if (proyectosActivos.length === 1) {
+                    proyectosObjetivo = [proyectosActivos[0]];
+                }
+            } else if (modoBusqueda === 'project_only') {
+                proyectosObjetivo = proyectosMencionados.slice(0, 1);
+
+                if (proyectosObjetivo.length === 0 && nombre_proyecto?.trim() && codigoEmpresa) {
+                    const resolvedId = await this.obtenerIdProyectoPorNombre(nombre_proyecto, codigoEmpresa);
+                    if (resolvedId) {
+                        const proyectoDb = proyectosActivos.find(p => p.id === resolvedId)
+                            || await this.proyectosRepo.findOne({
+                                where: { id: resolvedId, codigoEmpresa, estado: 'activo' }
+                            });
+                        if (proyectoDb) {
+                            proyectosObjetivo = [proyectoDb];
+                        }
+                    }
+                }
+            } else {
+                const pideOtros = /\botros?\s+proyectos?\b/i.test(textoNormalizado) || /\bdemas\s+proyectos?\b/i.test(textoNormalizado);
+
+                if (proyectosMencionados.length > 0) {
+                    proyectosObjetivo = proyectosMencionados;
+                } else if (pideOtros && proyectoSesion) {
+                    proyectosObjetivo = proyectosActivos.filter(p => p.id !== proyectoSesion);
+                } else {
+                    proyectosObjetivo = proyectosActivos;
                 }
             }
 
-            const collectionName = await this.obtenerColeccionFaq(actualProyectoId);
+            if (proyectosObjetivo.length === 0) {
+                if (modoBusqueda === 'project_only') {
+                    const referenciaProyecto = nombre_proyecto?.trim() || 'ese proyecto';
+                    return `[INFO_FALTANTE] No encontre un proyecto activo que coincida con "${referenciaProyecto}". <<INSTRUCCION_IA: Pídele al cliente que confirme el nombre exacto o el numero del proyecto, sin cambiar el proyecto actual.>>`;
+                }
 
-            let docs = [];
-            try {
-                // Threshold más alto para evitar ruido
-                docs = await this.qdrantVectorService.similaritySearch(collectionName, queryPrincipal, 3);
-            } catch (qdrantError) {
-                this.logger.warn(`Error buscando FAQ en Qdrant (posible colección inexistente): ${qdrantError.message}`);
-                return `No se encontró información frecuente para el proyecto ${nombre_proyecto}.`;
+                if (modoBusqueda === 'multi_project') {
+                    return "[ACCION_COMPLETADA] No encontre otros proyectos activos con informacion FAQ disponible para responder esa consulta. <<INSTRUCCION_IA: Explícalo de forma natural y mantén el proyecto actual del cliente sin cambios.>>";
+                }
             }
 
-            const contexto = docs.map(d => {
-                const meta = d.metadata || {};
-                const content = d.pageContent || '';
+            if (proyectosObjetivo.length === 0) {
+                throw new Error('PROYECTO_NO_SELECCIONADO');
+            }
 
-                // Prioridad 1: Formato FAQ explícito en metadata
-                if (meta.pregunta && meta.respuesta) {
-                    return `PREGUNTA FRECUENTE (Oficial):\nP: ${meta.pregunta}\nR: ${meta.respuesta}\n(Prioridad Alta)`;
-                }
+            this.logger.log(
+                `[FAQ] modo=${modoBusqueda}, proyectoSesion=${proyectoSesion ?? 'none'}, objetivo=${proyectosObjetivo.map(p => `${p.id}:${p.nombre}`).join(', ')}`
+            );
 
-                // Prioridad 2: Detectar formato "Pregunta: X\nRespuesta: Y" en pageContent
-                const matchPregunta = content.match(/Pregunta:\s*(.+?)(?:\n|$)/i);
-                const matchRespuesta = content.match(/Respuesta:\s*(.+?)(?:\n|$)/i);
-                if (matchPregunta && matchRespuesta) {
-                    return `PREGUNTA FRECUENTE (Oficial):\nP: ${matchPregunta[1].trim()}\nR: ${matchRespuesta[1].trim()}\n(Prioridad Alta)`;
-                }
-
-                // Contenido general
-                if (meta.content) return meta.content;
-                return content || meta.text || '';
-            }).filter(c => c.trim()).join("\n\n---\n\n");
+            const resultadosFaq = await this.buscarDocumentosFaq(
+                queryPrincipal,
+                proyectosObjetivo,
+                modoBusqueda === 'multi_project' ? 3 : 4
+            );
+            const docs = resultadosFaq.slice(0, modoBusqueda === 'multi_project' ? 8 : 5);
+            const contexto = buildFaqContext(docs);
 
             this.logger.log(`FAQ RAG - Docs encontrados: ${docs.length}`);
             this.logger.debug(`Contexto FAQ: ${contexto}`);
@@ -873,9 +1004,13 @@ DATOS DE LA CITA:
             }
 
             const promptTemplate = ChatPromptTemplate.fromTemplate(`
-Eres el asistente del proyecto inmobiliario "{project_name}". Responde la pregunta del usuario usando EXCLUSIVAMENTE la informacion del contexto.
+Eres el asistente inmobiliario de Checor. Responde la pregunta del usuario usando EXCLUSIVAMENTE la informacion del contexto.
 
-CONTEXTO (informacion oficial del proyecto {project_name}):
+MODO DE BUSQUEDA: {search_mode}
+PROYECTO ACTIVO DE LA SESION: {session_project_name}
+PROYECTOS CONSULTADOS: {searched_projects}
+
+CONTEXTO (informacion oficial recuperada):
 {context}
 
 PREGUNTA DEL USUARIO: {question}
@@ -885,6 +1020,8 @@ REGLAS:
 - Por ejemplo: si el usuario pregunta "direccion" y el contexto tiene info sobre "ubicacion", SON LO MISMO, responde con esa info.
 - Si el contexto dice "No contamos con...", responde "No contamos con...".
 - Responde de forma natural, NO menciones "segun la base de datos" ni "segun el contexto".
+- Si el contexto contiene informacion de varios proyectos, menciona claramente el nombre del proyecto al que pertenece cada dato relevante.
+- Si la pregunta es sobre otro proyecto distinto al activo, responde con ese proyecto sin decir que cambiaste la sesion ni insinuar que ya se actualizo el proyecto.
 - SOLO di "No tengo informacion sobre eso" si NINGUNA de las preguntas frecuentes del contexto tiene relacion alguna con lo que pregunta el usuario.
 
 RESPUESTA:`);
@@ -898,7 +1035,9 @@ RESPUESTA:`);
             const resultado = await chain.invoke({
                 context: contexto,
                 question: queryPrincipal,
-                project_name: nombre_proyecto || 'el proyecto',
+                search_mode: modoBusqueda,
+                session_project_name: proyectosActivos.find(p => p.id === proyectoSesion)?.nombre || 'sin proyecto activo',
+                searched_projects: proyectosObjetivo.map(p => p.nombre).join(', '),
             });
 
             this.logger.debug(`Respuesta LLM FAQ: ${resultado}`);
@@ -907,7 +1046,26 @@ RESPUESTA:`);
                 return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. <<INSTRUCCION_IA: Continua la conversacion con naturalidad.>>";
             }
 
-            return `[ACCION_COMPLETADA] ${resultado}`;
+            const proyectoPrincipal = proyectosObjetivo[0];
+            const proyectoSesionActual = proyectosActivos.find(p => p.id === proyectoSesion) || null;
+
+            let instruccionNoCambio = '<<INSTRUCCION_IA: Mantén el proyecto actual del cliente tal como está.>>';
+
+            if (modoBusqueda !== 'active_only') {
+                instruccionNoCambio = `<<INSTRUCCION_IA: La respuesta se obtuvo usando FAQs de ${modoBusqueda === 'multi_project' ? 'varios proyectos' : `\"${proyectoPrincipal?.nombre || 'otro proyecto'}\"`} sin cambiar el proyecto actual del cliente. NO ejecutes guardar_proyecto a menos que el cliente confirme explícitamente que quiere cambiarse.>>`;
+            }
+
+            let instruccionCambioProyecto = '';
+            if (
+                modoBusqueda === 'project_only' &&
+                proyectoPrincipal &&
+                proyectoSesionActual &&
+                proyectoPrincipal.id !== proyectoSesionActual.id
+            ) {
+                instruccionCambioProyecto = ` <<INSTRUCCION_IA: Después de responder, pregúntale explícitamente: "Tu proyecto actual es ${proyectoSesionActual.nombre}. ¿Te gustaría cambiarte a ${proyectoPrincipal.nombre}?" Si el cliente confirma con un sí claro, recién ejecuta guardar_proyecto y desde ese momento continúa todo el flujo usando ${proyectoPrincipal.nombre}.>>`;
+            }
+
+            return `[ACCION_COMPLETADA] ${resultado} ${instruccionNoCambio}${instruccionCambioProyecto}`;
 
         } catch (error) {
             if (error.message === 'PROYECTO_NO_SELECCIONADO') {
@@ -1124,8 +1282,8 @@ RESPUESTA:`);
             this.logger.log(`Generando proforma para: ${params.nombre_cliente}`);
 
             const ocupacionCorregida = await this.corregirOcupacion(params.ocupacion);
-            const ingresosFormateados = this.formatearMonto(params.ingresos);
-            const precioFormateado = this.formatearMonto(params.precio);
+            const ingresosFormateados = formatMonto(params.ingresos);
+            const precioFormateado = formatMonto(params.precio);
 
             if (params.leadUuid && params.codigoEmpresa && params.nombre_cliente) {
                 const nombreCompleto = params.nombre_cliente.trim();
@@ -1231,12 +1389,25 @@ RESPUESTA:`);
         try {
             let actualProyectoId = params.proyectoId;
 
-            
             if (params.nombre_proyecto && params.codigoEmpresa) {
                 const resolvedId = await this.obtenerIdProyectoPorNombre(params.nombre_proyecto, params.codigoEmpresa);
                 if (resolvedId) {
                     actualProyectoId = resolvedId;
                 }
+            }
+
+            if (
+                actualProyectoId &&
+                params.codigoEmpresa &&
+                params.leadUuid &&
+                actualProyectoId !== params.proyectoId
+            ) {
+                await this.sincronizarProyectoSesionPorId(
+                    actualProyectoId,
+                    params.codigoEmpresa,
+                    params.leadUuid,
+                    'buscar_departamento'
+                );
             }
 
             const collectionName = await this.obtenerColeccionInventario(actualProyectoId);
@@ -1706,7 +1877,7 @@ RESPUESTA:`);
     private async enviarPlanoSiCorresponde(m: any, params: any) {
         if (!params.phoneNumber || !m.url_floor_plan) return;
 
-        const imageUrl = this.convertGoogleDriveToDirectUrl(m.url_floor_plan);
+        const imageUrl = convertGoogleDriveToDirectUrl(m.url_floor_plan);
         if (!imageUrl) return;
 
         try {
@@ -1845,7 +2016,7 @@ RESPUESTA:`);
 
             // Enviar imagen del plano si existe
             if (params.phoneNumber && metadata.url_floor_plan) {
-                const imageUrl = this.convertGoogleDriveToDirectUrl(metadata.url_floor_plan);
+                const imageUrl = convertGoogleDriveToDirectUrl(metadata.url_floor_plan);
                 const codigoEmpresa = params.codigoEmpresa || 1;
                 if (imageUrl) {
                     try {
@@ -2136,14 +2307,4 @@ RESPUESTA:`);
         }
     }
 
-    /**
-     * Formatea un monto numérico a formato legible con separadores
-     * Ej: 5000 -> "S/ 5,000" | 713600 -> "S/ 713,600"
-     */
-    private formatearMonto(valor: string | number | undefined): string {
-        if (!valor) return 'N/A';
-        const num = typeof valor === 'string' ? parseFloat(valor.replace(/[^\d.]/g, '')) : valor;
-        if (isNaN(num)) return String(valor);
-        return `S/ ${num.toLocaleString('es-PE')}`;
-    }
 }

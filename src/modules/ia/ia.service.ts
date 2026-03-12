@@ -160,36 +160,6 @@ export class AiService {
                     proyectoId: proyectoId,
                 }
             );
-
-          
-            try {
-                if (proyectoId !== null && resultado.toolsEjecutados.includes('guardar_proyecto')) {
-                    const respuestaLower = resultado.output.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                    let proyectoDetectado: typeof proyectosActivos[0] | null = null;
-
-                    for (const p of proyectosActivos) {
-                        const nombreLower = p.nombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                        if (respuestaLower.includes(nombreLower)) {
-                            proyectoDetectado = p;
-                            break;
-                        }
-                    }
-
-                    if (proyectoDetectado && proyectoDetectado.id !== proyectoId) {
-                        const sesionActual = await this.sesionRepo.findOne({ where: { leadUuid, codigoEmpresa } });
-                        if (sesionActual) {
-                            sesionActual.proyectoId = proyectoDetectado.id;
-                            await this.sesionRepo.save(sesionActual);
-                            this.logger.log(
-                                `[AutoSync] Proyecto actualizado: ${proyectoId} -> ${proyectoDetectado.id} (${proyectoDetectado.nombre}) para lead ${leadUuid}`
-                            );
-                        }
-                    }
-                }
-            } catch (syncError) {
-                this.logger.warn(`[AutoSync] Error detectando proyecto: ${syncError.message}`);
-            }
-
             await this.historialChatService.guardarMensaje({
                 leadUuid,
                 codigoEmpresa,

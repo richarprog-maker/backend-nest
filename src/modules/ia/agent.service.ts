@@ -105,14 +105,22 @@ export class AgentService {
     // 2️    Buscar Preguntas Frecuentes (FAQs)
     const buscarPreguntasFrecuentesTool = new DynamicStructuredTool({
       name: 'buscar_preguntas_frecuentes',
-      description: 'MOTOR DE INFORMACIÓN: Úsala para CUALQUIER pregunta sobre: Ubicación/Entorno, Financiamiento/Bancos, Acabados, Áreas Comunes, Fechas de Entrega/Obra, Tipos de dpto (general) y Requisitos. Si no encuentras la respuesta aquí, NO la inventes.',
+      description: 'MOTOR DE INFORMACIÓN: Úsala para CUALQUIER pregunta sobre: Ubicación/Entorno, Financiamiento/Bancos, Acabados, Áreas Comunes, Fechas de Entrega/Obra, Tipos de dpto (general) y Requisitos. Si el usuario pregunta por OTRO proyecto o compara proyectos, úsala igual. Responde sin cambiar el proyecto actual, salvo que el cliente confirme explícitamente que quiere cambiarse.',
       schema: z.object({
         queries_de_busqueda: z.array(z.string()).describe('Lista de preguntas o palabras clave'),
-        nombre_proyecto: z.string().describe('Nombre del proyecto'),
+        nombre_proyecto: z.string().optional().describe('Nombre del proyecto solo si el usuario menciona explícitamente otro proyecto'),
       }),
       func: async (input, config) => {
         const metadata = (config as any)?.metadata || {};
-        const result = await this.toolsExecutionService.buscarPreguntasFrecuentes(input, metadata.proyectoId);
+        const result = await this.toolsExecutionService.buscarPreguntasFrecuentes(
+          {
+            ...input,
+            codigoEmpresa: metadata.codigoEmpresa,
+            leadUuid: metadata.leadUuid,
+            proyectoIdSesion: metadata.proyectoId,
+          },
+          metadata.proyectoId
+        );
         return result;
       },
     });
@@ -480,15 +488,6 @@ REGLAS GENERALES:
               // Marcar como ejecutada
               accionesEjecutadas.add(toolCall.name);
               toolsEjecutados.push(toolCall.name);
-
-              
-              if (toolCall.name === 'guardar_proyecto' && toolCall.args?.nombre_proyecto && metadata.leadUuid && metadata.codigoEmpresa) {
-                await this.toolsExecutionService.sincronizarProyectoSesion(
-                  toolCall.args.nombre_proyecto,
-                  metadata.codigoEmpresa,
-                  metadata.leadUuid
-                );
-              }
 
               // Guardar en historial
               try {
