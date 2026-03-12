@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PreguntaFrecuente } from './entities/pregunta-frecuente.entity';
@@ -152,13 +152,25 @@ export class PreguntasFrecuentesService {
         }
     }
 
-    async deleteFQA(id: number) {
+    async deleteFQA(id: string | number) {
         try {
-            const fqa = await this.fqaRepo.findOne({ where: { id } });
-            if (!fqa) throw new Error('Pregunta no encontrada');
+            const rawId = String(id ?? '').trim();
+            if (!rawId) {
+                throw new BadRequestException('ID de pregunta inválido');
+            }
+
+            const numericId = Number(rawId);
+            const where = Number.isInteger(numericId) && numericId > 0
+                ? [{ id: numericId }, { uuid: rawId }]
+                : [{ uuid: rawId }];
+
+            const fqa = await this.fqaRepo.findOne({ where });
+            if (!fqa) {
+                throw new NotFoundException(`Pregunta no encontrada: ${rawId}`);
+            }
 
             const projectId = fqa.idProyecto;
-            await this.fqaRepo.delete(id);
+            await this.fqaRepo.delete(fqa.id);
 
             // Sincronizar
             await this.syncQdrant(projectId);

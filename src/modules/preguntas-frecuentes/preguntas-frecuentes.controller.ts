@@ -38,7 +38,7 @@ export class PreguntasFrecuentesController {
 
     @Delete('delete/:id')
     @ApiOperation({ summary: 'Eliminar una pregunta frecuente' })
-    async delete(@Param('id') id: number) {
+    async delete(@Param('id') id: string) {
         return this.fqaService.deleteFQA(id);
     }
 
