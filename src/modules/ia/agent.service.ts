@@ -39,6 +39,47 @@ export class AgentService {
     });
   }
 
+  private normalizeText(value: string): string {
+    return (value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  }
+
+  private shouldForceFaqTool(userMessage: string, toolsEjecutados: string[]): boolean {
+    if (!userMessage?.trim()) return false;
+    if (toolsEjecutados.includes('buscar_preguntas_frecuentes') || toolsEjecutados.includes('buscar_departamento')) {
+      return false;
+    }
+
+    const normalized = this.normalizeText(userMessage);
+    const faqPatterns = [
+      /\bentrega\b/,
+      /\bentrega inmediata\b/,
+      /\bfecha de entrega\b/,
+      /\bcuando entregan\b/,
+      /\bubicacion\b/,
+      /\bdireccion\b/,
+      /\bdonde queda\b/,
+      /\bhorario\b/,
+      /\barea(s)? comunes\b/,
+      /\bacabados\b/,
+      /\bfinanciamiento\b/,
+      /\bcuota\b/,
+      /\bshowroom\b/,
+      /\bsala de ventas\b/,
+      /\brecorrido virtual\b/,
+      /\btour virtual\b/,
+      /\bexhibicion\b/,
+      /\betapa\b/,
+      /\bprecio\b/,
+      /\bdisponibilidad\b/,
+    ];
+
+    return faqPatterns.some((pattern) => pattern.test(normalized));
+  }
+
 
   private async getTools(codigoEmpresa: number): Promise<DynamicStructuredTool[]> {
     const now = Date.now();
@@ -438,6 +479,56 @@ REGLAS GENERALES:
 
         // Si NO hay tool_calls, esta es la respuesta final
         if (!response.tool_calls || response.tool_calls.length === 0) {
+          if (this.shouldForceFaqTool(mensajeUsuario, toolsEjecutados)) {
+            this.logger.warn('Respuesta sin tool_calls para consulta FAQ. Forzando buscar_preguntas_frecuentes.');
+
+            const faqResult = await this.toolsExecutionService.buscarPreguntasFrecuentes(
+              {
+                queries_de_busqueda: [mensajeUsuario],
+                codigoEmpresa: metadata.codigoEmpresa,
+                leadUuid: metadata.leadUuid,
+                proyectoIdSesion: metadata.proyectoId,
+              },
+              metadata.proyectoId
+            );
+
+            toolsEjecutados.push('buscar_preguntas_frecuentes');
+
+            try {
+              await this.historialChatService.guardarMensaje({
+                leadUuid: metadata.leadUuid,
+                codigoEmpresa: metadata.codigoEmpresa,
+                mensaje: { role: 'function', content: `[buscar_preguntas_frecuentes] ${faqResult}` },
+                role: 'function',
+                metadatos: { toolName: 'buscar_preguntas_frecuentes', args: { queries_de_busqueda: [mensajeUsuario] } }
+              });
+            } catch (histError) {
+              this.logger.warn(`No se pudo guardar FAQ forzada en historial: ${histError.message}`);
+            }
+
+            const forcedFinal = await this.llm.invoke([
+              { role: 'system', content: `${finalSystemPrompt}\n\nLa consulta del usuario requería herramienta obligatoria. Usa el resultado de la herramienta para responder. NO inventes datos. NO llames más herramientas.` },
+              ...messages,
+              { role: 'user', content: mensajeUsuario },
+              { role: 'system', content: `Resultado de herramienta obligatoria:\n${faqResult}` }
+            ]);
+
+            const output = forcedFinal.content?.toString() || "No pude generar una respuesta.";
+            const forcedTokens = this.extraerTokens(forcedFinal);
+            if (forcedTokens) {
+              tokensAcumulados.input += forcedTokens.input;
+              tokensAcumulados.output += forcedTokens.output;
+            }
+
+            this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ')}`);
+
+            return {
+              output,
+              tokensUsados: tokensAcumulados,
+              toolsEjecutados,
+            };
+          }
+
           this.logger.log('Respuesta sin tool_calls - Finalizando');
 
           const output = response.content?.toString() || "No pude generar una respuesta.";

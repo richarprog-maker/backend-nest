@@ -262,30 +262,97 @@ export class QdrantVectorService {
   ): Promise<Array<{ document: Document; score: number; breakdown: any }>> {
     // Threshold bajo para búsquedas con filtros estrictos, límite más alto para mayor cobertura
     const { limit = 10, threshold = 0.35, fallbackStrategy = 'relax' } = options;
-
-    const qdrantFilter = this.buildQdrantFilter(filters);
+    const sanitizedFilters = this.sanitizePropertyFilters(filters);
+    const qdrantFilter = this.buildQdrantFilter(sanitizedFilters);
 
     // Buscar con límite más alto para tener margen de filtrado
-    let results = await this.searchWithScoring(
-      collectionName,
-      query,
-      limit * 3, // Aumentar para búsquedas por tipología
-      threshold,
-      qdrantFilter
-    );
+    let results: Array<{ document: Document; score: number; breakdown: any }> = [];
+    try {
+      results = await this.searchWithScoring(
+        collectionName,
+        query,
+        limit * 3, // Aumentar para búsquedas por tipología
+        threshold,
+        qdrantFilter
+      );
+    } catch (error) {
+      if (this.isQdrantBadRequest(error) && qdrantFilter) {
+        this.logger.warn(`Qdrant rechazó el filtro ${JSON.stringify(qdrantFilter)}. Reintentando sin filtros metadata.`);
+        results = await this.searchWithScoring(
+          collectionName,
+          query,
+          limit * 3,
+          threshold,
+          undefined
+        );
+      } else {
+        throw error;
+      }
+    }
 
     if (results.length < 2 && fallbackStrategy !== 'none') {
       this.logger.log('Pocos resultados, aplicando estrategia de fallback');
       results = await this.applyFallbackStrategy(
         collectionName,
         query,
-        filters,
+        sanitizedFilters,
         fallbackStrategy,
         limit
       );
     }
 
     return results.slice(0, limit);
+  }
+
+  private sanitizePropertyFilters(filters: any): any {
+    const asFiniteNumber = (value: any): number | undefined => {
+      if (value === null || value === undefined || value === '') return undefined;
+      const parsed = typeof value === 'number' ? value : Number(String(value).replace(/[^\d.-]/g, ''));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+
+    const asTrimmedString = (value: any): string | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      return trimmed ? trimmed : undefined;
+    };
+
+    const sanitized: any = {};
+
+    const dormitorios = asFiniteNumber(filters?.dormitorios);
+    if (dormitorios !== undefined) sanitized.dormitorios = dormitorios;
+
+    const precioMin = asFiniteNumber(filters?.precioMin);
+    if (precioMin !== undefined) sanitized.precioMin = precioMin;
+
+    const precioMax = asFiniteNumber(filters?.precioMax);
+    if (precioMax !== undefined) sanitized.precioMax = precioMax;
+
+    const pisoMin = asFiniteNumber(filters?.pisoMin);
+    if (pisoMin !== undefined) sanitized.pisoMin = pisoMin;
+
+    const pisoMax = asFiniteNumber(filters?.pisoMax);
+    if (pisoMax !== undefined) sanitized.pisoMax = pisoMax;
+
+    const areaMin = asFiniteNumber(filters?.areaMin);
+    if (areaMin !== undefined) sanitized.areaMin = areaMin;
+
+    const vista = asTrimmedString(filters?.vista);
+    if (vista) sanitized.vista = vista;
+
+    const tipologia = asTrimmedString(filters?.tipologia);
+    if (tipologia) sanitized.tipologia = tipologia;
+
+    const tipoUnidad = asTrimmedString(filters?.tipoUnidad);
+    if (tipoUnidad) sanitized.tipoUnidad = tipoUnidad;
+
+    return sanitized;
+  }
+
+  private isQdrantBadRequest(error: any): boolean {
+    const message = error?.message || '';
+    const status = error?.status || error?.statusCode || error?.response?.status;
+    return status === 400 || message.includes('Bad Request');
   }
 
   private buildQdrantFilter(filters: any): any {
@@ -303,23 +370,29 @@ export class QdrantVectorService {
 
       // Condición 1: El precio de lista está en el rango
       const listRange: any = {};
-      if (filters.precioMin) listRange.gte = filters.precioMin;
-      if (filters.precioMax) listRange.lte = filters.precioMax;
-      priceOrConditions.push({ key: 'metadata.price_list', range: listRange });
+      if (filters.precioMin !== undefined) listRange.gte = filters.precioMin;
+      if (filters.precioMax !== undefined) listRange.lte = filters.precioMax;
+      if (Object.keys(listRange).length > 0) {
+        priceOrConditions.push({ key: 'metadata.price_list', range: listRange });
+      }
 
       // Condición 2: El precio de promoción está en el rango
       const promoRange: any = {};
-      if (filters.precioMin) promoRange.gte = filters.precioMin;
-      if (filters.precioMax) promoRange.lte = filters.precioMax;
-      priceOrConditions.push({ key: 'metadata.price_promo', range: promoRange });
+      if (filters.precioMin !== undefined) promoRange.gte = filters.precioMin;
+      if (filters.precioMax !== undefined) promoRange.lte = filters.precioMax;
+      if (Object.keys(promoRange).length > 0) {
+        priceOrConditions.push({ key: 'metadata.price_promo', range: promoRange });
+      }
 
       // Agregamos como condición SHOULD (OR) anidada dentro del MUST principal
       // Significa: (price_list in range OR price_promo in range)
-      conditions.push({
-        filter: {
-          should: priceOrConditions
-        }
-      });
+      if (priceOrConditions.length > 0) {
+        conditions.push({
+          filter: {
+            should: priceOrConditions
+          }
+        });
+      }
     }
 
     if (filters.vista) {
@@ -331,12 +404,14 @@ export class QdrantVectorService {
 
     if (filters.pisoMin !== undefined || filters.pisoMax !== undefined) {
       const floorRange: any = {};
-      if (filters.pisoMin) floorRange.gte = filters.pisoMin;
-      if (filters.pisoMax) floorRange.lte = filters.pisoMax;
-      conditions.push({
-        key: 'metadata.floor',
-        range: floorRange
-      });
+      if (filters.pisoMin !== undefined) floorRange.gte = filters.pisoMin;
+      if (filters.pisoMax !== undefined) floorRange.lte = filters.pisoMax;
+      if (Object.keys(floorRange).length > 0) {
+        conditions.push({
+          key: 'metadata.floor',
+          range: floorRange
+        });
+      }
     }
 
     if (filters.tipologia) {
@@ -346,7 +421,7 @@ export class QdrantVectorService {
       });
     }
 
-    if (filters.areaMin) {
+    if (filters.areaMin !== undefined) {
       conditions.push({
         key: 'metadata.area_total',
         range: { gte: filters.areaMin }
@@ -464,14 +539,27 @@ export class QdrantVectorService {
       delete relaxedFilters.areaMin;
 
       const relaxedQdrantFilter = this.buildQdrantFilter(relaxedFilters);
-
-      return await this.searchWithScoring(
-        collectionName,
-        query,
-        limit * 2,
-        0.65,
-        relaxedQdrantFilter
-      );
+      try {
+        return await this.searchWithScoring(
+          collectionName,
+          query,
+          limit * 2,
+          0.65,
+          relaxedQdrantFilter
+        );
+      } catch (error) {
+        if (this.isQdrantBadRequest(error)) {
+          this.logger.warn(`Fallback relax rechazado por Qdrant. Reintentando sin filtros.`);
+          return await this.searchWithScoring(
+            collectionName,
+            query,
+            limit * 2,
+            0.65,
+            undefined
+          );
+        }
+        throw error;
+      }
     } else if (strategy === 'expand') {
       const expandedFilters = { ...originalFilters };
 
@@ -483,14 +571,27 @@ export class QdrantVectorService {
       }
 
       const expandedQdrantFilter = this.buildQdrantFilter(expandedFilters);
-
-      return await this.searchWithScoring(
-        collectionName,
-        query,
-        limit * 2,
-        0.70,
-        expandedQdrantFilter
-      );
+      try {
+        return await this.searchWithScoring(
+          collectionName,
+          query,
+          limit * 2,
+          0.70,
+          expandedQdrantFilter
+        );
+      } catch (error) {
+        if (this.isQdrantBadRequest(error)) {
+          this.logger.warn(`Fallback expand rechazado por Qdrant. Reintentando sin filtros.`);
+          return await this.searchWithScoring(
+            collectionName,
+            query,
+            limit * 2,
+            0.70,
+            undefined
+          );
+        }
+        throw error;
+      }
     }
 
     return [];
