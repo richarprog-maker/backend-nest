@@ -19,6 +19,7 @@ import { HistorialEnviosModule } from './modules/historial-envios/historial-envi
 import { TasksModule } from './modules/tasks/tasks.module';
 import { ClasificacionLeadsModule } from './modules/clasificacion-leads/clasificacion-leads.module';
 import { PlantillasCampaniasModule } from './modules/plantillas-campanias/plantillas-campanias.module';
+import { SperantModule } from './modules/sperant/sperant.module';
 
 import { BullModule } from '@nestjs/bullmq';
 
@@ -63,6 +64,7 @@ import { BullModule } from '@nestjs/bullmq';
         PlantillasModule,
         HistorialEnviosModule,
         PlantillasCampaniasModule,
+        SperantModule,
         ...(process.env.ENABLE_TASKS === 'true' ? [TasksModule] : []),
     ],
     controllers: [],

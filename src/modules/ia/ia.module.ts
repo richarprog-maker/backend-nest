@@ -20,6 +20,7 @@ import { RedisModule } from '../common/redis/redis.module';
 import { InboxModule } from '../inbox/inbox.module';
 import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-leads.module';
 import { ResumenConversacionService } from './resumen-conversacion.service';
+import { SperantModule } from '../sperant/sperant.module';
 
 @Module({
     imports: [
@@ -28,6 +29,7 @@ import { ResumenConversacionService } from './resumen-conversacion.service';
         RedisModule,
         forwardRef(() => import('../webhook_meta/webhook.module').then(m => m.WebhookModule)),
         forwardRef(() => InboxModule),
+        SperantModule,
         TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, Lead, Cita, Proyecto, ColeccionQdrant]),
         ClasificacionLeadsModule
     ],
