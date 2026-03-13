@@ -131,7 +131,7 @@ export class CampaniasService {
             const campaniaGuardada = await this.campaniaRepo.save(nuevaCampania);
 
             // Siempre crear registro de programación (ya no hay estado borrador)
-            const fechaProg = data.fechaProgramada ? new Date(data.fechaProgramada) : new Date();
+            const fechaProg = this.parseFechaProgramada(data.fechaProgramada);
 
             this.logger.log(`Programando campaña ID ${campaniaGuardada.id}. Fecha: ${fechaProg}`);
 
@@ -181,12 +181,13 @@ export class CampaniasService {
             throw new Error('La campaña ya se está procesando');
         }
 
-        // Verificar plantilla aprobada
-        if (campania.plantilla && campania.plantilla.metaStatus === 'REJECTED') {
-            throw new Error('La plantilla fue rechazada por Meta. Edítala y reenvía.');
+        if (
+            campania.plantilla &&
+            campania.plantilla.metaStatus !== 'APPROVED' &&
+            campania.plantilla.metaStatus !== 'LOCAL'
+        ) {
+            throw new Error(`La plantilla aún no está lista para enviar. Estado actual: ${campania.plantilla.metaStatus}`);
         }
-
-        await this.campaniaRepo.update(id, { estado: EstadoCampania.PROCESANDO });
 
         await this.campaniasQueue.add('procesar-audiencia', {
             campaniaId: id,
@@ -194,6 +195,8 @@ export class CampaniasService {
         }, {
             removeOnComplete: true
         });
+
+        await this.campaniaRepo.update(id, { estado: EstadoCampania.PROCESANDO });
 
         return { success: true, message: 'Campaña iniciada. Procesando en segundo plano.' };
     }
@@ -212,7 +215,42 @@ export class CampaniasService {
     }
 
     async actualizar(id: number, data: any) {
-        await this.campaniaRepo.update(id, data);
+        const campania = await this.campaniaRepo.findOne({ where: { id } });
+        if (!campania) {
+            throw new Error('Campaña no encontrada');
+        }
+
+        const updateData = { ...data };
+        let nuevaFechaProgramada: Date | null = null;
+
+        if (updateData.fechaProgramada !== undefined) {
+            nuevaFechaProgramada = this.parseFechaProgramada(updateData.fechaProgramada);
+            updateData.fechaProgramada = nuevaFechaProgramada;
+        }
+
+        await this.campaniaRepo.update(id, updateData);
+
+        if (nuevaFechaProgramada) {
+            const programada = await this.programadaRepo.findOne({
+                where: { campaniaId: id, estado: EstadoCampaniaProgramada.PENDIENTE },
+                order: { id: 'DESC' }
+            });
+
+            if (programada) {
+                await this.programadaRepo.update(programada.id, {
+                    fechaProgramada: nuevaFechaProgramada,
+                    errorLog: null
+                });
+            } else if (campania.estado !== EstadoCampania.COMPLETADO && campania.estado !== EstadoCampania.CANCELADO) {
+                await this.programadaRepo.save({
+                    campaniaId: id,
+                    fechaProgramada: nuevaFechaProgramada,
+                    codigoEmpresa: campania.codigoEmpresa,
+                    estado: EstadoCampaniaProgramada.PENDIENTE
+                });
+            }
+        }
+
         return this.obtenerPorId(id);
     }
 
@@ -373,5 +411,31 @@ export class CampaniasService {
             .replace(/\s+/g, '_')
             .replace(/[^a-z0-9_]/g, '')
             .substring(0, 512);
+    }
+
+    private parseFechaProgramada(fechaProgramada?: string | Date | null): Date {
+        if (!fechaProgramada) {
+            return new Date();
+        }
+
+        if (fechaProgramada instanceof Date) {
+            if (isNaN(fechaProgramada.getTime())) {
+                throw new Error('La fecha programada no es válida');
+            }
+            return fechaProgramada;
+        }
+
+        const valor = String(fechaProgramada).trim();
+        const matchFechaHoraLocal = valor.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
+
+        const fecha = matchFechaHoraLocal
+            ? new Date(`${matchFechaHoraLocal[1]}T${matchFechaHoraLocal[2]}:${matchFechaHoraLocal[3] || '00'}`)
+            : new Date(valor);
+
+        if (isNaN(fecha.getTime())) {
+            throw new Error(`La fecha programada no es válida: ${valor}`);
+        }
+
+        return fecha;
     }
 }

@@ -149,6 +149,8 @@ export class PlantillasStatusService {
      */
     private async dispararCampaniasProgramadas(plantillaId: number): Promise<void> {
         try {
+            const ahora = new Date();
+
             // Buscar campañas en estado PROGRAMADO que usen esta plantilla
             const campaniasPendientes = await this.campaniaRepo.find({
                 where: {
@@ -176,6 +178,13 @@ export class PlantillasStatusService {
 
                     if (!programada) {
                         this.logger.warn(`Campaña ${campania.id} en estado PROGRAMADO pero sin registro en tbl_campanias_programadas`);
+                        continue;
+                    }
+
+                    if (programada.fechaProgramada && programada.fechaProgramada > ahora) {
+                        this.logger.log(
+                            `Plantilla aprobada para campaña #${campania.id}, pero se mantiene pendiente hasta ${programada.fechaProgramada.toISOString()}`
+                        );
                         continue;
                     }
 

@@ -67,6 +67,34 @@ export class CampaniasProcessor extends WorkerHost {
         this.logger.log(`Inicio procesamiento audiencia para campaña #${campaniaId}`);
 
         try {
+            if (esProgramada && programadaId) {
+                const programada = await this.programadaRepo.findOne({
+                    where: { id: programadaId }
+                });
+
+                if (!programada) {
+                    throw new Error(`Programación ${programadaId} no encontrada`);
+                }
+
+                if (programada.estado === EstadoCampaniaProgramada.CANCELADO) {
+                    this.logger.warn(`Campaña programada #${programadaId} cancelada. Se omite el procesamiento.`);
+                    return { success: false, skipped: true, reason: 'programacion_cancelada' };
+                }
+
+                if (programada.fechaProgramada && programada.fechaProgramada > new Date()) {
+                    await this.programadaRepo.update(programadaId, {
+                        estado: EstadoCampaniaProgramada.PENDIENTE,
+                        fechaEjecucion: null,
+                        errorLog: null
+                    });
+
+                    this.logger.warn(
+                        `Se evitó un envío anticipado para la campaña #${campaniaId}. Programada para ${programada.fechaProgramada.toISOString()}`
+                    );
+                    return { success: false, skipped: true, reason: 'fecha_programada_no_alcanzada' };
+                }
+            }
+
             const campania = await this.campaniaRepo.findOne({
                 where: { id: campaniaId },
                 relations: ['plantilla']
@@ -190,7 +218,8 @@ export class CampaniasProcessor extends WorkerHost {
                             leadId: lead?.id || null,
                             leadUuid: lead?.uuid || null,
                             prospectoId: prospecto?.id || null,
-                            clasificacionLead: clasificacion || null
+                            clasificacionLead: clasificacion || null,
+                            projectId: campania.proyectoId || d.projectId || null
                         };
                     }));
                     detallesConLeads.push(...subResults);
@@ -202,9 +231,13 @@ export class CampaniasProcessor extends WorkerHost {
                 const usarTemplate = campania.plantilla?.metaStatus === 'APPROVED' && campania.plantilla?.nombre;
 
                 const leadUuidMap = new Map<number, string>();
+                const projectIdMap = new Map<number, number | null>();
                 detallesConLeads.forEach((d, idx) => {
                     if (d.leadUuid && savedChunk[idx]) {
                         leadUuidMap.set(savedChunk[idx].id, d.leadUuid);
+                    }
+                    if (savedChunk[idx]) {
+                        projectIdMap.set(savedChunk[idx].id, d.projectId ? Number(d.projectId) : null);
                     }
                 });
 
@@ -221,7 +254,7 @@ export class CampaniasProcessor extends WorkerHost {
                         tipoMultimedia: detalle.tipoMultimedia,
                         urlMultimedia: detalle.urlMultimedia,
                         leadUuid: leadUuidMap.get(detalle.id) || null,
-                        proyectoId: campania.proyectoId || null
+                        proyectoId: projectIdMap.get(detalle.id) ?? null
                     },
                     opts: {
                         removeOnComplete: true,
@@ -371,14 +404,27 @@ export class CampaniasProcessor extends WorkerHost {
                     idEstado: 1,
                     proximoMensajeMinutos: 60,
                     fechaHoraUltimoMsj: new Date(),
+                    proyectoId: datosExtra?.projectId ? Number(datosExtra.projectId) : null,
                 });
                 await this.sesionRepo.save(nuevaSesion);
                 this.logger.debug(`[Excel] Sesión pre-creada para nuevo lead ${lead.uuid}`);
             } else if (sesion && tipoAudiencia === 'excel') {
+                let sesionActualizada = false;
+
                 if (!sesion.numeroTelefono || sesion.numeroTelefono !== lead.telefono) {
                     sesion.numeroTelefono = lead.telefono;
+                    sesionActualizada = true;
+                }
+
+                const projectId = datosExtra?.projectId ? Number(datosExtra.projectId) : null;
+                if (projectId && sesion.proyectoId !== projectId) {
+                    sesion.proyectoId = projectId;
+                    sesionActualizada = true;
+                }
+
+                if (sesionActualizada) {
                     await this.sesionRepo.save(sesion);
-                    this.logger.debug(`[Excel] Sesión actualizada con número para lead ${lead.uuid}`);
+                    this.logger.debug(`[Excel] Sesión actualizada para lead ${lead.uuid}`);
                 }
             }
 

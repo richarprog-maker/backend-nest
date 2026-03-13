@@ -83,7 +83,18 @@ export class CampaniasController {
 
     @Post('actualizar/:id')
     actualizar(@Param('id') id: string, @Body() body: any) {
-        return this.campaniasService.actualizar(+id, body);
+        const data = {
+            ...body,
+            ...(body.nombre_campaign ? { nombre: body.nombre_campaign } : {}),
+            ...(body.filtros ? { filtrosAudiencia: body.filtros } : {}),
+            ...(body.fecha_hora_envio ? { fechaProgramada: body.fecha_hora_envio } : {})
+        };
+
+        delete data.nombre_campaign;
+        delete data.filtros;
+        delete data.fecha_hora_envio;
+
+        return this.campaniasService.actualizar(+id, data);
     }
 
     @Post('plantilla/crear-en-meta')
@@ -106,4 +117,3 @@ export class CampaniasController {
         return this.campaniasService.verificarEstadoPlantilla(body.plantillaId, body.codigoEmpresa);
     }
 }
-

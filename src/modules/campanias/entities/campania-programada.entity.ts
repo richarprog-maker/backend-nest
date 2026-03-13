@@ -35,10 +35,10 @@ export class CampaniaProgramada {
     codigoEmpresa: number;
 
     @Column({ name: 'error_log', type: 'text', nullable: true })
-    errorLog: string;
+    errorLog: string | null;
 
     @Column({ name: 'fecha_ejecucion', nullable: true })
-    fechaEjecucion: Date;
+    fechaEjecucion: Date | null;
 
     @CreateDateColumn({ name: 'created_at' })
     createdAt: Date;
