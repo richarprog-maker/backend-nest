@@ -131,6 +131,8 @@ export class RecoveryTasksService {
             return;
         }
 
+        this.validarPlantillaRecuperacion(plantilla, tipoPlantilla);
+
         // 2. Obtener el Lead
         const lead = await this.leadRepo.findOne({ where: { uuid: sesion.leadUuid } });
 
@@ -332,6 +334,22 @@ export class RecoveryTasksService {
             await this.historialRepo.save(historial);
         } catch (e) {
             this.logger.error('Error guardando historial de plantilla', e);
+        }
+    }
+
+    private validarPlantillaRecuperacion(plantilla: PlantillaMensaje, tipoPlantilla: TipoPlantilla) {
+        const parametros = Array.isArray(plantilla.parametros) ? plantilla.parametros : [];
+        if (!parametros.includes('project')) {
+            this.logger.warn(
+                `[Recovery] La plantilla ${tipoPlantilla} (${plantilla.nombre}) no declara el parametro "project".`
+            );
+            return;
+        }
+
+        if (!plantilla.contenido?.includes('{{project}}')) {
+            this.logger.warn(
+                `[Recovery] La plantilla ${tipoPlantilla} (${plantilla.nombre}) declara "project" pero su contenido local no usa {{project}}.`
+            );
         }
     }
 }

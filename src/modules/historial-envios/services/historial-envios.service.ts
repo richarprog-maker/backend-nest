@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThanOrEqual, Repository } from 'typeorm';
 import { HistorialEnvio } from '../entities/historial-envio.entity';
 
 @Injectable()
@@ -39,6 +39,25 @@ export class HistorialEnviosService {
         const count = await this.historialRepo.count({
             where: { leadId, tipoMensaje, estado: 'ENVIADO' }
         });
+        return count > 0;
+    }
+
+    async haRecibidoMensajeReciente(
+        leadId: number,
+        tipoMensaje: string,
+        ventanaHoras: number = 1
+    ): Promise<boolean> {
+        const fechaLimite = new Date(Date.now() - ventanaHoras * 60 * 60 * 1000);
+
+        const count = await this.historialRepo.count({
+            where: {
+                leadId,
+                tipoMensaje,
+                estado: 'ENVIADO',
+                fechaEnvio: MoreThanOrEqual(fechaLimite)
+            }
+        });
+
         return count > 0;
     }
 }

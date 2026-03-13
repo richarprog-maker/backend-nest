@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Lead } from '../../inbox/entities/lead.entity';
@@ -42,6 +42,14 @@ export class OrquestadorImportacionService {
             fallidos: 0,
             errores: []
         };
+        const proyectosActivos = await this.proyectoRepo.find({
+            where: { codigoEmpresa, estado: 'activo' }
+        });
+        const proyectosActivosPorId = new Map(
+            proyectosActivos.map((proyecto) => [proyecto.id, proyecto])
+        );
+
+        this.validarFilasExcel(datosCrudos, proyectosActivosPorId);
 
         // Asegurar que existe origen "Excel"
         let origenExcel = await this.origenRepo.findOne({ where: { nombre: 'Excel' } });
@@ -92,13 +100,19 @@ export class OrquestadorImportacionService {
 
                 lead = await queryRunner.manager.save(lead);
 
+                const proyectoIdExcel = this.resolverProyectoIdExcel(
+                    fila.project_id,
+                    proyectosActivosPorId,
+                    index,
+                );
+
                 // 2. Crear Prospecto (se permite múltiples prospectos por lead)
                 const prospecto = new Prospecto();
                 prospecto.lead = lead;
                 prospecto.codigoEmpresa = codigoEmpresa;
                 prospecto.origenId = origenExcel.id;
                 prospecto.origenDato = 'Excel';
-                prospecto.interesTipoId = fila.project_id ? Number(fila.project_id) : null;
+                prospecto.interesTipoId = proyectoIdExcel;
                 prospecto.interesNombre = 'Importacion Masiva ' + nombreBd;
                 prospecto.estadoGestion = 'nuevo';
                 prospecto.observacion = fila.observacion || null;
@@ -148,8 +162,6 @@ export class OrquestadorImportacionService {
                     where: { leadUuid: lead.uuid, codigoEmpresa: codigoEmpresa }
                 });
 
-                const proyectoIdExcel = fila.project_id ? Number(fila.project_id) : null;
-
                 if (!sesion) {
                     sesion = new SesionConversacion();
                     sesion.leadUuid = lead.uuid;
@@ -161,7 +173,7 @@ export class OrquestadorImportacionService {
                     await queryRunner.manager.save(sesion);
                 } else {
                     let necesitaActualizar = false;
-                    if (proyectoIdExcel && sesion.proyectoId !== proyectoIdExcel) {
+                    if (proyectoIdExcel && !sesion.proyectoId) {
                         sesion.proyectoId = proyectoIdExcel;
                         necesitaActualizar = true;
                     }
@@ -179,13 +191,13 @@ export class OrquestadorImportacionService {
 
                 // 5. Envio de Primer Mensaje (Fuera de transaccion principal para no bloquear)
                 try {
+                    const yaEnviadoReciente = await this.historialService.haRecibidoMensajeReciente(
+                        lead.id,
+                        TipoPlantilla.PRIMER_CONTACTO,
+                        1
+                    );
 
-                    const yaEnviado = await this.mensajeRepo.findOne({
-                        where: { leadUuid: lead.uuid }
-                    });
-
-                    // if (!yaEnviado) {
-                    if (true) {
+                    if (!yaEnviadoReciente) {
                         const plantilla = await this.plantillasService.obtenerPlantillaPorTipo(TipoPlantilla.PRIMER_CONTACTO, codigoEmpresa);
                         if (plantilla) {
                             if (!plantilla.nombre) {
@@ -195,9 +207,8 @@ export class OrquestadorImportacionService {
 
                             // Obtener nombre del proyecto
                             let nombreProyecto = 'Nuestro Proyecto';
-                            const proyectoIdExcel = fila.project_id ? Number(fila.project_id) : null;
                             if (proyectoIdExcel) {
-                                const proyecto = await this.proyectoRepo.findOne({ where: { id: proyectoIdExcel } });
+                                const proyecto = proyectosActivosPorId.get(proyectoIdExcel);
                                 if (proyecto) nombreProyecto = proyecto.nombre || nombreProyecto;
                             }
 
@@ -292,6 +303,20 @@ export class OrquestadorImportacionService {
 
                                     this.logger.log(`[Importacion] Mensaje guardado en BD. ID: ${nuevoMensaje.id}, Estado: ${estado}`);
 
+                                    await this.historialService.registrarEnvio(
+                                        lead.id,
+                                        TipoPlantilla.PRIMER_CONTACTO,
+                                        plantilla.id,
+                                        estado === 'enviado' ? 'ENVIADO' : 'FALLIDO',
+                                        {
+                                            origen: 'importacion_excel',
+                                            proyectoId: proyectoIdExcel,
+                                            wamid,
+                                            mensajeId: nuevoMensaje.id,
+                                            error: errorDetails
+                                        }
+                                    );
+
                                     // Registrar en tbl_historial_chat_ai solo si se envió (opcional, o registrar el intento fallido también?)
                                     // Usuario pidió contexto del bot, así que lo guardamos igual
                                     const historialAi = this.historialAiRepo.create({
@@ -320,7 +345,7 @@ export class OrquestadorImportacionService {
                             this.logger.warn(`[Importacion] No se encontro plantilla de PRIMER_CONTACTO para empresa ${codigoEmpresa}`);
                         }
                     } else {
-                        this.logger.log(`[Importacion] Lead ${lead.id} ya tiene mensaje de primer contacto registrado.`);
+                        this.logger.log(`[Importacion] Lead ${lead.id} ya recibio PRIMER_CONTACTO en la ultima hora. Se omite reenvio.`);
                     }
                 } catch (msgError) {
                     this.logger.error(`[Importacion] Error general en bloque de envio mensaje a ${lead.telefono}: ${msgError.message}`, msgError.stack);
@@ -337,6 +362,47 @@ export class OrquestadorImportacionService {
         }
 
         return resultados;
+    }
+
+    private resolverProyectoIdExcel(
+        rawProjectId: unknown,
+        proyectosActivosPorId: Map<number, Proyecto>,
+        index: number,
+    ): number | null {
+        if (rawProjectId === undefined || rawProjectId === null || rawProjectId === '') {
+            return null;
+        }
+
+        const proyectoId = Number(rawProjectId);
+        if (!Number.isInteger(proyectoId) || proyectoId <= 0) {
+            throw new BadRequestException(`Fila ${index + 1}: el ID de proyecto "${rawProjectId}" no es válido.`);
+        }
+
+        if (!proyectosActivosPorId.has(proyectoId)) {
+            throw new BadRequestException(`Fila ${index + 1}: el ID de proyecto ${proyectoId} no corresponde a un proyecto activo habilitado para esta empresa.`);
+        }
+
+        return proyectoId;
+    }
+
+    private validarFilasExcel(
+        datosCrudos: any[],
+        proyectosActivosPorId: Map<number, Proyecto>,
+    ): void {
+        for (const [index, fila] of datosCrudos.entries()) {
+            const telefono = this.limpiarTelefono(fila.phone || fila.celular || fila.telefono);
+            const email = fila.email || fila.correo;
+
+            if (!telefono && !email) {
+                throw new BadRequestException(`Fila ${index + 1}: debe incluir al menos un teléfono o un correo electrónico.`);
+            }
+
+            this.resolverProyectoIdExcel(
+                fila.project_id,
+                proyectosActivosPorId,
+                index,
+            );
+        }
     }
 
     private limpiarTelefono(t: string): string {
