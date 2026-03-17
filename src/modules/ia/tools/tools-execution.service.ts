@@ -18,6 +18,7 @@ import { Lead } from '../../inbox/entities/lead.entity';
 import { ResumenConversacionService } from '../resumen-conversacion.service';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 import { ColeccionQdrant } from '../../proyectos/entities/coleccion-qdrant.entity';
+import { ServicioSperantService } from '../../sperant/services/servicio-sperant.service';
 import {
     buildFaqContext,
     FaqDocumentResult,
@@ -46,6 +47,7 @@ export class ToolsExecutionService {
         @InjectRepository(Proyecto) private proyectosRepo: Repository<Proyecto>,
         @InjectRepository(ColeccionQdrant) private coleccionQdrantRepo: Repository<ColeccionQdrant>,
         private resumenService: ResumenConversacionService,
+        private servicioSperant: ServicioSperantService,
     ) {
         this.llm = new ChatOpenAI({
             modelName: 'gpt-4o-mini',
@@ -715,7 +717,7 @@ ${precioStr}
         }
 
         // Crear Cita con proyecto
-        await this.citasService.crearCita({
+        const citaCreada = await this.citasService.crearCita({
             codigoEmpresa,
             leadUuid: leadUuid,
             fechaCita: fecha_cita,
@@ -726,6 +728,18 @@ ${precioStr}
             proyectoId: proyectoFinal?.id || null,
             nombreProyecto: proyectoFinal?.nombre || nombre_proyecto,
         });
+
+        try {
+            await this.servicioSperant.sincronizarCitaDesdeAgendaLocal({
+                idCitaLocal: citaCreada.id,
+                codigoEmpresa,
+                leadUuid,
+                place: direccion || mapaUrl || proyectoFinal?.nombre || nombre_proyecto,
+            });
+            this.logger.log(`[AgendarCita] Cita ${citaCreada.id} sincronizada con SPERANT`);
+        } catch (error) {
+            this.logger.error(`[AgendarCita] No se pudo sincronizar la cita ${citaCreada.id} con SPERANT: ${error.message}`);
+        }
 
         // Actualizar Estado Sesion y Clasificacion
         try {
