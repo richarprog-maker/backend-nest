@@ -399,6 +399,7 @@ export class ServicioSperantService {
             });
 
             let lead: Lead | null = null;
+            let leadPorTelefono: Lead | null = null;
 
             if (mappingExistente?.leadUuid) {
                 lead = await queryRunner.manager.findOne(Lead, {
@@ -409,21 +410,37 @@ export class ServicioSperantService {
                 });
             }
 
+            if (normalizado.telefono) {
+                leadPorTelefono = await queryRunner.manager.findOne(Lead, {
+                    where: {
+                        telefono: normalizado.telefono,
+                        codigoEmpresa,
+                    },
+                });
+            }
+
+            if (leadPorTelefono && lead && leadPorTelefono.id !== lead.id) {
+                this.logger.warn(
+                    `[Sperant][Lead] Conflicto de identidad. Se prioriza teléfono ${normalizado.telefono} sobre lead ${lead.id} para cliente SPERANT ${normalizado.clienteIdSperant}`,
+                );
+                lead = this.fusionarLeads(leadPorTelefono, lead);
+            }
+
             if (!lead) {
                 lead = await this.buscarLeadExistente(queryRunner, codigoEmpresa, normalizado);
             }
 
-        if (!lead) {
+            if (!lead) {
             lead = queryRunner.manager.create(Lead, {
-                codigoEmpresa,
-                telefono: normalizado.telefono || this.generarTelefonoTemporal(normalizado.clienteIdSperant),
-            });
-        }
+                    codigoEmpresa,
+                    telefono: normalizado.telefono || this.generarTelefonoTemporal(normalizado.clienteIdSperant),
+                });
+            }
 
             lead.nombre = normalizado.nombre || lead.nombre || null;
             lead.apellido = normalizado.apellido || lead.apellido || null;
             lead.nombreMeta = lead.nombreMeta || [normalizado.nombre, normalizado.apellido].filter(Boolean).join(' ').trim() || null;
-            lead.telefono = normalizado.telefono || lead.telefono;
+            lead.telefono = this.resolverTelefonoCanonico(lead, leadPorTelefono, normalizado);
             lead.email = normalizado.email || lead.email || null;
             lead.dni = normalizado.documento || lead.dni || null;
             lead.genero = normalizado.genero || lead.genero || null;
@@ -531,6 +548,11 @@ export class ServicioSperantService {
             });
 
             if (porDocumento) {
+                if (normalizado.telefono && porDocumento.telefono && porDocumento.telefono !== normalizado.telefono) {
+                    this.logger.warn(
+                        `[Sperant][Lead] Documento ${normalizado.documento} coincide con lead ${porDocumento.id}, pero el teléfono del webhook pertenece a otro lead o es distinto. Se priorizará teléfono si existe.`,
+                    );
+                }
                 return porDocumento;
             }
         }
@@ -544,6 +566,11 @@ export class ServicioSperantService {
             });
 
             if (porEmail) {
+                if (normalizado.telefono && porEmail.telefono && porEmail.telefono !== normalizado.telefono) {
+                    this.logger.warn(
+                        `[Sperant][Lead] Email ${normalizado.email} coincide con lead ${porEmail.id}, pero el teléfono del webhook pertenece a otro lead o es distinto. Se priorizará teléfono si existe.`,
+                    );
+                }
                 return porEmail;
             }
         }
@@ -600,6 +627,20 @@ export class ServicioSperantService {
     ): Promise<void> {
         if (!lead.telefono || !/^\d+$/.test(lead.telefono)) {
             this.logger.warn(`[Sperant][Bienvenida] Lead ${lead.uuid} sin teléfono, se omite envío`);
+            return;
+        }
+
+        const mensajesPrevios = await this.mensajeRepo.count({
+            where: {
+                leadUuid: lead.uuid,
+                codigoEmpresa,
+            },
+        });
+
+        if (mensajesPrevios > 0) {
+            this.logger.log(
+                `[Sperant][Bienvenida] Lead ${lead.uuid} ya tenía conversación previa. Se omite PRIMER_CONTACTO.`,
+            );
             return;
         }
 
@@ -782,6 +823,32 @@ export class ServicioSperantService {
 
         const limpio = String(valor).trim();
         return limpio.length > 0 ? limpio : null;
+    }
+
+    private resolverTelefonoCanonico(
+        lead: Lead,
+        leadPorTelefono: Lead | null,
+        normalizado: LeadSperantNormalizado,
+    ): string {
+        if (leadPorTelefono && leadPorTelefono.id !== lead.id) {
+            return lead.telefono || this.generarTelefonoTemporal(normalizado.clienteIdSperant);
+        }
+
+        return normalizado.telefono || lead.telefono || this.generarTelefonoTemporal(normalizado.clienteIdSperant);
+    }
+
+    private fusionarLeads(destino: Lead, origen: Lead): Lead {
+        destino.nombre = destino.nombre || origen.nombre || null;
+        destino.apellido = destino.apellido || origen.apellido || null;
+        destino.nombreMeta = destino.nombreMeta || origen.nombreMeta || null;
+        destino.email = destino.email || origen.email || null;
+        destino.dni = destino.dni || origen.dni || null;
+        destino.genero = destino.genero || origen.genero || null;
+        destino.pais = destino.pais || origen.pais || null;
+        destino.ciudad = destino.ciudad || origen.ciudad || null;
+        destino.direccion = destino.direccion || origen.direccion || null;
+        destino.fechaNacimiento = destino.fechaNacimiento || origen.fechaNacimiento || null;
+        return destino;
     }
 
     private normalizarFechaFlexible(valor?: string | number | null): string | null {
