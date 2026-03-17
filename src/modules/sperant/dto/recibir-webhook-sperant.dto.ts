@@ -1,16 +1,38 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
     IsIn,
     IsNumber,
+    IsNumberString,
     IsObject,
     IsOptional,
     IsString,
     ValidateNested,
 } from 'class-validator';
 
+function transformarNumeroOpcional({ value }: { value: unknown }) {
+    if (value === undefined || value === null || value === '') {
+        return undefined;
+    }
+
+    if (typeof value === 'number') {
+        return value;
+    }
+
+    const numero = Number(value);
+    return Number.isNaN(numero) ? value : numero;
+}
+
+function transformarTextoFlexible({ value }: { value: unknown }) {
+    if (value === undefined || value === null || value === '') {
+        return undefined;
+    }
+
+    return String(value);
+}
+
 export class ProyectoInteraccionSperantDto {
     @IsOptional()
-    @Type(() => Number)
+    @Transform(transformarNumeroOpcional)
     @IsNumber()
     project_id?: number;
 
@@ -27,17 +49,18 @@ export class ProyectoInteraccionSperantDto {
     input_channel_name?: string;
 
     @IsOptional()
-    @Type(() => Number)
+    @Transform(transformarNumeroOpcional)
     @IsNumber()
     seller_id?: number;
 }
 
 export class ClienteSperantDto {
-    @Type(() => Number)
+    @Transform(transformarNumeroOpcional)
     @IsNumber()
     id: number;
 
     @IsOptional()
+    @Transform(transformarTextoFlexible)
     @IsString()
     created_at?: string;
 
@@ -50,9 +73,9 @@ export class ClienteSperantDto {
     lname?: string;
 
     @IsOptional()
-    @Type(() => Number)
-    @IsNumber()
-    person_type_id?: number;
+    @Transform(transformarTextoFlexible)
+    @IsString()
+    person_type_id?: string;
 
     @IsOptional()
     @IsString()
@@ -75,6 +98,7 @@ export class ClienteSperantDto {
     email?: string;
 
     @IsOptional()
+    @Transform(transformarTextoFlexible)
     @IsString()
     last_interaction_at?: string;
 
@@ -83,7 +107,7 @@ export class ClienteSperantDto {
     observation?: string;
 
     @IsOptional()
-    @Type(() => Number)
+    @Transform(transformarNumeroOpcional)
     @IsNumber()
     project_id?: number;
 
@@ -103,6 +127,11 @@ export class ClienteSperantDto {
     @ValidateNested()
     @Type(() => ProyectoInteraccionSperantDto)
     last_interaction_project?: ProyectoInteraccionSperantDto;
+
+    @IsOptional()
+    @Transform(transformarNumeroOpcional)
+    @IsNumber()
+    seller_id?: number;
 }
 
 export class RecibirWebhookSperantDto {
@@ -114,9 +143,14 @@ export class RecibirWebhookSperantDto {
     client: ClienteSperantDto;
 
     @IsOptional()
-    @Type(() => Number)
+    @Transform(transformarNumeroOpcional)
     @IsNumber()
     current_user_id?: number;
+
+    @IsOptional()
+    @Transform(transformarNumeroOpcional)
+    @IsNumber()
+    seller_id?: number;
 
     @IsOptional()
     @IsString()

@@ -103,7 +103,6 @@ export class ServicioSperantService {
             const proyecto = await this.servicioProyectosSperant.resolverProyectoLocal(
                 evento.codigoEmpresa,
                 normalizado.proyectoIdSperant,
-                normalizado.interesNombre,
             );
 
             const resultado = await this.crearOActualizarLeadDesdeSperant(
@@ -735,7 +734,7 @@ export class ServicioSperantService {
         return {
             evento: payload?.event_name,
             clienteIdSperant: Number(client?.id),
-            creadoEn: client?.created_at || null,
+            creadoEn: this.normalizarFechaFlexible(client?.created_at),
             nombre: this.limpiarTexto(client?.fname),
             apellido: this.limpiarTexto(client?.lname),
             documento: this.limpiarTexto(client?.document),
@@ -744,12 +743,17 @@ export class ServicioSperantService {
             email: this.limpiarEmail(client?.email),
             genero: this.limpiarTexto(client?.gender),
             observacion: this.limpiarTexto(client?.observation),
-            ultimaInteraccionAt: client?.last_interaction_at || null,
+            ultimaInteraccionAt: this.normalizarFechaFlexible(client?.last_interaction_at),
             proyectoIdSperant: Number(lastProject?.project_id || client?.project_id || 0) || null,
             interesNombre: this.limpiarTexto(lastProject?.interest_type_name || client?.interest_type_name),
             medioCaptacion: this.limpiarTexto(lastProject?.captation_way || client?.captation_way),
             canalEntrada: this.limpiarTexto(lastProject?.input_channel_name || client?.input_channel_name),
-            sellerId: Number(lastProject?.seller_id || 0) || null,
+            sellerId: Number(
+                lastProject?.seller_id
+                || client?.seller_id
+                || payload?.seller_id
+                || 0,
+            ) || null,
             payload,
         };
     }
@@ -778,6 +782,47 @@ export class ServicioSperantService {
 
         const limpio = String(valor).trim();
         return limpio.length > 0 ? limpio : null;
+    }
+
+    private normalizarFechaFlexible(valor?: string | number | null): string | null {
+        if (valor === undefined || valor === null || valor === '') {
+            return null;
+        }
+
+        if (typeof valor === 'number') {
+            return this.timestampAFechaIso(valor);
+        }
+
+        const texto = String(valor).trim();
+        if (!texto) {
+            return null;
+        }
+
+        if (/^\d{10,13}$/.test(texto)) {
+            return this.timestampAFechaIso(Number(texto));
+        }
+
+        const fecha = new Date(texto);
+        if (Number.isNaN(fecha.getTime())) {
+            return texto;
+        }
+
+        return fecha.toISOString();
+    }
+
+    private timestampAFechaIso(timestamp: number): string | null {
+        if (!Number.isFinite(timestamp)) {
+            return null;
+        }
+
+        const milisegundos = timestamp > 9999999999 ? timestamp : timestamp * 1000;
+        const fecha = new Date(milisegundos);
+
+        if (Number.isNaN(fecha.getTime())) {
+            return null;
+        }
+
+        return fecha.toISOString();
     }
 
     private extraerIdSperant(response: any, tipo: string): number {

@@ -18,7 +18,7 @@ import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 @Module({
     imports: [
         ConfigModule,
-        AiModule,
+        forwardRef(() => AiModule),
         forwardRef(() => InboxModule),
         TypeOrmModule.forFeature([CredencialesWapi, Mensaje, Lead, Prospecto, SesionConversacion])
     ],

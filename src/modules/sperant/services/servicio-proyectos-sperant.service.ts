@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 
 @Injectable()
@@ -15,44 +15,22 @@ export class ServicioProyectosSperantService {
     async resolverProyectoLocal(
         codigoEmpresa: number,
         proyectoIdSperant?: number | null,
-        nombreProyecto?: string | null,
     ): Promise<Proyecto | null> {
-        if (proyectoIdSperant) {
-            const proyectoPorId = await this.proyectoRepo.findOne({
-                where: {
-                    codigoEmpresa,
-                    sperantProjectId: proyectoIdSperant,
-                    estado: 'activo',
-                },
-            });
-
-            if (proyectoPorId) {
-                return proyectoPorId;
-            }
-        }
-
-        if (!nombreProyecto?.trim()) {
+        if (!proyectoIdSperant) {
             return null;
         }
 
-        const nombreLimpio = nombreProyecto.trim();
-        const candidatos = await this.proyectoRepo.find({
-            where: [
-                { codigoEmpresa, estado: 'activo', nombre: ILike(nombreLimpio) },
-                { codigoEmpresa, estado: 'activo', nombre: ILike(`%${nombreLimpio}%`) },
-            ],
-            order: { id: 'ASC' },
+        const proyecto = await this.proyectoRepo.findOne({
+            where: {
+                codigoEmpresa,
+                sperantProjectId: proyectoIdSperant,
+                estado: 'activo',
+            },
         });
 
-        const proyecto = candidatos.find((item) => this.normalizar(item.nombre) === this.normalizar(nombreLimpio))
-            || candidatos[0]
-            || null;
-
-        if (proyecto && proyectoIdSperant && !proyecto.sperantProjectId) {
-            proyecto.sperantProjectId = proyectoIdSperant;
-            await this.proyectoRepo.save(proyecto);
-            this.logger.log(
-                `[Sperant][Proyecto] Vinculado proyecto local ${proyecto.id} (${proyecto.nombre}) con SPERANT ${proyectoIdSperant}`,
+        if (!proyecto) {
+            this.logger.warn(
+                `[Sperant][Proyecto] No existe mapeo local para project_id=${proyectoIdSperant} en empresa ${codigoEmpresa}`,
             );
         }
 
@@ -71,14 +49,5 @@ export class ServicioProyectosSperantService {
                 estado: 'activo',
             },
         });
-    }
-
-    private normalizar(valor: string): string {
-        return (valor || '')
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
     }
 }

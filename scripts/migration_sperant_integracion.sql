@@ -73,11 +73,16 @@ CREATE TABLE IF NOT EXISTS tbl_sincronizaciones_proformas_sperant (
     KEY idx_sync_proformas_sperant_lead (lead_uuid)
 );
 
-/*
-Ejemplo de vinculación inicial de proyectos locales con SPERANT.
-Ajusta los IDs locales según tu base antes de ejecutar.
+ALTER TABLE tbl_proyectos
+    ADD UNIQUE KEY uq_tbl_proyectos_empresa_sperant (codigo_empresa, sperant_project_id);
 
-UPDATE tbl_proyectos SET sperant_project_id = 1 WHERE id = 8;
-UPDATE tbl_proyectos SET sperant_project_id = 2 WHERE id = 9;
-UPDATE tbl_proyectos SET sperant_project_id = 3 WHERE id = 6;
-*/
+
+
+SELECT
+    id,
+    codigo_empresa,
+    nombre,
+    sperant_project_id
+FROM tbl_proyectos
+WHERE codigo_empresa = 1
+ORDER BY id;
