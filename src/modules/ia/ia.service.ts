@@ -16,6 +16,7 @@ import { RedisService } from '../common/redis/redis.service';
 @Injectable()
 export class AiService {
     private readonly logger = new Logger(AiService.name);
+    private readonly maxHistorialMensajes = 6;
 
     constructor(
         private agentService: AgentService,
@@ -68,11 +69,11 @@ export class AiService {
             let historialFormateado: BaseMessage[] = [];
 
             if (!historial || historial.length === 0) {
-                this.logger.log(`Cargando últimos 20 mensajes desde BD...`);
+                this.logger.log(`Cargando últimos ${this.maxHistorialMensajes} mensajes desde BD...`);
                 historialFormateado = await this.historialChatService.obtenerUltimosMensajes(
                     leadUuid,
                     codigoEmpresa,
-                    20,
+                    this.maxHistorialMensajes,
                     true
                 );
             } else {
@@ -80,7 +81,7 @@ export class AiService {
                 historialFormateado = historial as BaseMessage[];
             }
 
-            const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
+            const modelName = this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
 
             await this.historialChatService.guardarMensaje({
                 leadUuid,
@@ -130,9 +131,9 @@ export class AiService {
                     horario_atencion: horarioAtencion,
                 };
             });
-            resumenProyectos = proyectosActivos.map(p =>
-                `${p.nombre}: ${p.descripcion || p.tipoInmueble || 'Proyecto inmobiliario'}`
-            ).join('. ');
+            resumenProyectos = proyectosActivos
+                .map(p => this.resumirProyectoParaPrompt(p))
+                .join('\n');
 
             const tieneHistorial = historialFormateado.length > 0;
 
@@ -186,5 +187,18 @@ export class AiService {
             this.logger.error(`Error generando respuesta IA: ${error.message}`, error.stack);
             return "Lo siento, tuve un problema técnico. ¿Podrías intentar de nuevo?";
         }
+    }
+
+    private resumirProyectoParaPrompt(proyecto: Proyecto): string {
+        const descripcionBase = [proyecto.tipoInmueble, proyecto.descripcion]
+            .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+            .map(value => value.replace(/\s+/g, ' ').trim())
+            .find(Boolean) || 'Proyecto inmobiliario';
+
+        const resumenCorto = descripcionBase.length > 120
+            ? `${descripcionBase.slice(0, 117)}...`
+            : descripcionBase;
+
+        return `${proyecto.nombre}: ${resumenCorto}`;
     }
 }

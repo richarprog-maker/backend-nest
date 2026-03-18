@@ -31,6 +31,7 @@ import { convertGoogleDriveToDirectUrl, formatMonto } from './utils/tool-format.
 @Injectable()
 export class ToolsExecutionService {
     private readonly logger = new Logger(ToolsExecutionService.name);
+    private readonly maxResultadosTexto = 3;
     private llm: ChatOpenAI;
     private cacheColecciones: Map<string, string> = new Map();
 
@@ -1005,9 +1006,9 @@ DATOS DE LA CITA:
             const resultadosFaq = await this.buscarDocumentosFaq(
                 queryPrincipal,
                 proyectosObjetivo,
-                modoBusqueda === 'multi_project' ? 3 : 4
+                modoBusqueda === 'multi_project' ? 2 : 3
             );
-            const docs = resultadosFaq.slice(0, modoBusqueda === 'multi_project' ? 8 : 5);
+            const docs = resultadosFaq.slice(0, modoBusqueda === 'multi_project' ? 4 : 3);
             const contexto = buildFaqContext(docs);
 
             this.logger.log(`FAQ RAG - Docs encontrados: ${docs.length}`);
@@ -1666,7 +1667,7 @@ RESPUESTA:`);
                     allResults.map(i => i.document.metadata.typology).filter(Boolean)
                 )].sort();
 
-                const lista = allResults.slice(0, 6).map((r, idx) => {
+                const lista = allResults.slice(0, this.maxResultadosTexto).map((r, idx) => {
                     const m = r.document.metadata;
                     const pList = m.price_list ? parseFloat(m.price_list) : 0;
                     const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
@@ -1814,8 +1815,8 @@ RESPUESTA:`);
             this.logger.log(`[BusquedaUniversal] Resultados reordenados por cercanía a precio: ${precioObjetivo}`);
         }
 
-        // Devolvemos solo los top 6 después de ordenar
-        return { ok: true, items: resultados.slice(0, 6) };
+        // Devolvemos solo los mejores resultados para evitar contexto inflado
+        return { ok: true, items: resultados.slice(0, this.maxResultadosTexto) };
     }
 
     private formatearRespuestaBusqueda(items: any[], mensajeIntro: string) {
@@ -2299,27 +2300,39 @@ RESPUESTA:`);
     }
 
     /**
-     * Corrige errores ortográficos y normaliza ocupaciones usando LLM
+     * Normaliza ocupaciones sin usar LLM para evitar una llamada adicional por proforma.
      */
     private async corregirOcupacion(ocupacion: string): Promise<string> {
         if (!ocupacion) return ocupacion;
 
-        try {
-            const OcupacionSchema = z.object({
-                ocupacion_normalizada: z.string().describe('La ocupación corregida y con mayúsculas capitalizadas, ej: "Ingeniero De Sistemas"')
-            });
+        const reemplazos: Array<[RegExp, string]> = [
+            [/\bing\b/gi, 'Ingeniero'],
+            [/\badm\b/gi, 'Administracion'],
+            [/\bsis\b/gi, 'Sistemas'],
+            [/\brrhh\b/gi, 'Recursos Humanos'],
+            [/\bconta\b/gi, 'Contabilidad'],
+        ];
 
-            const extractor = this.llm.withStructuredOutput(OcupacionSchema);
-            const prompt = `Corrige la ortografía y normaliza esta ocupación profesional: "${ocupacion}". Si no es una ocupación clara, devuélvela como está pero capitalizada. Ejemplo: "ing sistemas" -> "Ingeniero de Sistemas".`;
+        let normalizada = ocupacion
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
 
-            const result = await extractor.invoke(prompt);
-            return result.ocupacion_normalizada;
-
-        } catch (error) {
-            this.logger.warn(`Error corrigiendo ocupación con LLM: ${error.message}`);
-            // Fallback simple: Capitalizar
-            return ocupacion.trim().replace(/\b\w/g, c => c.toUpperCase());
+        for (const [pattern, replacement] of reemplazos) {
+            normalizada = normalizada.replace(pattern, replacement.toLowerCase());
         }
+
+        return normalizada
+            .split(' ')
+            .filter(Boolean)
+            .map((palabra) => {
+                if (['de', 'del', 'la', 'el', 'y'].includes(palabra)) {
+                    return palabra;
+                }
+
+                return palabra.charAt(0).toUpperCase() + palabra.slice(1);
+            })
+            .join(' ');
     }
 
 }

@@ -15,6 +15,7 @@ import { Repository } from 'typeorm';
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private llm: ChatOpenAI;
+  private summaryExtractorLlm: ChatOpenAI;
   private toolsCache = new Map<number, { tools: DynamicStructuredTool[], expiresAt: number }>();
 
   constructor(
@@ -25,16 +26,24 @@ export class AgentService {
     @InjectRepository(Proyecto)
     private proyectosRepo: Repository<Proyecto>,
   ) {
-    const modelName = this.configService.get<string>('OPENAI_MODEL') || 'o4-mini';
+    const modelName = this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
 
-    const temperature = isReasoningModel ? 1 : 0.7;
+    const temperature = isReasoningModel ? 1 : 0.3;
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
     this.llm = new ChatOpenAI({
       modelName: modelName,
       temperature: temperature,
+      maxTokens: 500,
+      openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
+    });
+
+    this.summaryExtractorLlm = new ChatOpenAI({
+      modelName: this.configService.get<string>('OPENAI_SUMMARY_MODEL') || 'gpt-4o-mini',
+      temperature: 0,
+      maxTokens: 180,
       openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
     });
   }
@@ -78,6 +87,23 @@ export class AgentService {
     ];
 
     return faqPatterns.some((pattern) => pattern.test(normalized));
+  }
+
+  private shouldExtractSummary(userMessage: string): boolean {
+    const normalized = this.normalizeText(userMessage);
+
+    if (!normalized || normalized.length < 18) {
+      return false;
+    }
+
+    if (/^(hola|ok|si|no|gracias|buenas|claro|dale|listo|ya|bien|perfecto|genial|sale|okey|okay|aja|ajá)$/.test(normalized)) {
+      return false;
+    }
+
+    return (
+      /\d/.test(normalized) ||
+      /(dorm|habitacion|cuarto|monoambiente|depa|departamento|vivir|inversion|invertir|credito|hipoteca|hipotecario|banco|contado|directo|presupuesto|cuota|ingres|gano|sueldo|dni|correo|email|zona|distrito|surco|miraflores|lince|san isidro|mudanza|compra|visita|cita|fecha|hora|inicial|estacionamiento|mascota|entrega|areas comunes)/.test(normalized)
+    );
   }
 
 
@@ -400,7 +426,12 @@ export class AgentService {
       this.logger.log(`Ejecutando agente para lead: ${metadata.leadUuid}`);
 
       // Extraer información del mensaje del usuario y actualizar resumen
-      await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
+      const debeExtraerResumen = this.shouldExtractSummary(mensajeUsuario);
+      if (debeExtraerResumen) {
+        await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
+      } else {
+        this.logger.debug(`Mensaje sin señales fuertes para resumen - omitiendo extracción LLM: "${mensajeUsuario.trim().slice(0, 80)}"`);
+      }
 
       const toolsEjecutados: string[] = [];
       let tokensAcumulados = { input: 0, output: 0 };
@@ -431,19 +462,7 @@ export class AgentService {
       tomorrowPeru.setDate(tomorrowPeru.getDate() + 1);
       const fechaMananaISO = `${tomorrowPeru.getFullYear()}-${String(tomorrowPeru.getMonth() + 1).padStart(2, '0')}-${String(tomorrowPeru.getDate()).padStart(2, '0')}`;
 
-      const timeContext = `
-=== CONTEXTO TEMPORAL (ZONA: PERÚ) ===
-- FECHA HOY: ${fechaISO}
-- FECHA MAÑANA: ${fechaMananaISO}
-- HORA ACTUAL: ${horaActual}
-- ${fechaLegible}
-
-REGLAS GENERALES:
-- RESPETA ESTRICTAMENTE los horarios de atención indicados para tu proyecto. NO agendes citas fuera de esos horarios.
-- NO agendes citas para fechas pasadas ni horas que ya pasaron hoy.
-- Para referirte a fechas: si es ${fechaISO} di "hoy", si es ${fechaMananaISO} di "mañana", si ya pasó di que "ya pasó".
-======================================
-`;
+      const timeContext = `CONTEXTO TEMPORAL PERU: hoy=${fechaISO}, manana=${fechaMananaISO}, hora_actual=${horaActual}, referencia="${fechaLegible}". Reglas: no agendes en pasado ni fuera de horario; si la fecha es ${fechaISO} di "hoy", si es ${fechaMananaISO} di "mañana".`;
 
       const finalSystemPrompt = `${timeContext}\n\n${systemPrompt}`;
 
@@ -682,7 +701,7 @@ REGLAS GENERALES:
         intereses_adicionales: z.array(z.string()).describe('Temas adicionales: estacionamiento, mascota, entrega, areas_comunes, inicial. Si no hay, array vacio.'),
       });
 
-      const extractor = this.llm.withStructuredOutput(InfoResumenSchema);
+      const extractor = this.summaryExtractorLlm.withStructuredOutput(InfoResumenSchema);
 
       const prompt = `
       Analiza el siguiente mensaje del cliente inmobiliario. Un solo mensaje puede contener MULTIPLES datos de distintas categorias. Extrae TODOS los datos que encuentres, no solo uno.
