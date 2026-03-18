@@ -27,7 +27,7 @@ export class AgentService {
     private proyectosRepo: Repository<Proyecto>,
   ) {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
-    const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini';
+    const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini' || modelName.includes('gpt-5');
 
     const temperature = isReasoningModel ? 1 : 0.3;
 
