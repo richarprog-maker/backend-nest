@@ -16,7 +16,7 @@ import { RedisService } from '../common/redis/redis.service';
 @Injectable()
 export class AiService {
     private readonly logger = new Logger(AiService.name);
-    private readonly maxHistorialMensajes = 6;
+    private readonly maxHistorialMensajes = 20;
 
     constructor(
         private agentService: AgentService,

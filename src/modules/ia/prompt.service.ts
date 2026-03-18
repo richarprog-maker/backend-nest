@@ -61,12 +61,10 @@ export class PromptService {
             return `
             - Este cliente YA tiene conversación previa contigo.
             - **PROHIBIDO** decir "Hola", "Hola, claro", "Hola, aquí tienes", "Hola, como estas" o cualquier saludo.
-            - **PROHIBIDO** empezar mensajes con "Hola," seguido de información.
             - **PROHIBIDO** usar emojis de saludo como 👋.
-            - Ve DIRECTO al punto, el cliente ya te conoce.
-            - Si el cliente dice "Hola" o te contacta después de tiempo, NO preguntes "En qué te ayudo".
-            - En su lugar, revisa el historial y retoma el flujo en el paso donde se quedaron de forma proactiva.
-            - Empieza directo: "Continuando con la búsqueda de tu depa..." o "Retomando lo que conversábamos..." seguido del paso pendiente.`;
+            - Ve DIRECTO al punto sobre lo que el cliente pregunta o el paso del flujo pendiente, de forma natural.
+            - Si el cliente te vuelve a escribir tras una pausa y dice "Hola", NO le preguntes "En qué te ayudo". Simplemente revisa el historial y retoma el flujo en el paso donde se quedaron de forma proactiva.
+            - **CRÍTICO:** NO repitas frases robotizadas como "Continuando con la búsqueda..." o "Retomando lo que conversábamos...". Varía tus respuestas y hazlas naturales.`;
         }
 
         return `

@@ -89,22 +89,7 @@ export class AgentService {
     return faqPatterns.some((pattern) => pattern.test(normalized));
   }
 
-  private shouldExtractSummary(userMessage: string): boolean {
-    const normalized = this.normalizeText(userMessage);
 
-    if (!normalized || normalized.length < 18) {
-      return false;
-    }
-
-    if (/^(hola|ok|si|no|gracias|buenas|claro|dale|listo|ya|bien|perfecto|genial|sale|okey|okay|aja|ajá)$/.test(normalized)) {
-      return false;
-    }
-
-    return (
-      /\d/.test(normalized) ||
-      /(dorm|habitacion|cuarto|monoambiente|depa|departamento|vivir|inversion|invertir|credito|hipoteca|hipotecario|banco|contado|directo|presupuesto|cuota|ingres|gano|sueldo|dni|correo|email|zona|distrito|surco|miraflores|lince|san isidro|mudanza|compra|visita|cita|fecha|hora|inicial|estacionamiento|mascota|entrega|areas comunes)/.test(normalized)
-    );
-  }
 
 
   private async getTools(codigoEmpresa: number): Promise<DynamicStructuredTool[]> {
@@ -425,13 +410,8 @@ export class AgentService {
     try {
       this.logger.log(`Ejecutando agente para lead: ${metadata.leadUuid}`);
 
-      // Extraer información del mensaje del usuario y actualizar resumen
-      const debeExtraerResumen = this.shouldExtractSummary(mensajeUsuario);
-      if (debeExtraerResumen) {
-        await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
-      } else {
-        this.logger.debug(`Mensaje sin señales fuertes para resumen - omitiendo extracción LLM: "${mensajeUsuario.trim().slice(0, 80)}"`);
-      }
+      // Extraer información del mensaje y actualizar resumen de sesión (usa gpt-4o-mini, bajo costo)
+      await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
 
       const toolsEjecutados: string[] = [];
       let tokensAcumulados = { input: 0, output: 0 };
