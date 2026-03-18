@@ -36,7 +36,7 @@ export class AgentService {
     this.llm = new ChatOpenAI({
       modelName: modelName,
       temperature: temperature,
-      maxTokens: 500,
+      // maxTokens: 800, // Comentado porque modelos de razonamiento (gpt-5-mini/o1) consumen tokens ocultos pensando y se cortan con límites bajos.
       openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
     });
 
