@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PROMPT_SYSTEM_MAIN } from './prompts/prompt-main';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
+import { parseSessionSummary } from './utils/session-summary.utils';
 
 @Injectable()
 export class PromptService {
@@ -17,6 +18,36 @@ export class PromptService {
         proyectoId?: number,
         resumenSesion?: string
     ): string {
+        const config = this.buildPromptConfig(
+            nombreAsistente,
+            genero,
+            metadataEmpresa,
+            resumenProyectos,
+            tieneHistorial,
+            leadData,
+            citaData,
+            proyectoId,
+            resumenSesion
+        );
+
+        return `${config.stablePrompt}\n\n${config.variablePrompt}`;
+    }
+
+    buildPromptConfig(
+        nombreAsistente: string,
+        genero: string,
+        metadataEmpresa: any[],
+        resumenProyectos: string,
+        tieneHistorial: boolean = false,
+        leadData?: Lead,
+        citaData?: Cita,
+        proyectoId?: number,
+        resumenSesion?: string
+    ): {
+        stablePrompt: string;
+        variablePrompt: string;
+        pasoPendiente: number;
+    } {
 
         const listaProyectos = metadataEmpresa
             .map(p => `${p.nombre_proyecto.toUpperCase()}`)
@@ -32,8 +63,9 @@ export class PromptService {
 
         const instruccionProyecto = this.buildInstruccionProyecto(metadataEmpresa, proyectoId);
         const datosFlujo = this.buildDatosFlujo(resumenSesion);
+        const pasoPendiente = this.resolvePasoPendiente(resumenSesion, citaData);
 
-        let prompt = PROMPT_SYSTEM_MAIN;
+        let stablePrompt = PROMPT_SYSTEM_MAIN;
         const replacements: Record<string, string> = {
             "{{nombre_asistente}}": nombreAsistente,
             "{{nombre_empresa}}": nombreEmpresa,
@@ -48,9 +80,42 @@ export class PromptService {
         };
 
         for (const [key, value] of Object.entries(replacements)) {
-            prompt = prompt.replace(new RegExp(key, 'g'), value);
+            stablePrompt = stablePrompt.replace(new RegExp(key, 'g'), value);
         }
-        return prompt;
+
+        return {
+            stablePrompt,
+            variablePrompt: '',
+            pasoPendiente,
+        };
+    }
+
+    private resolvePasoPendiente(resumenSesion?: string, cita?: Cita): number {
+        if (this.hasActiveFutureCita(cita)) {
+            return 12;
+        }
+
+        if (!resumenSesion?.trim()) {
+            return 1;
+        }
+
+        return parseSessionSummary(resumenSesion).pasoPendiente;
+    }
+
+    private hasActiveFutureCita(cita?: Cita): boolean {
+        if (!cita) return false;
+
+        const fechaActualPeru = new Date().toLocaleString('en-US', { timeZone: 'America/Lima' });
+        const datePeru = new Date(fechaActualPeru);
+        const hoyISO = `${datePeru.getFullYear()}-${String(datePeru.getMonth() + 1).padStart(2, '0')}-${String(datePeru.getDate()).padStart(2, '0')}`;
+        const horaActualMinutos = datePeru.getHours() * 60 + datePeru.getMinutes();
+        const [horaCita, minutoCita] = cita.horaCita.split(':').map(Number);
+        const horaCitaMinutos = horaCita * 60 + minutoCita;
+        const citaActiva = cita.estadoCita === 'pendiente' || cita.estadoCita === 'confirmada';
+
+        if (!citaActiva) return false;
+        if (cita.fechaCita > hoyISO) return true;
+        return cita.fechaCita === hoyISO && horaCitaMinutos > horaActualMinutos;
     }
 
     /**
@@ -260,50 +325,59 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
     private buildDatosFlujo(resumenSesion?: string): string {
         if (!resumenSesion || !resumenSesion.trim()) return '';
 
-        // Detectar que datos tiene el resumen
-        const tiene = (patron: RegExp) => patron.test(resumenSesion);
+        const contexto = parseSessionSummary(resumenSesion);
+        const lineas: string[] = [];
 
-        const tieneDormitorios = tiene(/dormitorio/i);
-        const tieneProposito = tiene(/prop.?sito|para vivir|inversi.?n/i);
-        const tieneZona = tiene(/zona preferida/i);
-        const tienetiempoCompra = tiene(/tiempo de compra/i);
-        const tieneFinanciamiento = tiene(/financiamiento/i);
-        const tienePresupuesto = tiene(/presupuesto|cuota/i);
-        const tieneNombre = tiene(/identificado/i);
-        const tieneDni = tiene(/dni capturado/i);
-        const tieneOcupacion = tiene(/ocupaci.?n/i);
-        const tieneIngresos = tiene(/ingresos mensuales/i);
-        const tieneProforma = tiene(/cotiz.?|proforma/i);
+        if (contexto.dormitorios || contexto.proposito || contexto.zonaPreferida || contexto.tiempoCompra || contexto.financiamiento || contexto.presupuesto) {
+            lineas.push('### FASE 1 - DESCUBRIMIENTO YA RESPONDIDO');
+            if (contexto.dormitorios) lineas.push(`- Paso 1 / Dormitorios: ${contexto.dormitorios}`);
+            if (contexto.proposito) lineas.push(`- Paso 2 / Propósito: ${contexto.proposito}`);
+            if (contexto.zonaPreferida) lineas.push(`- Paso 2 / Zona preferida: ${contexto.zonaPreferida}`);
+            if (contexto.tiempoCompra) lineas.push(`- Paso 3 / Tiempo de compra: ${contexto.tiempoCompra}`);
+            if (contexto.financiamiento) lineas.push(`- Paso 4 / Financiamiento: ${contexto.financiamiento}`);
+            if (contexto.presupuesto) lineas.push(`- Paso 5 / Presupuesto o cuota: ${contexto.presupuesto}`);
+        }
 
-        // Determinar paso pendiente
-        let pasoPendiente = 1;
-        if (!tieneDormitorios) pasoPendiente = 1;
-        else if (!tieneProposito || !tieneZona) pasoPendiente = 2;
-        else if (!tienetiempoCompra) pasoPendiente = 3;
-        else if (!tieneFinanciamiento) pasoPendiente = 4;
-        else if (!tienePresupuesto) pasoPendiente = 5;
-        else if (!tieneNombre || !tieneDni) pasoPendiente = 8;
-        else if (!tieneOcupacion || !tieneIngresos) pasoPendiente = 9;
-        else if (!tieneProforma) pasoPendiente = 9;
-        else pasoPendiente = 11;
+        if (contexto.unidadInteres) {
+            lineas.push('### FASE 2 - PRESENTACION');
+            lineas.push(`- Paso 6 / Unidad de interés ya mencionada: ${contexto.unidadInteres}`);
+        }
 
-        // Si ya tiene todo hasta paso 5 inclusive, desde paso 6 buscar depa
-        if (tieneDormitorios && tieneProposito && tieneZona && tienetiempoCompra && tieneFinanciamiento && tienePresupuesto && pasoPendiente < 6) {
-            pasoPendiente = 6;
+        if (contexto.nombreCompleto || contexto.dni || contexto.ocupacion || contexto.ingresos || contexto.tieneProforma) {
+            lineas.push('### FASE 3 - IDENTIFICACION Y PROFORMA');
+            if (contexto.nombreCompleto) lineas.push(`- Paso 8 / Nombre completo capturado: ${contexto.nombreCompleto}`);
+            if (contexto.dni) lineas.push(`- Paso 8 / DNI capturado: ${contexto.dni}`);
+            if (contexto.ocupacion) lineas.push(`- Paso 9 / Ocupación capturada: ${contexto.ocupacion}`);
+            if (contexto.ingresos) lineas.push(`- Paso 9 / Ingresos mensuales capturados: ${contexto.ingresos}`);
+            if (contexto.tieneProforma) lineas.push('- Paso 9 / Ya existe una proforma o cotización previa registrada');
+        }
+
+        if (contexto.email) {
+            lineas.push('### FASE 4 - CITA');
+            lineas.push(`- Paso 11 / Email disponible para agendar: ${contexto.email}`);
+        }
+
+        if (contexto.notasAdicionales.length > 0) {
+            lineas.push('### OTRAS NOTAS DE SESION');
+            contexto.notasAdicionales.forEach((nota) => lineas.push(`- ${nota}`));
         }
 
         return `
 ## DATOS DE FASES PREVIAS (PORTABLES ENTRE PROYECTOS)
 Este cliente ya respondio las siguientes preguntas en proyectos anteriores. Son VALIDOS para el proyecto actual:
 
-${resumenSesion}
+${lineas.join('\n')}
+
+### PASO PENDIENTE ESTIMADO
+- Continúa directamente desde el **PASO ${contexto.pasoPendiente}** del flujo.
+- Usa este bloque como FUENTE PRINCIPAL de contexto operativo antes de depender del historial corto.
 
 **INSTRUCCION CRITICA**:
 - NO vuelvas a preguntar ninguno de los datos que aparecen arriba.
 - Los datos de dormitorios, proposito, zona, tiempo de compra, financiamiento y presupuesto son validos para cualquier proyecto.
 - Los datos de unidad especifica, proforma y cita son del proyecto anterior y pueden necesitar actualizacion.
-- Continua directamente desde el **PASO ${pasoPendiente}** del flujo.
-- Si el paso pendiente es 6 o mas, busca departamentos en el nuevo proyecto usando los dormitorios que ya tienes.
+- Si el paso pendiente es 6 o mas, usa primero los datos ya capturados en esta sesion antes de pedirlos otra vez.
+- Si el paso pendiente es 6 o mas y ya tienes dormitorios, busca departamentos en el nuevo proyecto usando esos dormitorios.
 `;
     }
 }

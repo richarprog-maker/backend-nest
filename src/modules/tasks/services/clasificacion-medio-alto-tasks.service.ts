@@ -7,6 +7,8 @@ import { ChatOpenAI } from '@langchain/openai';
 import { SesionConversacion } from '../../ia/entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { TimeUtils } from '../../../common/utils/time.utils';
+import { z } from 'zod';
+import { TokenTrackingService } from '../../ia/token-tracking.service';
 
 /**
  * Servicio que clasifica automáticamente como "MEDIO"  a los leads
@@ -24,6 +26,7 @@ export class ClasificacionTibioTasksService {
         private clasificacionRepo: Repository<HistorialClasificacionLead>,
         private dataSource: DataSource,
         private configService: ConfigService,
+        private tokenTrackingService: TokenTrackingService,
     ) {
         // Inicializar LLM para análisis
         this.llm = new ChatOpenAI({
@@ -68,8 +71,23 @@ export class ClasificacionTibioTasksService {
 
             this.logger.log(`Encontrados ${sesiones.length} leads inactivos (>20min) para clasificar.`);
 
-            for (const sesion of sesiones) {
-                await this.analizarYClasificar(sesion);
+            const batchSize = 10;
+            for (let index = 0; index < sesiones.length; index += batchSize) {
+                const batch = sesiones.slice(index, index + batchSize);
+                const resultados = await this.analizarBatchConIA(batch);
+
+                for (const resultado of resultados) {
+                    if (!resultado.clasificacion) {
+                        continue;
+                    }
+
+                    const sesion = batch.find((item) => item.id === resultado.sessionId);
+                    if (!sesion) {
+                        continue;
+                    }
+
+                    await this.clasificarLead(sesion, resultado.clasificacion, resultado.razon);
+                }
             }
 
         } catch (error) {
@@ -77,71 +95,104 @@ export class ClasificacionTibioTasksService {
         }
     }
 
-    /**
-     * Analiza una sesión específica y la clasifica si cumple criterios
-     */
-    private async analizarYClasificar(sesion: SesionConversacion) {
-        try {
-            // Llamar a GPT-4 para análisis
-            const resultado = await this.analizarConIA(sesion.resumenConversacion);
+    private async analizarBatchConIA(sesiones: SesionConversacion[]): Promise<Array<{
+        sessionId: number;
+        clasificacion: 'medio' | 'alto' | null;
+        razon: string;
+    }>> {
+        const BatchSchema = z.object({
+            resultados: z.array(z.object({
+                session_id: z.number(),
+                clasificacion: z.enum(['alto', 'medio']).nullable(),
+                razon: z.string(),
+            }))
+        });
 
-            if (resultado.clasificacion) {
-                await this.clasificarLead(sesion, resultado.clasificacion, resultado.razon);
-            }
-            // Si es null, no hacemos nada
-
-        } catch (error) {
-            this.logger.error(`Error analizando sesión ${sesion.id} (${sesion.leadUuid}):`, error);
-        }
-    }
-
-    /**
-     * Utiliza GPT-4 para determinar si el lead es TIBIO o ALTO
-     */
-    private async analizarConIA(resumen: string): Promise<{ clasificacion: 'medio' | 'alto' | null; razon: string }> {
         const prompt = `
-            Analiza el siguiente resumen de conversación de un lead inmobiliario.
+            Analiza estos resúmenes de conversación de leads inmobiliarios y clasifica cada uno.
 
-            RESUMEN:
-            ${resumen}
+            CRITERIO ALTO:
+            - Quiere comprar dentro de 90 días
+            - Y parece tener financiamiento, inicial o capacidad económica encaminada
 
-            OBJETIVO: Clasificar al lead en "alto" (caliente) o "medio" (tibio).
-            
-            CRITERIOS "ALTO" (Caliente):
-            1. Desea comprar DENTRO de los próximos 90 días (menos de 3 meses).
-            2. Y menciona contar con cuota inicial o financiamiento listo.
-            
-            CRITERIOS "MEDIO" (Tibio):
-            1. Desea comprar en MÁS de 90 días.
-            2. O tiene cuota inicial parcial.
-            3. O simplemente ha respondido y avanzado en la conversación (demuestra interés).
-            4. CUALQUIER lead que haya interactuado y no sea "ALTO" ni "BAJO" (frío = no responde), debe ser "MEDIO".
-            
-            IMPORTANTE:
-            - Si el lead ha respondido preguntas clave (dormitorios, distrito, etc.), YA NO ES FRÍO. Debe ser clasificado.
-            - Si no cumple estrictamente criterios de ALTO, clasifícalo como MEDIO.
+            CRITERIO MEDIO:
+            - Todo lead que sí interactuó y avanzó, pero no cumple lo de ALTO
+            - Si respondió preguntas clave y no está frío, clasifícalo como MEDIO
 
-            Responde ÚNICAMENTE con el siguiente formato JSON válido:
-            {
-              "clasificacion": "alto" | "medio" | null,
-              "razon": "explicación breve de 1 línea"
-            }
+            Devuelve un resultado por cada session_id.
+
+            ${sesiones.map((sesion) => `
+[SESSION_ID=${sesion.id}]
+${sesion.resumenConversacion}
+`).join('\n')}
         `;
 
         try {
-            const response = await this.llm.invoke(prompt);
-            const content = response.content.toString().replace(/```json/g, '').replace(/```/g, '').trim();
-            const resultado = JSON.parse(content);
+            const extractor = (this.llm as any).withStructuredOutput(BatchSchema, { includeRaw: true });
+            const response = await extractor.invoke(prompt);
+            const parsed = response?.parsed?.resultados || response?.resultados || [];
+            const raw = response?.raw;
 
-            // Validar que la clasificación sea válida
-            if (resultado.clasificacion !== 'alto' && resultado.clasificacion !== 'medio') {
-                return { clasificacion: null, razon: 'No clasificable por IA' };
+            if (raw) {
+                const usage = raw?.usage_metadata || raw?.response_metadata?.usage;
+                if (usage) {
+                    await this.tokenTrackingService.registrar({
+                        fase: 'lead_scoring',
+                        modelo: raw?.response_metadata?.model_name || 'gpt-4.1-mini',
+                        inputTokens: usage.prompt_tokens || usage.input_tokens || 0,
+                        outputTokens: usage.completion_tokens || usage.output_tokens || 0,
+                        metadatos: { batchSize: sesiones.length, sessionIds: sesiones.map((sesion) => sesion.id) },
+                    });
+                }
             }
 
-            return resultado;
+            return sesiones.map((sesion) => {
+                const found = parsed.find((item: any) => item.session_id === sesion.id);
+                if (!found || (found.clasificacion !== 'alto' && found.clasificacion !== 'medio')) {
+                    return {
+                        sessionId: sesion.id,
+                        clasificacion: null,
+                        razon: 'No clasificable por IA',
+                    };
+                }
+
+                return {
+                    sessionId: sesion.id,
+                    clasificacion: found.clasificacion,
+                    razon: found.razon || 'Clasificación automática',
+                };
+            });
         } catch (e) {
-            this.logger.error('Error parseando respuesta de IA', e);
-            return { clasificacion: null, razon: 'Error en análisis IA' };
+            this.logger.warn('Fallo structured output con raw, intentando fallback simple...', e);
+            try {
+                const extractor = this.llm.withStructuredOutput(BatchSchema);
+                const response = await extractor.invoke(prompt);
+                const parsed = response?.resultados || [];
+
+                return sesiones.map((sesion) => {
+                    const found = parsed.find((item: any) => item.session_id === sesion.id);
+                    if (!found || (found.clasificacion !== 'alto' && found.clasificacion !== 'medio')) {
+                        return {
+                            sessionId: sesion.id,
+                            clasificacion: null,
+                            razon: 'No clasificable por IA',
+                        };
+                    }
+
+                    return {
+                        sessionId: sesion.id,
+                        clasificacion: found.clasificacion,
+                        razon: found.razon || 'Clasificación automática',
+                    };
+                });
+            } catch (fallbackError) {
+                this.logger.error('Error parseando respuesta de IA', fallbackError);
+                return sesiones.map((sesion) => ({
+                    sessionId: sesion.id,
+                    clasificacion: null,
+                    razon: 'Error en análisis IA',
+                }));
+            }
         }
     }
 

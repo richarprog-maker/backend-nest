@@ -5,8 +5,6 @@ import { ConfigService } from '@nestjs/config';
 import { QdrantVectorService } from '../qdrant-vector.service';
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { StringOutputParser } from '@langchain/core/output_parsers';
-import { RunnableSequence } from '@langchain/core/runnables';
 import { ProjectsSearchService } from '../projects-search.service';
 import { WapiService } from '../../webhook_meta/wapi.service';
 import { InboxService } from '../../inbox/inbox.service';
@@ -27,6 +25,8 @@ import {
     resolveMentionedProjects
 } from './utils/faq-project.utils';
 import { convertGoogleDriveToDirectUrl, formatMonto } from './utils/tool-format.utils';
+import { parseSessionSummary } from '../utils/session-summary.utils';
+import { TokenTrackingService } from '../token-tracking.service';
 
 @Injectable()
 export class ToolsExecutionService {
@@ -48,12 +48,86 @@ export class ToolsExecutionService {
         @InjectRepository(ColeccionQdrant) private coleccionQdrantRepo: Repository<ColeccionQdrant>,
         private resumenService: ResumenConversacionService,
         private servicioSperant: ServicioSperantService,
+        private tokenTrackingService: TokenTrackingService,
     ) {
         this.llm = new ChatOpenAI({
             modelName: 'gpt-4o-mini',
             temperature: 0,
             openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
         });
+    }
+
+    private extractTokens(result: any): { input: number; output: number } | undefined {
+        const usage = result?.usage_metadata || result?.response_metadata?.usage;
+
+        if (!usage) {
+            return undefined;
+        }
+
+        return {
+            input: usage.prompt_tokens || usage.input_tokens || 0,
+            output: usage.completion_tokens || usage.output_tokens || 0,
+        };
+    }
+
+    private async registrarTokensFaq(
+        leadUuid: string | undefined,
+        codigoEmpresa: number | undefined,
+        response: any,
+        metadatos?: any,
+    ): Promise<void> {
+        const tokens = this.extractTokens(response);
+        if (!tokens) return;
+
+        await this.tokenTrackingService.registrar({
+            leadUuid,
+            codigoEmpresa,
+            fase: 'faq_llm',
+            modelo: response?.response_metadata?.model_name || 'gpt-4o-mini',
+            inputTokens: tokens.input,
+            outputTokens: tokens.output,
+            metadatos,
+        });
+    }
+
+    private getFaqDirectResponse(
+        docs: FaqDocumentResult[],
+        modoBusqueda: 'active_only' | 'project_only' | 'multi_project',
+    ): string | null {
+        if (docs.length === 0) {
+            return null;
+        }
+
+        if (modoBusqueda === 'multi_project') {
+            return null;
+        }
+
+        const uniqueProjects = new Set(docs.map((doc) => doc.proyectoId));
+        if (uniqueProjects.size !== 1) {
+            return null;
+        }
+
+        const buildAnswerFromDoc = (doc: FaqDocumentResult): string | null => {
+            const meta = doc.document.metadata || {};
+            const answer = (meta.respuesta || meta.answer || meta.content || doc.document.pageContent || '').toString().trim();
+            return answer || null;
+        };
+
+        if (docs.length === 1 && docs[0].score >= 0.85) {
+            return buildAnswerFromDoc(docs[0]);
+        }
+
+        if (docs.length <= 2 && docs.every((doc) => doc.score >= 0.78)) {
+            const answers = docs
+                .map((doc) => buildAnswerFromDoc(doc))
+                .filter((value): value is string => !!value && value.length <= 420);
+
+            if (answers.length === docs.length) {
+                return answers.join('\n\n');
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -250,16 +324,69 @@ export class ToolsExecutionService {
         }
     }
 
-    async guardarProyecto(params: { nombre_proyecto: string }, codigoEmpresa: number, leadUuid: string): Promise<any> {
+    private async resolverProyectoPorSeleccion(
+        seleccion: string | undefined,
+        codigoEmpresa: number
+    ): Promise<Proyecto | null> {
+        const limpio = normalizeToolText(seleccion || '');
+        if (!limpio) {
+            return null;
+        }
+
+        const proyectos = await this.obtenerProyectosActivosOrdenados(codigoEmpresa);
+        if (proyectos.length === 0) {
+            return null;
+        }
+
+        const ordinalMap: Record<string, number> = {
+            '1': 0,
+            'uno': 0,
+            'primer': 0,
+            'primero': 0,
+            '2': 1,
+            'dos': 1,
+            'segundo': 1,
+            'segunda': 1,
+            '3': 2,
+            'tres': 2,
+            'tercero': 2,
+            'tercera': 2,
+            '4': 3,
+            'cuatro': 3,
+            'cuarto': 3,
+            'cuarta': 3,
+        };
+
+        const exactIndex = ordinalMap[limpio];
+        if (exactIndex !== undefined && proyectos[exactIndex]) {
+            return proyectos[exactIndex];
+        }
+
+        const numberMatch = limpio.match(/\b(\d{1,2})\b/);
+        if (numberMatch) {
+            const index = Number(numberMatch[1]) - 1;
+            if (index >= 0 && index < proyectos.length) {
+                return proyectos[index];
+            }
+        }
+
+        return null;
+    }
+
+    async guardarProyecto(params: { nombre_proyecto: string; mensaje_usuario_original?: string }, codigoEmpresa: number, leadUuid: string): Promise<any> {
         try {
             const nombre = params.nombre_proyecto?.trim();
             if (!nombre) {
                 return { success: false, mensaje: 'No se proporciono nombre de proyecto.' };
             }
 
-            const proyecto = await this.proyectosRepo.findOne({
+            let proyecto = await this.proyectosRepo.findOne({
                 where: { nombre: ILike(`%${nombre}%`), codigoEmpresa }
             });
+
+            if (!proyecto) {
+                proyecto = await this.resolverProyectoPorSeleccion(params.mensaje_usuario_original || nombre, codigoEmpresa);
+            }
 
             if (!proyecto) {
                 return { success: false, mensaje: `No se encontro un proyecto con el nombre "${nombre}".` };
@@ -294,37 +421,8 @@ export class ToolsExecutionService {
             // Determinar paso pendiente usando el resumen de sesion
             let instruccionContinuacion = '';
             if (esCambio) {
-                const resumen = sesion?.resumenConversacion || '';
-                const tiene = (p: RegExp) => p.test(resumen);
-
-                const tieneDormitorios = tiene(/dormitorio/i);
-                const tieneProposito = tiene(/prop.?sito|para vivir|inversi.?n/i);
-                const tieneZona = tiene(/zona preferida/i);
-                const tienetiempoCompra = tiene(/tiempo de compra/i);
-                const tieneFinanciamiento = tiene(/financiamiento/i);
-                const tienePresupuesto = tiene(/presupuesto|cuota/i);
-                const tieneNombre = tiene(/identificado/i);
-                const tieneDni = tiene(/dni capturado/i);
-                const tieneOcupacion = tiene(/ocupaci.?n/i);
-                const tieneIngresos = tiene(/ingresos mensuales/i);
-                const tieneProforma = tiene(/cotiz.?|proforma/i);
-
-                let pasoPendiente = 1;
-                if (!tieneDormitorios) pasoPendiente = 1;
-                else if (!tieneProposito || !tieneZona) pasoPendiente = 2;
-                else if (!tienetiempoCompra) pasoPendiente = 3;
-                else if (!tieneFinanciamiento) pasoPendiente = 4;
-                else if (!tienePresupuesto) pasoPendiente = 5;
-                else if (!tieneNombre || !tieneDni) pasoPendiente = 8;
-                else if (!tieneOcupacion || !tieneIngresos) pasoPendiente = 9;
-                else if (!tieneProforma) pasoPendiente = 9;
-                else pasoPendiente = 11;
-
-                if (tieneDormitorios && tieneProposito && tieneZona && tienetiempoCompra && tieneFinanciamiento && tienePresupuesto && pasoPendiente < 6) {
-                    pasoPendiente = 6;
-                }
-
-                instruccionContinuacion = ` <<INSTRUCCION_IA: El cliente acaba de cambiarse al proyecto "${proyecto.nombre}". Los datos de fases previas (dormitorios, proposito, zona, tiempo de compra, financiamiento, presupuesto${tieneNombre ? ', nombre' : ''}${tieneDni ? ', DNI' : ''}) son VALIDOS para este nuevo proyecto. NO vuelvas a preguntar esos datos. Continua directamente desde el PASO ${pasoPendiente} del flujo. Si el paso es 6, busca departamentos en "${proyecto.nombre}" con los dormitorios que ya tienes en el resumen.>>`;
+                const resumen = parseSessionSummary(sesion?.resumenConversacion || '');
+                instruccionContinuacion = ` <<INSTRUCCION_IA: El cliente acaba de cambiarse al proyecto "${proyecto.nombre}". Los datos de fases previas (dormitorios, proposito, zona, tiempo de compra, financiamiento, presupuesto${resumen.nombreCompleto ? ', nombre' : ''}${resumen.dni ? ', DNI' : ''}) son VALIDOS para este nuevo proyecto. NO vuelvas a preguntar esos datos. Continua directamente desde el PASO ${resumen.pasoPendiente} del flujo. Si el paso es 6 y ya tienes dormitorios, busca departamentos en "${proyecto.nombre}" usando esos dormitorios del resumen.>>`;
             }
 
             return {
@@ -401,13 +499,13 @@ export class ToolsExecutionService {
                 const puntosResumen: string[] = [];
                 if (updateData.nombre || updateData.apellido) {
                     const nombreCompleto = `${updateData.nombre || ''} ${updateData.apellido || ''}`.trim();
-                    puntosResumen.push(`Identificado: ${nombreCompleto}`);
+                    puntosResumen.push(`Paso 8 - Nombre completo: ${nombreCompleto}`);
                 }
                 if (updateData.dni) {
-                    puntosResumen.push(`DNI capturado: ${updateData.dni}`);
+                    puntosResumen.push(`Paso 8 - DNI: ${updateData.dni}`);
                 }
                 if (updateData.email) {
-                    puntosResumen.push(`Email registrado: ${updateData.email}`);
+                    puntosResumen.push(`Paso 11 - Email: ${updateData.email}`);
                 }
 
                 if (puntosResumen.length > 0) {
@@ -913,7 +1011,7 @@ DATOS DE LA CITA:
      */
     async buscarPreguntasFrecuentes(params: any, proyectoId?: number) {
         try {
-            const { queries_de_busqueda, nombre_proyecto, codigoEmpresa, proyectoIdSesion } = params;
+            const { queries_de_busqueda, nombre_proyecto, codigoEmpresa, proyectoIdSesion, leadUuid } = params;
             const proyectoSesion = proyectoIdSesion || proyectoId || null;
             this.logger.log(`Buscando FAQ: ${queries_de_busqueda.join(', ')} en ${nombre_proyecto || 'proyecto activo'}`);
 
@@ -1014,7 +1112,31 @@ DATOS DE LA CITA:
             this.logger.debug(`Contexto FAQ: ${contexto}`);
 
             if (!contexto.trim()) {
-                return "Lo siento, no tengo esa información específica en mi base de datos de preguntas frecuentes.";
+                return "[ACCION_COMPLETADA] No encontre informacion especifica sobre esa consulta en mis registros. <<INSTRUCCION_IA: No inventes ni sigas insistiendo con la misma pregunta. Si esta duda bloquea la decision del cliente o el cliente insiste, activa modo contencion y ofrece agendar una visita para que lo atienda un asesor.>>";
+            }
+
+            const proyectoPrincipal = proyectosObjetivo[0];
+            const proyectoSesionActual = proyectosActivos.find(p => p.id === proyectoSesion) || null;
+
+            let instruccionNoCambio = '<<INSTRUCCION_IA: Mantén el proyecto actual del cliente tal como está.>>';
+
+            if (modoBusqueda !== 'active_only') {
+                instruccionNoCambio = `<<INSTRUCCION_IA: La respuesta se obtuvo usando FAQs de ${modoBusqueda === 'multi_project' ? 'varios proyectos' : `\"${proyectoPrincipal?.nombre || 'otro proyecto'}\"`} sin cambiar el proyecto actual del cliente. NO ejecutes guardar_proyecto a menos que el cliente confirme explícitamente que quiere cambiarse.>>`;
+            }
+
+            let instruccionCambioProyecto = '';
+            if (
+                modoBusqueda === 'project_only' &&
+                proyectoPrincipal &&
+                proyectoSesionActual &&
+                proyectoPrincipal.id !== proyectoSesionActual.id
+            ) {
+                instruccionCambioProyecto = ` <<INSTRUCCION_IA: Después de responder, pregúntale explícitamente: "Tu proyecto actual es ${proyectoSesionActual.nombre}. ¿Te gustaría cambiarte a ${proyectoPrincipal.nombre}?" Si el cliente confirma con un sí claro, recién ejecuta guardar_proyecto y desde ese momento continúa todo el flujo usando ${proyectoPrincipal.nombre}.>>`;
+            }
+
+            const respuestaDeterministica = this.getFaqDirectResponse(docs, modoBusqueda);
+            if (respuestaDeterministica) {
+                return `[ACCION_COMPLETADA] ${respuestaDeterministica} ${instruccionNoCambio}${instruccionCambioProyecto}`;
             }
 
             const promptTemplate = ChatPromptTemplate.fromTemplate(`
@@ -1041,43 +1163,25 @@ REGLAS:
 
 RESPUESTA:`);
 
-            const chain = RunnableSequence.from([
-                promptTemplate,
-                this.llm,
-                new StringOutputParser(),
-            ]);
-
-            const resultado = await chain.invoke({
+            const faqPromptMessages = await promptTemplate.formatMessages({
                 context: contexto,
                 question: queryPrincipal,
                 search_mode: modoBusqueda,
                 session_project_name: proyectosActivos.find(p => p.id === proyectoSesion)?.nombre || 'sin proyecto activo',
                 searched_projects: proyectosObjetivo.map(p => p.nombre).join(', '),
             });
+            const faqResponse = await this.llm.invoke(faqPromptMessages);
+            await this.registrarTokensFaq(leadUuid, codigoEmpresa, faqResponse, {
+                modoBusqueda,
+                proyectoSesion,
+                proyectosObjetivo: proyectosObjetivo.map((proyecto) => proyecto.id),
+            });
+            const resultado = faqResponse.content?.toString().trim() || '';
 
             this.logger.debug(`Respuesta LLM FAQ: ${resultado}`);
 
             if (!resultado || resultado.toLowerCase().includes("no encontré") || resultado.toLowerCase().includes("no tengo información")) {
-                return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. <<INSTRUCCION_IA: Continua la conversacion con naturalidad.>>";
-            }
-
-            const proyectoPrincipal = proyectosObjetivo[0];
-            const proyectoSesionActual = proyectosActivos.find(p => p.id === proyectoSesion) || null;
-
-            let instruccionNoCambio = '<<INSTRUCCION_IA: Mantén el proyecto actual del cliente tal como está.>>';
-
-            if (modoBusqueda !== 'active_only') {
-                instruccionNoCambio = `<<INSTRUCCION_IA: La respuesta se obtuvo usando FAQs de ${modoBusqueda === 'multi_project' ? 'varios proyectos' : `\"${proyectoPrincipal?.nombre || 'otro proyecto'}\"`} sin cambiar el proyecto actual del cliente. NO ejecutes guardar_proyecto a menos que el cliente confirme explícitamente que quiere cambiarse.>>`;
-            }
-
-            let instruccionCambioProyecto = '';
-            if (
-                modoBusqueda === 'project_only' &&
-                proyectoPrincipal &&
-                proyectoSesionActual &&
-                proyectoPrincipal.id !== proyectoSesionActual.id
-            ) {
-                instruccionCambioProyecto = ` <<INSTRUCCION_IA: Después de responder, pregúntale explícitamente: "Tu proyecto actual es ${proyectoSesionActual.nombre}. ¿Te gustaría cambiarte a ${proyectoPrincipal.nombre}?" Si el cliente confirma con un sí claro, recién ejecuta guardar_proyecto y desde ese momento continúa todo el flujo usando ${proyectoPrincipal.nombre}.>>`;
+                return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. <<INSTRUCCION_IA: No inventes ni reformules la misma consulta en bucle. Si esta duda es importante para que el cliente decida o ya hubo friccion, activa modo contencion y ofrece agendar una visita para que lo atienda un asesor.>>";
             }
 
             return `[ACCION_COMPLETADA] ${resultado} ${instruccionNoCambio}${instruccionCambioProyecto}`;
@@ -1087,7 +1191,7 @@ RESPUESTA:`);
                 return "[INFO_FALTANTE] No tengo un proyecto seleccionado en este momento. <<INSTRUCCION_IA: Pregúntale al cliente sobre qué proyecto en específico tiene esta duda.>>";
             }
             this.logger.error(`Error en buscarPreguntasFrecuentes: ${error.message}`);
-            return "Hubo un error consultando las preguntas frecuentes.";
+            return "[ACCION_COMPLETADA] Hubo un problema al consultar esa informacion. <<INSTRUCCION_IA: No sigas insistiendo ni prometas el dato. Activa modo contencion y ofrece agendar una visita para que lo atienda un asesor.>>";
         }
     }
 
@@ -1318,10 +1422,11 @@ RESPUESTA:`);
             // Capturar datos del cliente en el resumen (con ocupación corregida)
             if (params.leadUuid && params.codigoEmpresa) {
                 const puntos: string[] = [];
-                if (ocupacionCorregida) puntos.push(`Ocupación: ${ocupacionCorregida}`);
-                if (params.ingresos) puntos.push(`Ingresos mensuales: ${ingresosFormateados}`);
+                if (ocupacionCorregida) puntos.push(`Paso 9 - Ocupación: ${ocupacionCorregida}`);
+                if (params.ingresos) puntos.push(`Paso 9 - Ingresos mensuales: ${ingresosFormateados}`);
                 if (params.unidad && params.precio) {
-                    puntos.push(`Cotizó unidad ${params.unidad} (${params.dormitorios || '?'} dorms, ${precioFormateado})`);
+                    puntos.push(`Paso 6 - Unidad de interes: ${params.unidad}`);
+                    puntos.push(`Paso 9 - Proforma generada para unidad ${params.unidad} (${params.dormitorios || '?'} dorms, ${precioFormateado})`);
                 }
 
                 if (puntos.length > 0) {
@@ -1371,7 +1476,7 @@ RESPUESTA:`);
                 }
             }
 
-            return `[ACCION_COMPLETADA] Proforma generada y enviada al cliente por WhatsApp. <<INSTRUCCION_IA: Dile que ya se la enviaste y pregunta si quiere ver el recorrido virtual.>>`;
+            return `[ACCION_COMPLETADA] Proforma generada y enviada al cliente por WhatsApp. <<INSTRUCCION_IA: Dile que ya se la enviaste y ofrece coordinar la visita preguntando dia y hora. NO ofrezcas recorrido virtual ni videos salvo que el cliente lo pida.>>`;
 
         } catch (error) {
             this.logger.error(`Error generando proforma: ${error.message}`);
@@ -2080,11 +2185,11 @@ RESPUESTA:`);
             // Si no hay phoneNumber o url_floor_plan
             return metadata.url_floor_plan
                 ? `Aquí está el link del plano: ${metadata.url_floor_plan}`
-                : `No tengo el plano de la unidad ${params.unidad_id} disponible`;
+                : `[ACCION_COMPLETADA] No tengo el plano de la unidad ${params.unidad_id} disponible. <<INSTRUCCION_IA: No inventes disponibilidad de plano ni insistas con el mismo envio. Si el cliente necesita ese plano para decidir, activa modo contencion y ofrece agendar una visita para que lo atienda un asesor.>>`;
 
         } catch (error) {
             this.logger.error(`Error en enviarMapa: ${error.message}`);
-            return `Ocurrió un error al buscar el plano de la unidad ${params.unidad_id}`;
+            return `[ACCION_COMPLETADA] Ocurrio un error al buscar el plano de la unidad ${params.unidad_id}. <<INSTRUCCION_IA: No reintentes automaticamente ni pidas la misma confirmacion varias veces. Explica la limitacion una sola vez y ofrece continuar con otra unidad o agendar una visita para que un asesor lo atienda.>>`;
         }
     }
 

@@ -16,7 +16,7 @@ import { RedisService } from '../common/redis/redis.service';
 @Injectable()
 export class AiService {
     private readonly logger = new Logger(AiService.name);
-    private readonly maxHistorialMensajes = 20;
+    private readonly maxHistorialMensajes = 6;
 
     constructor(
         private agentService: AgentService,
@@ -96,23 +96,32 @@ export class AiService {
                 }
             });
 
+            // Carga inicial solo para obtener proyectoId (antes de actualizar resumen)
+            const sesionPrevia = await this.sesionRepo.findOne({
+                where: { leadUuid, codigoEmpresa }
+            });
+            const proyectoId = sesionPrevia?.proyectoId || null;
+            const proyectosActivos = await this.proyectoRepo.find({
+                where: { codigoEmpresa, estado: 'activo' }
+            });
+
+            await this.agentService.actualizarResumenSesion(mensajeUsuario, leadUuid, codigoEmpresa, {
+                omitirSiSeleccionProyectoNumerica: !proyectoId && proyectosActivos.length > 1 && /^\s*\d{1,2}\s*$/.test(mensajeUsuario || ''),
+            });
+
+            // Recargar sesión DESPUÉS de actualizar el resumen para obtener datos frescos
+            const sesion = await this.sesionRepo.findOne({
+                where: { leadUuid, codigoEmpresa }
+            });
+
             const botConfig = await this.botRepo.findOne({
                 where: { codigoEmpresa, habilitado: 1 }
             });
             const botName = botConfig?.nombre || 'Checor advisor';
             const botGender = botConfig?.genero || 'female';
 
-            const sesion = await this.sesionRepo.findOne({
-                where: { leadUuid, codigoEmpresa }
-            });
-            const proyectoId = sesion?.proyectoId || null;
-
             let metadatosEmpresa: any[] = [];
             let resumenProyectos = '';
-
-            const proyectosActivos = await this.proyectoRepo.find({
-                where: { codigoEmpresa, estado: 'activo' }
-            });
             metadatosEmpresa = proyectosActivos.map(p => {
                 let horarioAtencion = [];
                 if (p.jsonData && p.jsonData['horario_atencion']) {
@@ -137,7 +146,7 @@ export class AiService {
 
             const tieneHistorial = historialFormateado.length > 0;
 
-            const systemPrompt = this.promptService.buildSystemPrompt(
+            const promptConfig = this.promptService.buildPromptConfig(
                 botName,
                 botGender,
                 metadatosEmpresa,
@@ -150,7 +159,7 @@ export class AiService {
             );
 
             const resultado = await this.agentService.ejecutarAgente(
-                systemPrompt,
+                promptConfig,
                 mensajeUsuario,
                 historialFormateado,
                 {
@@ -159,6 +168,11 @@ export class AiService {
                     nombreLead: botName,
                     phoneNumber: phoneNumber,
                     proyectoId: proyectoId,
+                    pasoPendiente: promptConfig.pasoPendiente,
+                    resumenSesion: sesion?.resumenConversacion,
+                    tieneCitaActiva: !!citaData && ['pendiente', 'confirmada'].includes(citaData.estadoCita),
+                    resumenActualizado: true,
+                    mensajeUsuarioOriginal: mensajeUsuario,
                 }
             );
             await this.historialChatService.guardarMensaje({

@@ -1,101 +1,122 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { ChatOpenAI } from '@langchain/openai';
-import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 
 @Injectable()
 export class SmartSplitService {
     private readonly logger = new Logger(SmartSplitService.name);
-    private chatModel: ChatOpenAI;
-
-    private readonly systemPrompt = `
-Eres un experto en UX conversacional para WhatsApp.
-Tu misión es recibir un texto y dividirlo en "burbujas" (mensajes separados) para que la lectura sea fluida y natural.
-
-# REGLA FUNDAMENTAL (MÁXIMA PRIORIDAD)
-**JAMÁS INVENTES o AGREGUES contenido que NO esté en el texto original.**
-- NO agregues saludos ("Hola", "Buenos días", "Espero que estés bien", etc.)
-- NO agregues emojis que no estén en el original
-- NO agregues frases de cortesía ("Claro", "Por supuesto", etc.) si no están
-- SOLO divide el texto existente, NUNCA lo modifices ni le añadas nada
-
-# REGLAS PARA DIVIDIR:
-1.  **Separa la pregunta final o CTA**. La última frase que invita al usuario a responder DEBE ir sola en su propia burbuja.
-
-2.  **MANTÉN LISTAS Y DETALLES JUNTOS (CRÍTICO - NUNCA SEPARES)**.
-    - Si hay opciones numeradas (1., 2., 3...), TODAS JUNTAS en el mismo bloque.
-    - Si hay viñetas con campos de datos (• Dormitorios:, • Área:, • Piso:, • Vista:, • Precio:, etc.), TODAS JUNTAS en el mismo bloque.
-    - JAMÁS separes "• Dormitorios: 2" en un mensaje y "• Área: 53m²" en otro.
-    - JAMÁS separes "1. Unidad X" en un mensaje y "2. Unidad Y" en otro.
-    - Si hay una frase introductoria corta antes de la lista (ej: "Esta es la información de la Unidad 606:"), inclúyela CON la lista en el mismo bloque.
-
-3.  Si el texto ya tiene un saludo, agrúpalo con la siguiente frase. Si NO tiene saludo, NO inventes uno.
-
-4.  El resultado debe contener EXACTAMENTE las mismas palabras que el texto original, solo dividido.
-
-# EJEMPLOS:
-Ejemplo 1 - Detalles con viñetas (MANTENER TODO JUNTO):
-Texto: "Esta es la información de la Unidad 606: • Dormitorios: 2 • Área total: 53.74 m² • Piso: 6 • Vista: interior • Precio: S/377,000. ¿Te gustaría avanzar con esta unidad?"
-json
-{
-  "messages": [
-    "Esta es la información de la Unidad 606:\\n• Dormitorios: 2\\n• Área total: 53.74 m²\\n• Piso: 6\\n• Vista: interior\\n• Precio: S/377,000.",
-    "¿Te gustaría avanzar con esta unidad?"
-  ]
-}
-
-Ejemplo 2 - Lista numerada (MANTENER TODO JUNTO):
-Texto: "Ya te envié el brochure. Aquí están las opciones: 1. Unidad A 2. Unidad B. ¿Cuál prefieres?"
-json
-{
-  "messages": [
-    "Ya te envié el brochure.",
-    "Aquí están las opciones: 1. Unidad A 2. Unidad B.",
-    "¿Cuál prefieres?"
-  ]
-}
-`;
-
-    constructor(private configService: ConfigService) {
-        this.chatModel = new ChatOpenAI({
-            openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
-            modelName: 'gpt-4o-mini',
-            temperature: 0,
-            modelKwargs: { response_format: { type: "json_object" } }
-        });
-    }
 
     async splitMessage(text: string): Promise<string[]> {
+        if (!text) return [''];
 
-        if (!text) return [""];
-        if (text.length < 100) return [text];
+        const normalized = text.replace(/\r\n/g, '\n').trim();
+        if (!normalized) return [''];
+        if (normalized.length < 100) return [normalized];
 
         try {
-            const response = await this.chatModel.invoke([
-                new SystemMessage(this.systemPrompt),
-                new HumanMessage(text)
-            ]);
+            const paragraphs = normalized
+                .split(/\n{2,}/)
+                .map((block) => block.trim())
+                .filter(Boolean);
 
-            const content = response.content.toString();
-            const parsed = JSON.parse(content);
-
-            if (!parsed.messages || !Array.isArray(parsed.messages) || parsed.messages.length === 0) {
-                return [text];
+            if (paragraphs.length === 0) {
+                return [normalized];
             }
 
-            const inputNormalized = text.replace(/\s+/g, '').toLowerCase();
-            const outputNormalized = parsed.messages.join('').replace(/\s+/g, '').toLowerCase();
-            if (Math.abs(inputNormalized.length - outputNormalized.length) > 10) {
-                this.logger.warn(`SmartSplit intentó modificar el contenido (Diff: ${Math.abs(inputNormalized.length - outputNormalized.length)}). Retornando original.`);
-                this.logger.debug(`Original: ${text}`);
-                this.logger.debug(`Generado: ${parsed.messages.join('|')}`);
-                return [text];
+            const groupedBlocks: string[] = [];
+
+            for (let i = 0; i < paragraphs.length; i++) {
+                const current = paragraphs[i];
+                const next = paragraphs[i + 1];
+
+                if (
+                    next &&
+                    !this.isListBlock(current) &&
+                    this.isListBlock(next) &&
+                    this.shouldAttachIntroToList(current)
+                ) {
+                    groupedBlocks.push(`${current}\n\n${next}`);
+                    i++;
+                    continue;
+                }
+
+                groupedBlocks.push(current);
             }
 
-            return parsed.messages;
+            const bubbles = groupedBlocks.flatMap((block) => this.splitRegularBlock(block));
+            const withFinalCta = this.splitFinalCallToAction(bubbles);
+
+            return withFinalCta.filter((bubble) => bubble.trim().length > 0);
         } catch (error) {
-            this.logger.error('Error splitting message, returning original', error);
-            return [text];
+            this.logger.error('Error in deterministic SmartSplit, returning original', error);
+            return [normalized];
         }
+    }
+
+    private splitRegularBlock(block: string): string[] {
+        if (!block.trim()) return [];
+        if (this.isListBlock(block)) return [block.trim()];
+        if (block.length <= 420) return [block.trim()];
+
+        const sentences = block.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [block];
+        const chunks: string[] = [];
+        let current = '';
+
+        for (const sentence of sentences) {
+            const candidate = current ? `${current} ${sentence}` : sentence;
+
+            if (candidate.length <= 320) {
+                current = candidate;
+                continue;
+            }
+
+            if (current) {
+                chunks.push(current.trim());
+            }
+
+            current = sentence;
+        }
+
+        if (current.trim()) {
+            chunks.push(current.trim());
+        }
+
+        return chunks.length > 0 ? chunks : [block.trim()];
+    }
+
+    private splitFinalCallToAction(bubbles: string[]): string[] {
+        if (bubbles.length === 0) return bubbles;
+
+        const lastBubble = bubbles[bubbles.length - 1];
+        if (this.isListBlock(lastBubble)) return bubbles;
+
+        const match = lastBubble.match(/^([\s\S]*?)(\s*(?:¿[^?]+\?|[^.!?\n][^?\n]*\?)\s*)$/);
+        if (!match) return bubbles;
+
+        const body = match[1]?.trim();
+        const cta = match[2]?.trim();
+
+        if (!body || !cta) return bubbles;
+        if (body.length < 25) return bubbles;
+
+        return [...bubbles.slice(0, -1), body, cta];
+    }
+
+    private shouldAttachIntroToList(text: string): boolean {
+        const normalized = text.replace(/\s+/g, ' ').trim();
+        return normalized.length <= 180 || /[:：]$/.test(normalized);
+    }
+
+    private isListBlock(text: string): boolean {
+        const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+        if (lines.length === 0) return false;
+
+        const listLines = lines.filter((line) =>
+            /^([•*-]|\d+[.)])\s+/.test(line) ||
+            /^[•*-]\s*\w+/i.test(line)
+        );
+
+        if (listLines.length >= 2) return true;
+
+        const inlineEnumerations = text.match(/\b\d+[.)]\s+[^\n]+/g) || [];
+        return inlineEnumerations.length >= 2;
     }
 }

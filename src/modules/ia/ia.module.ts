@@ -11,6 +11,7 @@ import { ProjectsSearchService } from './projects-search.service';
 import { HistorialChatAi } from './entities/historial-chat-ai.entity';
 import { SesionConversacion } from './entities/sesion-conversacion.entity';
 import { Bot } from './entities/bot.entity';
+import { IaTokenLog } from './entities/ia-token-log.entity';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
 import { Proyecto } from '../proyectos/entities/proyecto.entity';
@@ -21,6 +22,7 @@ import { InboxModule } from '../inbox/inbox.module';
 import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-leads.module';
 import { ResumenConversacionService } from './resumen-conversacion.service';
 import { SperantModule } from '../sperant/sperant.module';
+import { TokenTrackingService } from './token-tracking.service';
 
 @Module({
     imports: [
@@ -30,7 +32,7 @@ import { SperantModule } from '../sperant/sperant.module';
         forwardRef(() => import('../webhook_meta/webhook.module').then(m => m.WebhookModule)),
         forwardRef(() => InboxModule),
         SperantModule,
-        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, Lead, Cita, Proyecto, ColeccionQdrant]),
+        TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, IaTokenLog, Lead, Cita, Proyecto, ColeccionQdrant]),
         ClasificacionLeadsModule
     ],
     providers: [
@@ -42,7 +44,8 @@ import { SperantModule } from '../sperant/sperant.module';
         AgentService,
         ProjectsSearchService,
         ResumenConversacionService,
+        TokenTrackingService,
     ],
-    exports: [AiService, HistorialChatService, QdrantVectorService, AgentService, ProjectsSearchService],
+    exports: [AiService, HistorialChatService, QdrantVectorService, AgentService, ProjectsSearchService, TokenTrackingService],
 })
 export class AiModule { }

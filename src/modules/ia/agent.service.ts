@@ -10,6 +10,14 @@ import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { Proyecto } from '../proyectos/entities/proyecto.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { TokenTrackingService } from './token-tracking.service';
+import { parseSessionSummary } from './utils/session-summary.utils';
+
+interface AgentPromptConfig {
+  stablePrompt: string;
+  variablePrompt: string;
+  pasoPendiente: number;
+}
 
 @Injectable()
 export class AgentService {
@@ -23,6 +31,7 @@ export class AgentService {
     private toolsExecutionService: ToolsExecutionService,
     private historialChatService: HistorialChatService,
     private resumenService: ResumenConversacionService,
+    private tokenTrackingService: TokenTrackingService,
     @InjectRepository(Proyecto)
     private proyectosRepo: Repository<Proyecto>,
   ) {
@@ -43,7 +52,7 @@ export class AgentService {
     this.summaryExtractorLlm = new ChatOpenAI({
       modelName: this.configService.get<string>('OPENAI_SUMMARY_MODEL') || 'gpt-4o-mini',
       temperature: 0,
-      maxTokens: 180,
+      maxTokens: 400,
       openAIApiKey: this.configService.get<string>('OPENAI_API_KEY'),
     });
   }
@@ -58,7 +67,7 @@ export class AgentService {
 
   private shouldForceFaqTool(userMessage: string, toolsEjecutados: string[]): boolean {
     if (!userMessage?.trim()) return false;
-    if (toolsEjecutados.includes('buscar_preguntas_frecuentes') || toolsEjecutados.includes('buscar_departamento')) {
+    if (toolsEjecutados.includes('buscar_preguntas_frecuentes')) {
       return false;
     }
 
@@ -87,6 +96,174 @@ export class AgentService {
     ];
 
     return faqPatterns.some((pattern) => pattern.test(normalized));
+  }
+
+  private getBaseToolNamesByPaso(pasoPendiente: number, tieneCitaActiva = false): string[] {
+    if (tieneCitaActiva) {
+      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'reagendar_cita', 'agendar_cita', 'enviar_brochure', 'enviar_videos_proyecto'];
+    }
+
+    if (pasoPendiente <= 5) {
+      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'enviar_brochure', 'enviar_videos_proyecto'];
+    }
+
+    if (pasoPendiente <= 7) {
+      return ['buscar_departamento', 'enviar_plano_departamento', 'descartar_cliente'];
+    }
+
+    if (pasoPendiente <= 9) {
+      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'buscar_departamento', 'validar_dni', 'generar_proforma', 'enviar_brochure', 'enviar_videos_proyecto'];
+    }
+
+    return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'agendar_cita', 'reagendar_cita', 'enviar_brochure', 'enviar_videos_proyecto'];
+  }
+
+  private detectIntentToolNames(userMessage: string): string[] {
+    const normalized = this.normalizeText(userMessage);
+    const tools = new Set<string>();
+
+    if (!normalized) {
+      return [];
+    }
+
+    if (/\bbrochure\b|\bcatalogo\b|\bpdf\b/.test(normalized)) {
+      tools.add('enviar_brochure');
+    }
+
+    if (/\bvideo(s)?\b|\brecorrido\b|\btour virtual\b/.test(normalized)) {
+      tools.add('enviar_videos_proyecto');
+      tools.add('buscar_preguntas_frecuentes');
+    }
+
+    if (/\bplano\b|\bfloor plan\b|\bdistribucion\b/.test(normalized)) {
+      tools.add('enviar_plano_departamento');
+      tools.add('buscar_departamento');
+    }
+
+    if (/\bubicacion\b|\bdireccion\b|\bdonde queda\b|\bmapa\b|\bgoogle maps\b|\bentrega\b|\bhorario\b|\bacabados\b|\barea(s)? comunes\b|\brecorrido virtual\b|\betapa\b/.test(normalized)) {
+      tools.add('buscar_preguntas_frecuentes');
+    }
+
+    if (/\bdni\b|\bdocumento\b/.test(normalized) || /\b\d{8}\b/.test(normalized)) {
+      tools.add('validar_dni');
+    }
+
+    if (/\bproforma\b|\bcotizacion\b|\bcotizar\b/.test(normalized)) {
+      tools.add('generar_proforma');
+    }
+
+    if (/\bcita\b|\bagendar\b|\bagendamos\b|\bvisita\b|\breagendar\b|\bcambiar cita\b|\breprogramar\b/.test(normalized)) {
+      tools.add('agendar_cita');
+      tools.add('reagendar_cita');
+    }
+
+    if (/\bdepartamento\b|\bdepa\b|\bunidades?\b|\bopciones?\b|\bdormitorio\b|\bdorm\b|\bcuartos?\b|\bpiso\b|\bvista\b|\bprecio\b|\bunidad\b/.test(normalized)) {
+      tools.add('buscar_departamento');
+    }
+
+    return Array.from(tools);
+  }
+
+  private getToolSubset(
+    tools: DynamicStructuredTool[],
+    pasoPendiente: number,
+    tieneCitaActiva: boolean,
+    userMessage: string,
+  ): DynamicStructuredTool[] {
+    const baseNames = this.getBaseToolNamesByPaso(pasoPendiente, tieneCitaActiva);
+    const intentNames = this.detectIntentToolNames(userMessage);
+
+   
+    const BLOQUEADOS_EN_PRESENTACION = new Set(['enviar_brochure', 'enviar_videos_proyecto']);
+    const enFasePresentacion = !tieneCitaActiva && pasoPendiente >= 6 && pasoPendiente <= 7;
+
+    const filteredIntent = enFasePresentacion
+      ? intentNames.filter(n => !BLOQUEADOS_EN_PRESENTACION.has(n))
+      : intentNames;
+
+    const toolNames = new Set<string>([...baseNames, ...filteredIntent]);
+
+    const filtered = tools.filter((tool) => toolNames.has(tool.name));
+    return filtered.length > 0 ? filtered : tools;
+  }
+
+  private extractDormitoriosForSearch(resumenSesion?: string): number | number[] | undefined {
+    const parsed = parseSessionSummary(resumenSesion || '');
+    const raw = parsed.dormitorios;
+    if (!raw) return undefined;
+
+    const values = raw
+      .split(/\s+y\s+|,/i)
+      .map((part) => Number(part.trim()))
+      .filter((value) => !Number.isNaN(value));
+
+    if (values.length === 0) return undefined;
+    if (values.length === 1) return values[0];
+    return values;
+  }
+
+  private extractPisoPreference(userMessage: string): 'altos' | 'bajos' | undefined {
+    const normalized = this.normalizeText(userMessage);
+    if (/\bpisos? altos?\b|\balto(s)?\b/.test(normalized)) {
+      return 'altos';
+    }
+    if (/\bpisos? bajos?\b|\bbajo(s)?\b/.test(normalized)) {
+      return 'bajos';
+    }
+    return undefined;
+  }
+
+
+  private hasCompletedDiscoveryForSearch(resumenSesion?: string): boolean {
+    const parsed = parseSessionSummary(resumenSesion || '');
+    return !!parsed.dormitorios && !!parsed.presupuesto;
+  }
+
+
+  private shouldForceDepartmentSearch(
+    _promptConfig: AgentPromptConfig,
+    metadata: {
+      proyectoId?: number;
+      resumenSesion?: string;
+    },
+    toolsEjecutados: string[],
+    _historial: BaseMessage[],
+    _mensajeUsuario: string,
+  ): boolean {
+    if (!metadata.proyectoId) return false;
+    if (toolsEjecutados.includes('buscar_departamento')) return false;
+
+    const dormitorios = this.extractDormitoriosForSearch(metadata.resumenSesion);
+    if (dormitorios === undefined) return false;
+
+    // Recomputar paso real desde el resumen fresco
+    const parsed = parseSessionSummary(metadata.resumenSesion || '');
+
+    if (parsed.pasoPendiente >= 6 && parsed.pasoPendiente <= 7) {
+      return this.hasCompletedDiscoveryForSearch(metadata.resumenSesion);
+    }
+
+    return false;
+  }
+
+  private async registrarTokens(
+    fase: 'main_chat' | 'summary_extract' | 'faq_llm' | 'lead_scoring',
+    metadata: { leadUuid?: string; codigoEmpresa?: number },
+    response: any,
+    extra?: Record<string, any>,
+  ): Promise<void> {
+    const tokens = this.extraerTokens(response);
+    if (!tokens) return;
+
+    await this.tokenTrackingService.registrar({
+      leadUuid: metadata.leadUuid,
+      codigoEmpresa: metadata.codigoEmpresa,
+      fase,
+      modelo: response?.response_metadata?.model_name || this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini',
+      inputTokens: tokens.input,
+      outputTokens: tokens.output,
+      metadatos: extra,
+    });
   }
 
 
@@ -298,7 +475,7 @@ export class AgentService {
     // HERRAMIENTA UNIVERSAL: Busca departamentos por CUALQUIER criterio
     const buscarDepartamentoUniversalTool = new DynamicStructuredTool({
       name: 'buscar_departamento',
-      description: 'HERRAMIENTA ÚNICA Y PRINCIPAL: Busca departamentos en inventario real (Qdrant). SI EL USUARIO PIDE VARIOS TIPOS (ej: "2 y 3 dormitorios"), ENVÍA UN ARRAY: [2, 3]. Busca por: unidad, dormitorios, piso, precio, cuota, vista, tipología, tipo de unidad (Duplex/Flat), área. Retorna información COMPLETA y REAL.',
+      description: 'Busca departamentos en inventario real. SOLO pasa el número de dormitorios (o array si pide varios). NUNCA pases el presupuesto/cuota del cliente como parámetro. SOLO úsala cuando ya estén completos los pasos 1-5 del flujo o cuando el cliente elija una unidad específica.',
       schema: z.object({
         unidad: z.string().optional().describe('Número de unidad específica (ej: "1003", "1701")'),
         dormitorios: z.union([z.number(), z.string(), z.array(z.union([z.number(), z.string()]))]).optional().describe('Cantidad de dormitorios (ej: 2, "monoambiente" o [2, "monoambiente"])'),
@@ -355,8 +532,15 @@ export class AgentService {
         nombre_proyecto: z.string().describe(`Nombre del proyecto que eligio o al que quiere cambiarse. ${nombresProyectosStr}`),
       }),
       func: async (input, config) => {
-        const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};
-        const result = await this.toolsExecutionService.guardarProyecto(input, codigoEmpresa, leadUuid);
+        const { codigoEmpresa, leadUuid, mensajeUsuarioOriginal } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.guardarProyecto(
+          {
+            ...input,
+            mensaje_usuario_original: mensajeUsuarioOriginal,
+          },
+          codigoEmpresa,
+          leadUuid
+        );
         return JSON.stringify(result);
       },
     });
@@ -391,7 +575,7 @@ export class AgentService {
    * @returns Respuesta del agente
    */
   async ejecutarAgente(
-    systemPrompt: string,
+    promptConfigOrSystemPrompt: string | AgentPromptConfig,
     mensajeUsuario: string,
     historial: BaseMessage[] = [],
     metadata: {
@@ -401,6 +585,11 @@ export class AgentService {
       proyectoInteres?: string;
       phoneNumber?: string;
       proyectoId?: number;
+      pasoPendiente?: number;
+      resumenSesion?: string;
+      tieneCitaActiva?: boolean;
+      resumenActualizado?: boolean;
+      mensajeUsuarioOriginal?: string;
     }
   ): Promise<{
     output: string;
@@ -410,13 +599,28 @@ export class AgentService {
     try {
       this.logger.log(`Ejecutando agente para lead: ${metadata.leadUuid}`);
 
-      // Extraer información del mensaje y actualizar resumen de sesión (usa gpt-4o-mini, bajo costo)
-      await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
+      if (!metadata.resumenActualizado) {
+        await this.extraerYGuardarResumen(mensajeUsuario, metadata.leadUuid, metadata.codigoEmpresa);
+      }
 
       const toolsEjecutados: string[] = [];
       let tokensAcumulados = { input: 0, output: 0 };
 
-      const actTools = await this.getTools(metadata.codigoEmpresa);
+      const promptConfig: AgentPromptConfig = typeof promptConfigOrSystemPrompt === 'string'
+        ? {
+          stablePrompt: promptConfigOrSystemPrompt,
+          variablePrompt: '',
+          pasoPendiente: metadata.pasoPendiente || 1,
+        }
+        : promptConfigOrSystemPrompt;
+
+      const allTools = await this.getTools(metadata.codigoEmpresa);
+      const actTools = this.getToolSubset(
+        allTools,
+        promptConfig.pasoPendiente,
+        !!metadata.tieneCitaActiva,
+        mensajeUsuario
+      );
       const modelWithTools = this.llm.bindTools(actTools);
 
       // Construir mensajes iniciales
@@ -443,8 +647,15 @@ export class AgentService {
       const fechaMananaISO = `${tomorrowPeru.getFullYear()}-${String(tomorrowPeru.getMonth() + 1).padStart(2, '0')}-${String(tomorrowPeru.getDate()).padStart(2, '0')}`;
 
       const timeContext = `CONTEXTO TEMPORAL PERU: hoy=${fechaISO}, manana=${fechaMananaISO}, hora_actual=${horaActual}, referencia="${fechaLegible}". Reglas: no agendes en pasado ni fuera de horario; si la fecha es ${fechaISO} di "hoy", si es ${fechaMananaISO} di "mañana".`;
+      const systemMessages: BaseMessage[] = [
+        { role: 'system', content: promptConfig.stablePrompt } as any,
+      ];
 
-      const finalSystemPrompt = `${timeContext}\n\n${systemPrompt}`;
+      if (promptConfig.variablePrompt?.trim()) {
+        systemMessages.push({ role: 'system', content: promptConfig.variablePrompt } as any);
+      }
+
+      systemMessages.push({ role: 'system', content: timeContext } as any);
 
       // Control de herramientas ejecutadas para evitar duplicados
       const accionesEjecutadas = new Set<string>();
@@ -464,7 +675,7 @@ export class AgentService {
 
         // Invocar modelo con tools
         const response = await modelWithTools.invoke([
-          { role: 'system', content: finalSystemPrompt },
+          ...systemMessages,
           ...messages,
           { role: 'user', content: mensajeUsuario }
         ]);
@@ -475,9 +686,79 @@ export class AgentService {
           tokensAcumulados.input += tokens.input;
           tokensAcumulados.output += tokens.output;
         }
+        await this.registrarTokens('main_chat', metadata, response, {
+          iteracion,
+          pasoPendiente: promptConfig.pasoPendiente,
+          toolsDisponibles: actTools.map(tool => tool.name),
+          toolsEjecutados,
+        });
 
         // Si NO hay tool_calls, esta es la respuesta final
         if (!response.tool_calls || response.tool_calls.length === 0) {
+          if (this.shouldForceDepartmentSearch(promptConfig, metadata, toolsEjecutados, messages, mensajeUsuario)) {
+            this.logger.warn('Respuesta sin tool_calls en fase de presentacion. Forzando buscar_departamento.');
+
+            const dormitorios = this.extractDormitoriosForSearch(metadata.resumenSesion);
+            const preferenciaPiso = this.extractPisoPreference(mensajeUsuario);
+
+            const searchResult = await this.toolsExecutionService.buscarDepartamentoUniversal({
+              dormitorios,
+              preferencia_piso: preferenciaPiso,
+              phoneNumber: metadata.phoneNumber,
+              codigoEmpresa: metadata.codigoEmpresa,
+              leadUuid: metadata.leadUuid,
+              proyectoId: metadata.proyectoId,
+            });
+
+            toolsEjecutados.push('buscar_departamento');
+
+            try {
+              await this.historialChatService.guardarMensaje({
+                leadUuid: metadata.leadUuid,
+                codigoEmpresa: metadata.codigoEmpresa,
+                mensaje: { role: 'function', content: `[buscar_departamento] ${searchResult}` },
+                role: 'function',
+                metadatos: {
+                  toolName: 'buscar_departamento',
+                  args: {
+                    dormitorios,
+                    preferencia_piso: preferenciaPiso,
+                    proyectoId: metadata.proyectoId,
+                  }
+                }
+              });
+            } catch (histError) {
+              this.logger.warn(`No se pudo guardar buscar_departamento forzada en historial: ${histError.message}`);
+            }
+
+            const forcedFinal = await this.llm.invoke([
+              ...systemMessages,
+              { role: 'system', content: 'El flujo exige mostrar unidades disponibles ahora. Usa el resultado de buscar_departamento para responder y listar hasta 3 unidades si existen, respetando el orden recibido. NO hagas preguntas opcionales previas. NO recomiendes una sola unidad ni ofrezcas plano o visita hasta que el cliente elija una. NO llames más herramientas.' },
+              ...messages,
+              { role: 'user', content: mensajeUsuario },
+              { role: 'system', content: `Resultado de buscar_departamento:\n${searchResult}` }
+            ]);
+
+            const output = forcedFinal.content?.toString() || "No pude generar una respuesta.";
+            const forcedTokens = this.extraerTokens(forcedFinal);
+            if (forcedTokens) {
+              tokensAcumulados.input += forcedTokens.input;
+              tokensAcumulados.output += forcedTokens.output;
+            }
+            await this.registrarTokens('main_chat', metadata, forcedFinal, {
+              iteracion,
+              forced: true,
+              tool: 'buscar_departamento',
+              pasoPendiente: promptConfig.pasoPendiente,
+            });
+
+            return {
+              output,
+              tokensUsados: tokensAcumulados,
+              toolsEjecutados,
+            };
+          }
+
           if (this.shouldForceFaqTool(mensajeUsuario, toolsEjecutados)) {
             this.logger.warn('Respuesta sin tool_calls para consulta FAQ. Forzando buscar_preguntas_frecuentes.');
 
@@ -506,7 +787,8 @@ export class AgentService {
             }
 
             const forcedFinal = await this.llm.invoke([
-              { role: 'system', content: `${finalSystemPrompt}\n\nLa consulta del usuario requería herramienta obligatoria. Usa el resultado de la herramienta para responder. NO inventes datos. NO llames más herramientas.` },
+              ...systemMessages,
+              { role: 'system', content: 'La consulta del usuario requería herramienta obligatoria. Usa el resultado de la herramienta para responder. NO inventes datos. NO llames más herramientas.' },
               ...messages,
               { role: 'user', content: mensajeUsuario },
               { role: 'system', content: `Resultado de herramienta obligatoria:\n${faqResult}` }
@@ -518,6 +800,11 @@ export class AgentService {
               tokensAcumulados.input += forcedTokens.input;
               tokensAcumulados.output += forcedTokens.output;
             }
+            await this.registrarTokens('main_chat', metadata, forcedFinal, {
+              iteracion,
+              forced: true,
+              pasoPendiente: promptConfig.pasoPendiente,
+            });
 
             this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ')}`);
 
@@ -616,11 +903,23 @@ export class AgentService {
       // Hacer una llamada final SIN tools para forzar respuesta de texto
       try {
         const finalResponse = await this.llm.invoke([
-          { role: 'system', content: finalSystemPrompt + '\n\nGENERA TU RESPUESTA FINAL AHORA. No llames más herramientas.' },
+          ...systemMessages,
+          { role: 'system', content: 'GENERA TU RESPUESTA FINAL AHORA. No llames más herramientas.' },
           ...messages,
         ]);
 
         const output = finalResponse.content?.toString() || "No pude generar una respuesta.";
+        const finalTokens = this.extraerTokens(finalResponse);
+        if (finalTokens) {
+          tokensAcumulados.input += finalTokens.input;
+          tokensAcumulados.output += finalTokens.output;
+        }
+        await this.registrarTokens('main_chat', metadata, finalResponse, {
+          iteracion,
+          forced: true,
+          maxIteraciones,
+          pasoPendiente: promptConfig.pasoPendiente,
+        });
 
         return {
           output,
@@ -658,6 +957,17 @@ export class AgentService {
     return undefined;
   }
 
+  async actualizarResumenSesion(
+    mensaje: string,
+    leadUuid: string,
+    codigoEmpresa: number,
+    options?: {
+      omitirSiSeleccionProyectoNumerica?: boolean;
+    }
+  ): Promise<void> {
+    await this.extraerYGuardarResumen(mensaje, leadUuid, codigoEmpresa, options);
+  }
+
 
   /**
    * Extrae información relevante del mensaje del usuario usando LLM
@@ -666,9 +976,17 @@ export class AgentService {
   private async extraerYGuardarResumen(
     mensaje: string,
     leadUuid: string,
-    codigoEmpresa: number
+    codigoEmpresa: number,
+    options?: {
+      omitirSiSeleccionProyectoNumerica?: boolean;
+    }
   ): Promise<void> {
     try {
+      if (options?.omitirSiSeleccionProyectoNumerica && /^\s*\d{1,2}\s*$/.test(mensaje || '')) {
+        this.logger.debug('Resumen omitido por seleccion numerica ambigua de proyecto.');
+        return;
+      }
+
       // Schema para extracción estructurada
       const InfoResumenSchema = z.object({
         dormitorios: z.array(z.number()).describe('Lista de cantidad de dormitorios mencionados (ej: [2, 3]). Si no hay, array vacio.'),
@@ -678,13 +996,18 @@ export class AgentService {
         financiamiento: z.enum(['hipotecario', 'banco', 'directo', 'contado']).nullable().describe('Tipo de financiamiento mencionado. Null si no hay.'),
         presupuesto: z.string().nullable().describe('Presupuesto o cuota mencionada (ej: "500k", "cuota 3000"). Null si no hay.'),
         ingresos: z.string().nullable().describe('Ingresos mensuales del cliente. MANTÉN RANGOS si existen (ej: "5000-6000", "5k a 6k"). Null si no hay.'),
+        nombre_completo: z.string().nullable().describe('Nombre completo real del cliente si lo proporciona en el mensaje. Null si no hay.'),
+        dni: z.string().nullable().describe('DNI de 8 dígitos si aparece. Null si no hay.'),
+        email: z.string().nullable().describe('Correo electrónico si aparece. Null si no hay.'),
+        ocupacion: z.string().nullable().describe('Ocupación o profesión del cliente si la menciona. Null si no hay.'),
+        unidad_interes: z.string().nullable().describe('Unidad específica si el cliente menciona una (ej: "1003", "A-602"). Null si no hay.'),
         intereses_adicionales: z.array(z.string()).describe('Temas adicionales: estacionamiento, mascota, entrega, areas_comunes, inicial. Si no hay, array vacio.'),
       });
 
-      const extractor = this.summaryExtractorLlm.withStructuredOutput(InfoResumenSchema);
-
       const prompt = `
       Analiza el siguiente mensaje del cliente inmobiliario. Un solo mensaje puede contener MULTIPLES datos de distintas categorias. Extrae TODOS los datos que encuentres, no solo uno.
+
+      Este resumen sera la FUENTE PRINCIPAL de continuidad del flujo cuando el historial reciente sea corto, asi que debes priorizar con precision los datos del funnel comercial.
 
       IMPORTANTE: Si el mensaje tiene varios datos juntos, captúralos TODOS. Ejemplos:
       - "para inversión en Lince" → proposito: "inversion" Y zonas: ["Lince"]
@@ -692,34 +1015,64 @@ export class AgentService {
       - "quiero un depa de 3 cuartos, mi presupuesto es 3000 soles de cuota, crédito hipotecario" → dormitorios: [3] Y presupuesto: "3000 soles cuota" Y financiamiento: "hipotecario"
       - "mis ingresos son 5000-6000" → ingresos: "5000-6000"
       - "gano 8k" → ingresos: "8k"
+      - "me llamo Juan Pérez" → nombre_completo: "Juan Pérez"
+      - "mi dni es 12345678" → dni: "12345678"
+      - "mi correo es juan@gmail.com" → email: "juan@gmail.com"
+      - "soy contador" → ocupacion: "contador"
+      - "me interesa la 1003" → unidad_interes: "1003"
+
+      PRESUPUESTO - Ejemplos CRITICOS (cualquier monto que el cliente mencione como cuota/presupuesto):
+      - "mi presupuesto es de 400 soles" → presupuesto: "400 soles"
+      - "mi presuueto es de 400 soles" → presupuesto: "400 soles" (ignorar errores tipograficos)
+      - "podria unos 300 soles" → presupuesto: "300 soles"
+      - "unos 500 al mes" → presupuesto: "500 soles mensuales"
+      - "manejo 2000 de cuota" → presupuesto: "2000 soles cuota"
+      - "tengo 150k" → presupuesto: "150k"
+      - "puedo pagar 1500" → presupuesto: "1500 soles"
+      - "mi cuota sería de 800" → presupuesto: "800 soles cuota"
 
       Si no hay información de un tipo, déjalo vacío. Ignora saludos o ruido.
       
       Mensaje: "${mensaje}"
       `;
 
-      const result = await extractor.invoke(prompt);
+      let result: any;
+      try {
+        const extractorWithRaw = (this.summaryExtractorLlm as any).withStructuredOutput(InfoResumenSchema, { includeRaw: true });
+        const response = await extractorWithRaw.invoke(prompt);
+        result = response?.parsed ?? response;
+
+        if (response?.raw) {
+          await this.registrarTokens('summary_extract', { leadUuid, codigoEmpresa }, response.raw, {
+            resumen: true,
+          });
+        }
+      } catch {
+        const extractor = this.summaryExtractorLlm.withStructuredOutput(InfoResumenSchema);
+        result = await extractor.invoke(prompt);
+      }
+
       const puntos: string[] = [];
 
       // Mapear resultados a formato de resumen
       if (result.dormitorios && result.dormitorios.length > 0) {
         const dormsStr = result.dormitorios.sort().join(' y ');
-        puntos.push(`Busca depa de ${dormsStr} dormitorio(s)`);
+        puntos.push(`Paso 1 - Dormitorios: ${dormsStr}`);
       }
 
       if (result.proposito) {
         const mapa: Record<string, string> = { 'vivir': 'para vivir', 'inversion': 'inversión', 'mix_uso': 'uso mixto' };
-        puntos.push(`Propósito: ${mapa[result.proposito] || result.proposito}`);
+        puntos.push(`Paso 2 - Proposito: ${mapa[result.proposito] || result.proposito}`);
       }
 
       if (result.zonas && result.zonas.length > 0) {
         // Capitalizar
         const zonasCap = result.zonas.map(z => z.charAt(0).toUpperCase() + z.slice(1).toLowerCase()).join(', ');
-        puntos.push(`Zona preferida: ${zonasCap}`);
+        puntos.push(`Paso 2 - Zona preferida: ${zonasCap}`);
       }
 
       if (result.tiempo_compra) {
-        puntos.push(`Tiempo de compra: ${result.tiempo_compra}`);
+        puntos.push(`Paso 3 - Tiempo de compra: ${result.tiempo_compra}`);
       }
 
       if (result.financiamiento) {
@@ -729,15 +1082,66 @@ export class AgentService {
           'directo': 'directo con Checor',
           'contado': 'al contado'
         };
-        puntos.push(`Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
+        puntos.push(`Paso 4 - Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
       }
 
       if (result.presupuesto) {
-        puntos.push(`Presupuesto/Cuota: ${result.presupuesto}`);
+        puntos.push(`Paso 5 - Presupuesto/Cuota: ${result.presupuesto}`);
+      }
+
+      if (result.unidad_interes) {
+        puntos.push(`Paso 6 - Unidad de interes: ${result.unidad_interes}`);
+      }
+
+      if (result.nombre_completo) {
+        puntos.push(`Paso 8 - Nombre completo: ${result.nombre_completo}`);
+      }
+
+      if (result.dni) {
+        puntos.push(`Paso 8 - DNI: ${result.dni}`);
+      }
+
+      if (result.ocupacion) {
+        puntos.push(`Paso 9 - Ocupación: ${result.ocupacion}`);
       }
 
       if (result.ingresos) {
-        puntos.push(`Ingresos mensuales: ${result.ingresos}`);
+        puntos.push(`Paso 9 - Ingresos mensuales: ${result.ingresos}`);
+      }
+
+      if (result.email) {
+        puntos.push(`Paso 11 - Email: ${result.email}`);
+      }
+
+      // Fallback regex para PRESUPUESTO cuando el LLM no lo detecta.
+      // Cubre mensajes cortos como "mi presupuesto es de 400 soles", "podria 300", etc.
+      if (!result.presupuesto) {
+        const mensajeNorm = this.normalizeText(mensaje);
+        const matchPresupuesto = mensajeNorm.match(
+          /(?:presupuesto|presuueto|cuota|pagar|pago|manejo|podria|unos|tengo)[^\d]*(\d[\d.,]*)\s*(?:soles?|sol|s\/?|k)?/i
+        );
+        if (matchPresupuesto) {
+          const monto = matchPresupuesto[1].replace(',', '.');
+          puntos.push(`Paso 5 - Presupuesto/Cuota: ${monto} soles`);
+        }
+      }
+
+      // Fallback regex para financiamiento cuando el LLM no lo detecta del enum.
+      // Ejemplo: "con checor" no matchea ['hipotecario','banco','directo','contado']
+      // pero sí es financiamiento directo.
+      if (!result.financiamiento) {
+        const mensajeNormalizado = this.normalizeText(mensaje);
+        if (
+          /\b(quiero|queiro|prefiero|con)\s+(checor|ustedes|la empresa|la inmobiliaria|la constructora)\b/.test(mensajeNormalizado) ||
+          /\bfinanciamiento directo\b/.test(mensajeNormalizado) ||
+          /\bdirecto\b/.test(mensajeNormalizado)
+        ) {
+          puntos.push('Paso 4 - Financiamiento: directo con Checor');
+        } else if (/\bhipotecario\b|\bbanco\b|\bcredito\b/.test(mensajeNormalizado)) {
+          puntos.push('Paso 4 - Financiamiento: crédito hipotecario');
+        } else if (/\bcontado\b|\bal cash\b/.test(mensajeNormalizado)) {
+          puntos.push('Paso 4 - Financiamiento: al contado');
+        }
       }
 
       // Intereses adicionales mapeados

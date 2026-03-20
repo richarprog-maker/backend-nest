@@ -17,6 +17,7 @@ import { WebhookModule } from '../webhook_meta/webhook.module';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../ia/entities/historial-chat-ai.entity';
+import { IaTokenLog } from '../ia/entities/ia-token-log.entity';
 import { InboxModule } from '../inbox/inbox.module';
 import { Cita } from '../citas/entities/cita.entity';
 import { Proyecto } from '../proyectos/entities/proyecto.entity';
@@ -24,6 +25,7 @@ import { CampaniaProgramada } from '../campanias/entities/campania-programada.en
 import { Campania } from '../campanias/entities/campania.entity';
 import { PlantillasModule } from '../plantillas/plantillas.module';
 import { PlantillasCampaniasModule } from '../plantillas-campanias/plantillas-campanias.module';
+import { TokenTrackingService } from '../ia/token-tracking.service';
 
 @Module({
     imports: [
@@ -35,6 +37,7 @@ import { PlantillasCampaniasModule } from '../plantillas-campanias/plantillas-ca
             HistorialPlantillas,
             Mensaje,
             HistorialChatAi,
+            IaTokenLog,
             Cita,
             Proyecto,
             HistorialClasificacionLead,
@@ -55,7 +58,8 @@ import { PlantillasCampaniasModule } from '../plantillas-campanias/plantillas-ca
         ClasificacionFrioTasksService,
         ClasificacionTibioTasksService,
         CampaniasProgramadasService,
-        PlantillasStatusService
+        PlantillasStatusService,
+        TokenTrackingService
     ],
     exports: [CampaniasProgramadasService],
 })
