@@ -107,6 +107,7 @@ export class AiService {
 
             await this.agentService.actualizarResumenSesion(mensajeUsuario, leadUuid, codigoEmpresa, {
                 omitirSiSeleccionProyectoNumerica: !proyectoId && proyectosActivos.length > 1 && /^\s*\d{1,2}\s*$/.test(mensajeUsuario || ''),
+                nombresProyectosActivos: proyectosActivos.map((proyecto) => proyecto.nombre).filter(Boolean),
             });
 
             // Recargar sesión DESPUÉS de actualizar el resumen para obtener datos frescos

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PROMPT_SYSTEM_MAIN } from './prompts/prompt-main';
 import { Lead } from '../inbox/entities/lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
-import { parseSessionSummary } from './utils/session-summary.utils';
+import { parseSessionSummary, resolvePasoPendiente } from './utils/session-summary.utils';
 
 @Injectable()
 export class PromptService {
@@ -62,8 +62,8 @@ export class PromptService {
         const infoCita = this.buildInfoCita(citaData);
 
         const instruccionProyecto = this.buildInstruccionProyecto(metadataEmpresa, proyectoId);
-        const datosFlujo = this.buildDatosFlujo(resumenSesion);
-        const pasoPendiente = this.resolvePasoPendiente(resumenSesion, citaData);
+        const datosFlujo = this.buildDatosFlujo(resumenSesion, leadData, proyectoId);
+        const pasoPendiente = this.resolvePasoPendiente(resumenSesion, citaData, leadData, proyectoId);
 
         let stablePrompt = PROMPT_SYSTEM_MAIN;
         const replacements: Record<string, string> = {
@@ -90,7 +90,7 @@ export class PromptService {
         };
     }
 
-    private resolvePasoPendiente(resumenSesion?: string, cita?: Cita): number {
+    private resolvePasoPendiente(resumenSesion?: string, cita?: Cita, lead?: Lead, proyectoId?: number): number {
         if (this.hasActiveFutureCita(cita)) {
             return 12;
         }
@@ -99,7 +99,13 @@ export class PromptService {
             return 1;
         }
 
-        return parseSessionSummary(resumenSesion).pasoPendiente;
+        const contexto = parseSessionSummary(resumenSesion);
+        return resolvePasoPendiente(contexto, lead, { proyectoId });
+    }
+
+    private isValidDni(dni?: string | null): boolean {
+        if (!dni) return false;
+        return /^\d{8}$/.test(dni) && dni !== '00000000' && !dni.startsWith('00');
     }
 
     private hasActiveFutureCita(cita?: Cita): boolean {
@@ -147,7 +153,7 @@ export class PromptService {
         // Solo pasar nombre REAL del cliente (no el de WhatsApp/Meta)
         if (lead.nombre) campos.push(`- Nombre: ${lead.nombre}`);
         if (lead.apellido) campos.push(`- Apellido: ${lead.apellido}`);
-        if (lead.dni) campos.push(`- DNI: ${lead.dni}`);
+        if (this.isValidDni(lead.dni)) campos.push(`- DNI: ${lead.dni}`);
         if (lead.email) campos.push(`- Email: ${lead.email}`);
         if (lead.ciudad) campos.push(`- Ciudad: ${lead.ciudad}`);
         if (lead.telefono) campos.push(`- Teléfono: ${lead.telefono}`);
@@ -322,10 +328,11 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
      * Construye el bloque de datos de fases previas a partir del resumen de sesion.
      * Permite que al cambiar de proyecto el bot sepa que pasos ya se completaron.
      */
-    private buildDatosFlujo(resumenSesion?: string): string {
+    private buildDatosFlujo(resumenSesion?: string, leadData?: Lead, proyectoId?: number): string {
         if (!resumenSesion || !resumenSesion.trim()) return '';
 
         const contexto = parseSessionSummary(resumenSesion);
+        const pasoPendiente = resolvePasoPendiente(contexto, leadData, { proyectoId });
         const lineas: string[] = [];
 
         if (contexto.dormitorios || contexto.proposito || contexto.zonaPreferida || contexto.tiempoCompra || contexto.financiamiento || contexto.presupuesto) {
@@ -343,18 +350,11 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
             lineas.push(`- Paso 6 / Unidad de interés ya mencionada: ${contexto.unidadInteres}`);
         }
 
-        if (contexto.nombreCompleto || contexto.dni || contexto.ocupacion || contexto.ingresos || contexto.tieneProforma) {
+        if (contexto.ocupacion || contexto.ingresos || contexto.tieneProforma) {
             lineas.push('### FASE 3 - IDENTIFICACION Y PROFORMA');
-            if (contexto.nombreCompleto) lineas.push(`- Paso 8 / Nombre completo capturado: ${contexto.nombreCompleto}`);
-            if (contexto.dni) lineas.push(`- Paso 8 / DNI capturado: ${contexto.dni}`);
             if (contexto.ocupacion) lineas.push(`- Paso 9 / Ocupación capturada: ${contexto.ocupacion}`);
             if (contexto.ingresos) lineas.push(`- Paso 9 / Ingresos mensuales capturados: ${contexto.ingresos}`);
             if (contexto.tieneProforma) lineas.push('- Paso 9 / Ya existe una proforma o cotización previa registrada');
-        }
-
-        if (contexto.email) {
-            lineas.push('### FASE 4 - CITA');
-            lineas.push(`- Paso 11 / Email disponible para agendar: ${contexto.email}`);
         }
 
         if (contexto.notasAdicionales.length > 0) {
@@ -369,12 +369,13 @@ Este cliente ya respondio las siguientes preguntas en proyectos anteriores. Son 
 ${lineas.join('\n')}
 
 ### PASO PENDIENTE ESTIMADO
-- Continúa directamente desde el **PASO ${contexto.pasoPendiente}** del flujo.
+- Continúa directamente desde el **PASO ${pasoPendiente}** del flujo.
 - Usa este bloque como FUENTE PRINCIPAL de contexto operativo antes de depender del historial corto.
 
 **INSTRUCCION CRITICA**:
 - NO vuelvas a preguntar ninguno de los datos que aparecen arriba.
 - Los datos de dormitorios, proposito, zona, tiempo de compra, financiamiento y presupuesto son validos para cualquier proyecto.
+- El nombre, DNI y email se leen desde DATOS DEL CLIENTE; no los dupliques ni los pidas otra vez si ya están ahí.
 - Los datos de unidad especifica, proforma y cita son del proyecto anterior y pueden necesitar actualizacion.
 - Si el paso pendiente es 6 o mas, usa primero los datos ya capturados en esta sesion antes de pedirlos otra vez.
 - Si el paso pendiente es 6 o mas y ya tienes dormitorios, busca departamentos en el nuevo proyecto usando esos dormitorios.

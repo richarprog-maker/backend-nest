@@ -8,6 +8,7 @@ import { HistorialChatService } from './historial-chat.service';
 import { ResumenConversacionService } from './resumen-conversacion.service';
 import { BaseMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { Proyecto } from '../proyectos/entities/proyecto.entity';
+import { Lead } from '../inbox/entities/lead.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TokenTrackingService } from './token-tracking.service';
@@ -34,6 +35,8 @@ export class AgentService {
     private tokenTrackingService: TokenTrackingService,
     @InjectRepository(Proyecto)
     private proyectosRepo: Repository<Proyecto>,
+    @InjectRepository(Lead)
+    private leadRepo: Repository<Lead>,
   ) {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini' || modelName.includes('gpt-5');
@@ -63,6 +66,150 @@ export class AgentService {
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .trim();
+  }
+
+  private addSummaryPoint(puntos: string[], punto?: string): void {
+    if (!punto) return;
+    if (!puntos.includes(punto)) {
+      puntos.push(punto);
+    }
+  }
+
+  private isValidDniFormat(dni?: string | null): boolean {
+    if (!dni) return false;
+    const normalized = dni.trim();
+    return /^\d{8}$/.test(normalized) && normalized !== '00000000' && !normalized.startsWith('00');
+  }
+
+  private isValidEmail(email?: string | null): boolean {
+    if (!email) return false;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  }
+
+  private parseNombreCompleto(nombreCompleto: string): { nombre?: string; apellido?: string } {
+    const normalized = (nombreCompleto || '').trim().replace(/\s+/g, ' ');
+    if (!normalized) return {};
+
+    const partes = normalized.split(' ');
+    if (partes.length === 1) {
+      return { nombre: partes[0] };
+    }
+
+    return {
+      nombre: partes[0],
+      apellido: partes.slice(1).join(' '),
+    };
+  }
+
+  private async sincronizarDatosLeadExtraidos(
+    leadUuid: string,
+    codigoEmpresa: number,
+    result: {
+      nombre_completo?: string | null;
+      dni?: string | null;
+      email?: string | null;
+    },
+  ): Promise<void> {
+    const lead = await this.leadRepo.findOne({
+      where: { uuid: leadUuid, codigoEmpresa },
+    });
+
+    if (!lead) {
+      return;
+    }
+
+    const updateData: Partial<Lead> = {};
+    const nombreParsed = this.parseNombreCompleto(result.nombre_completo || '');
+
+    if (nombreParsed.nombre && !lead.nombre) {
+      updateData.nombre = nombreParsed.nombre;
+    }
+
+    if (nombreParsed.apellido && !lead.apellido) {
+      updateData.apellido = nombreParsed.apellido;
+    }
+
+    if (this.isValidEmail(result.email) && !lead.email) {
+      updateData.email = result.email!.trim().toLowerCase();
+    }
+
+    if (this.isValidDniFormat(result.dni) && !this.isValidDniFormat(lead.dni)) {
+      updateData.dni = result.dni!.trim();
+    }
+
+    if (Object.keys(updateData).length > 0) {
+      await this.leadRepo.update({ uuid: leadUuid, codigoEmpresa }, updateData);
+    }
+  }
+
+  private applyContextualSummaryFallbacks(
+    puntos: string[],
+    mensaje: string,
+    pasoPendienteActual: number,
+  ): void {
+    const mensajeTrim = (mensaje || '').trim();
+    const mensajeNormalizado = this.normalizeText(mensaje);
+
+    if (pasoPendienteActual === 1) {
+      const matchDormitorios = mensajeTrim.match(/^([123])$/);
+      if (matchDormitorios) {
+        this.addSummaryPoint(puntos, `Paso 1 - Dormitorios: ${matchDormitorios[1]}`);
+      }
+    }
+
+    if (pasoPendienteActual === 5) {
+      const matchMonto =
+        mensajeTrim.match(/^S\/\s*(\d[\d.,]*)$/i) ||
+        mensajeTrim.match(/^(\d[\d.,]*)\s*(?:soles?|sol)?$/i) ||
+        mensajeNormalizado.match(/^(\d[\d.,]*)\s*(?:soles?|sol|s\/)?(?:\s+al\s+mes|\s+mensuales?)?$/i);
+
+      if (matchMonto) {
+        const monto = matchMonto[1].replace(',', '.');
+        this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${monto} soles`);
+      }
+    }
+  }
+
+  private async hasExplicitUnitSelection(userMessage: string, unidad?: string): Promise<boolean> {
+    if (!userMessage?.trim()) return false;
+
+    try {
+      const SeleccionSchema = z.object({
+        seleccion_explicita: z.boolean().describe(
+          'true si el cliente está eligiendo/confirmando una unidad específica o posición de lista (primera, segunda, tercera, la 801, el 1201, opción 2, etc.). false si solo está preguntando, mencionando o comentando.'
+        ),
+      });
+
+      const unidadCtx = unidad ? `La unidad en cuestión es: "${unidad}".` : '';
+      const prompt = `Eres un detector de intención inmobiliaria en ventas inmobiliarias peruanas. ${unidadCtx}
+Tu tarea: determinar si el cliente está ELIGIENDO o CONFIRMANDO activamente una opción/unidad de la lista que el asesor le mostró.
+
+Selección EXPLÍCITA (seleccion_explicita: true) — CUALQUIERA de estos casos:
+- Ordinal en español: "la primera", "la segunda", "la tercera", "el primero"
+- Número de posición en lista: "la 1", "la 2", "la 3", "el 1", "el 2", "el 3"
+- Frases con posición: "a ver la 3", "a ver la 3 porfa", "quiero ver la 2", "dame la 3", "esa la tercera", "muestrame la 2"
+- Número de opción explícito: "opción 1", "opción 2", "opci 2"
+- Número o nombre de unidad directamente: "801", "1201", "el 1201", "la 801", "la unidad 801"
+- Frases de confirmación: "quiero esa", "esa misma", "me quedo con esa", "esa", "la segunda opción"
+- Frases con verbo + referencia: "quiero la segunda", "prefiero la 1", "me quedo con la 3"
+
+No selección (seleccion_explicita: false) — preguntas o comentarios sin elegir:
+- "cuánto cuesta?", "tiene estacionamiento?", "¿hay en piso 5?", "muéstrame más opciones", "no me gusta ninguna"
+- "qué incluye?", "cuál es la diferencia?", "tienen estacionamiento?"
+
+REGLA CLAVE: Si el cliente usa un número (1-9) como referencia a la POSICIÓN de una opción en la lista (ej: "la 3", "a ver la 2"), eso ES selección explícita aunque no diga el número real de la unidad (ej: 801).
+
+Mensaje del cliente: "${userMessage.trim()}"
+
+Responde solo con el JSON requerido.`;
+
+      const extractor = this.summaryExtractorLlm.withStructuredOutput(SeleccionSchema);
+      const result = await extractor.invoke(prompt);
+      return result.seleccion_explicita;
+    } catch (err) {
+      this.logger.warn(`hasExplicitUnitSelection LLM fallback: ${err.message}`);
+      return false;
+    }
   }
 
   private shouldForceFaqTool(userMessage: string, toolsEjecutados: string[]): boolean {
@@ -477,7 +624,7 @@ export class AgentService {
       name: 'buscar_departamento',
       description: 'Busca departamentos en inventario real. SOLO pasa el número de dormitorios (o array si pide varios). NUNCA pases el presupuesto/cuota del cliente como parámetro. SOLO úsala cuando ya estén completos los pasos 1-5 del flujo o cuando el cliente elija una unidad específica.',
       schema: z.object({
-        unidad: z.string().optional().describe('Número de unidad específica (ej: "1003", "1701")'),
+        unidad: z.string().optional().describe('Número de unidad específica (ej: "1003", "1701"). SOLO si el cliente la eligió explícitamente. NO inventes ni deduzcas una unidad desde la lista.'),
         dormitorios: z.union([z.number(), z.string(), z.array(z.union([z.number(), z.string()]))]).optional().describe('Cantidad de dormitorios (ej: 2, "monoambiente" o [2, "monoambiente"])'),
         piso: z.number().optional().describe('Piso específico (1-17)'),
         precio_max: z.number().optional().describe('Precio máximo en soles'),
@@ -839,6 +986,7 @@ export class AgentService {
           this.logger.log(`Ejecutando tool: ${toolCall.name}`);
 
           let toolResult: string;
+          let cerrarTurnoTrasBusquedaInicial = false;
 
           const HERRAMIENTAS_REPETIBLES = ['buscar_departamento'];
 
@@ -857,6 +1005,22 @@ export class AgentService {
 
               if (!tool) {
                 throw new Error(`Tool '${toolCall.name}' no encontrada`);
+              }
+
+              if (
+                toolCall.name === 'buscar_departamento' &&
+                toolCall.args?.unidad &&
+                !(await this.hasExplicitUnitSelection(mensajeUsuario, toolCall.args.unidad))
+              ) {
+                this.logger.warn(`Busqueda por unidad bloqueada por falta de eleccion explicita del cliente: ${toolCall.args.unidad}`);
+                toolResult = '[BLOQUEADO] El cliente NO eligio una unidad de forma explicita en su ultimo mensaje. Usa el resultado previo de buscar_departamento para listar 2 o 3 opciones y pregúntale cuál prefiere. NO asumas una unidad. NO pidas nombre, DNI ni proforma todavía.';
+                messages.push(
+                  new ToolMessage({
+                    tool_call_id: toolCall.id,
+                    content: toolResult,
+                  })
+                );
+                continue;
               }
 
               // Ejecutar tool
@@ -879,6 +1043,14 @@ export class AgentService {
                 this.logger.warn(`No se pudo guardar tool en historial: ${histError.message}`);
               }
 
+              if (
+                toolCall.name === 'buscar_departamento' &&
+                !toolCall.args?.unidad &&
+                !(await this.hasExplicitUnitSelection(mensajeUsuario))
+              ) {
+                cerrarTurnoTrasBusquedaInicial = true;
+              }
+
             } catch (error) {
               this.logger.error(`Error ejecutando tool ${toolCall.name}: ${error.message}`);
               toolResult = `Error ejecutando ${toolCall.name}: ${error.message}`;
@@ -892,6 +1064,34 @@ export class AgentService {
               content: toolResult,
             })
           );
+
+          if (cerrarTurnoTrasBusquedaInicial) {
+            const forcedFinal = await this.llm.invoke([
+              ...systemMessages,
+              { role: 'system', content: 'Acabas de recibir el resultado inicial de buscar_departamento. RESPONDE AHORA listando MAXIMO 3 opciones en el orden recibido. NO elijas una unidad por el cliente. NO pidas nombre, DNI, proforma ni visita. SOLO pregunta cual de esas opciones prefiere o si quiere ver otras alternativas. NO llames más herramientas.' },
+              ...messages,
+              { role: 'user', content: mensajeUsuario },
+            ]);
+
+            const output = forcedFinal.content?.toString() || 'No pude generar una respuesta.';
+            const forcedTokens = this.extraerTokens(forcedFinal);
+            if (forcedTokens) {
+              tokensAcumulados.input += forcedTokens.input;
+              tokensAcumulados.output += forcedTokens.output;
+            }
+            await this.registrarTokens('main_chat', metadata, forcedFinal, {
+              iteracion,
+              forced: true,
+              tool: 'buscar_departamento_resultado_inicial',
+              pasoPendiente: promptConfig.pasoPendiente,
+            });
+
+            return {
+              output,
+              tokensUsados: tokensAcumulados,
+              toolsEjecutados,
+            };
+          }
         }
 
         // Continuar al siguiente loop - el modelo generará respuesta o pedirá más tools
@@ -963,6 +1163,7 @@ export class AgentService {
     codigoEmpresa: number,
     options?: {
       omitirSiSeleccionProyectoNumerica?: boolean;
+      nombresProyectosActivos?: string[];
     }
   ): Promise<void> {
     await this.extraerYGuardarResumen(mensaje, leadUuid, codigoEmpresa, options);
@@ -979,6 +1180,7 @@ export class AgentService {
     codigoEmpresa: number,
     options?: {
       omitirSiSeleccionProyectoNumerica?: boolean;
+      nombresProyectosActivos?: string[];
     }
   ): Promise<void> {
     try {
@@ -986,6 +1188,12 @@ export class AgentService {
         this.logger.debug('Resumen omitido por seleccion numerica ambigua de proyecto.');
         return;
       }
+
+      const resumenActual = await this.resumenService.obtenerResumen(leadUuid, codigoEmpresa);
+      const contextoActual = parseSessionSummary(resumenActual || '');
+      const nombresProyectosActivosNormalizados = new Set(
+        (options?.nombresProyectosActivos || []).map((nombre) => this.normalizeText(nombre)),
+      );
 
       // Schema para extracción estructurada
       const InfoResumenSchema = z.object({
@@ -1008,6 +1216,32 @@ export class AgentService {
       Analiza el siguiente mensaje del cliente inmobiliario. Un solo mensaje puede contener MULTIPLES datos de distintas categorias. Extrae TODOS los datos que encuentres, no solo uno.
 
       Este resumen sera la FUENTE PRINCIPAL de continuidad del flujo cuando el historial reciente sea corto, asi que debes priorizar con precision los datos del funnel comercial.
+
+      CONTEXTO DE SESION ACTUAL:
+      - Paso pendiente actual estimado: ${contextoActual.pasoPendiente}
+      - Dormitorios ya capturados: ${contextoActual.dormitorios || 'ninguno'}
+      - Zona ya capturada: ${contextoActual.zonaPreferida || 'ninguna'}
+      - Presupuesto ya capturado: ${contextoActual.presupuesto || 'ninguno'}
+
+      REGLA CRITICA - REFERENCIAS POSICIONALES (LEER PRIMERO):
+      Si el mensaje contiene frases como "la 1", "la 2", "la 3", "a ver la 3", "quiero la segunda", "opción 2", "esa la primera", "dame la 3 porfa" u similares, el cliente está ELIGIENDO UNA OPCION DE UNA LISTA que el agente le presentó anteriormente — NO está diciendo cuántos dormitorios quiere.
+      - NUNCA extraigas dormitorios de un número que sea referencia posicional de lista.
+      - Si el paso pendiente actual es >= 6, dormitorios YA fueron capturados en pasos anteriores. Un número 1-9 en el mensaje es casi seguro una selección de lista, NO dormitorios. Deja dormitorios como array vacío.
+      - Ejemplos de referencias POSICIONALES (dormitorios debe ser []):
+        * "a ver la 3 porfa" → dormitorios: []
+        * "la segunda" → dormitorios: []
+        * "quiero ver la 2" → dormitorios: []
+        * "opcion 1" → dormitorios: []
+        * "esa la tercera" → dormitorios: []
+      - Ejemplos REALES de dormitorios (solo si el cliente lo dice en contexto de búsqueda):
+        * "busco 2 dormitorios" → dormitorios: [2]
+        * "quiero un departamento de 3 cuartos" → dormitorios: [3]
+        * "necesito 1 dormitorio" → dormitorios: [1]
+
+      REGLAS PARA RESPUESTAS CORTAS:
+      - Si el paso pendiente actual es 1 y el mensaje es solo "1", "2" o "3" (sin articulo ni contexto de lista), interpretalo como dormitorios.
+      - Si el paso pendiente actual es 5 y el mensaje es solo un monto como "300", "1200" o "S/1200", interpretalo como presupuesto/cuota.
+      - Si el mensaje menciona un NOMBRE DE PROYECTO, NO lo confundas con distrito o zona preferida.
 
       IMPORTANTE: Si el mensaje tiene varios datos juntos, captúralos TODOS. Ejemplos:
       - "para inversión en Lince" → proposito: "inversion" Y zonas: ["Lince"]
@@ -1052,27 +1286,33 @@ export class AgentService {
         result = await extractor.invoke(prompt);
       }
 
+      await this.sincronizarDatosLeadExtraidos(leadUuid, codigoEmpresa, result);
+
       const puntos: string[] = [];
+      const zonasDetectadas = (result.zonas || []).filter((zona: string) => {
+        const zonaNormalizada = this.normalizeText(zona);
+        return zonaNormalizada.length > 0 && !nombresProyectosActivosNormalizados.has(zonaNormalizada);
+      });
 
       // Mapear resultados a formato de resumen
       if (result.dormitorios && result.dormitorios.length > 0) {
         const dormsStr = result.dormitorios.sort().join(' y ');
-        puntos.push(`Paso 1 - Dormitorios: ${dormsStr}`);
+        this.addSummaryPoint(puntos, `Paso 1 - Dormitorios: ${dormsStr}`);
       }
 
       if (result.proposito) {
         const mapa: Record<string, string> = { 'vivir': 'para vivir', 'inversion': 'inversión', 'mix_uso': 'uso mixto' };
-        puntos.push(`Paso 2 - Proposito: ${mapa[result.proposito] || result.proposito}`);
+        this.addSummaryPoint(puntos, `Paso 2 - Proposito: ${mapa[result.proposito] || result.proposito}`);
       }
 
-      if (result.zonas && result.zonas.length > 0) {
+      if (zonasDetectadas.length > 0) {
         // Capitalizar
-        const zonasCap = result.zonas.map(z => z.charAt(0).toUpperCase() + z.slice(1).toLowerCase()).join(', ');
-        puntos.push(`Paso 2 - Zona preferida: ${zonasCap}`);
+        const zonasCap = zonasDetectadas.map(z => z.charAt(0).toUpperCase() + z.slice(1).toLowerCase()).join(', ');
+        this.addSummaryPoint(puntos, `Paso 2 - Zona preferida: ${zonasCap}`);
       }
 
       if (result.tiempo_compra) {
-        puntos.push(`Paso 3 - Tiempo de compra: ${result.tiempo_compra}`);
+        this.addSummaryPoint(puntos, `Paso 3 - Tiempo de compra: ${result.tiempo_compra}`);
       }
 
       if (result.financiamiento) {
@@ -1082,36 +1322,26 @@ export class AgentService {
           'directo': 'directo con Checor',
           'contado': 'al contado'
         };
-        puntos.push(`Paso 4 - Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
+        this.addSummaryPoint(puntos, `Paso 4 - Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
       }
 
       if (result.presupuesto) {
-        puntos.push(`Paso 5 - Presupuesto/Cuota: ${result.presupuesto}`);
+        this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${result.presupuesto}`);
       }
 
       if (result.unidad_interes) {
-        puntos.push(`Paso 6 - Unidad de interes: ${result.unidad_interes}`);
-      }
-
-      if (result.nombre_completo) {
-        puntos.push(`Paso 8 - Nombre completo: ${result.nombre_completo}`);
-      }
-
-      if (result.dni) {
-        puntos.push(`Paso 8 - DNI: ${result.dni}`);
+        this.addSummaryPoint(puntos, `Paso 6 - Unidad de interes: ${result.unidad_interes}`);
       }
 
       if (result.ocupacion) {
-        puntos.push(`Paso 9 - Ocupación: ${result.ocupacion}`);
+        this.addSummaryPoint(puntos, `Paso 9 - Ocupación: ${result.ocupacion}`);
       }
 
       if (result.ingresos) {
-        puntos.push(`Paso 9 - Ingresos mensuales: ${result.ingresos}`);
+        this.addSummaryPoint(puntos, `Paso 9 - Ingresos mensuales: ${result.ingresos}`);
       }
 
-      if (result.email) {
-        puntos.push(`Paso 11 - Email: ${result.email}`);
-      }
+      this.applyContextualSummaryFallbacks(puntos, mensaje, contextoActual.pasoPendiente);
 
       // Fallback regex para PRESUPUESTO cuando el LLM no lo detecta.
       // Cubre mensajes cortos como "mi presupuesto es de 400 soles", "podria 300", etc.
@@ -1122,7 +1352,7 @@ export class AgentService {
         );
         if (matchPresupuesto) {
           const monto = matchPresupuesto[1].replace(',', '.');
-          puntos.push(`Paso 5 - Presupuesto/Cuota: ${monto} soles`);
+          this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${monto} soles`);
         }
       }
 
@@ -1136,11 +1366,11 @@ export class AgentService {
           /\bfinanciamiento directo\b/.test(mensajeNormalizado) ||
           /\bdirecto\b/.test(mensajeNormalizado)
         ) {
-          puntos.push('Paso 4 - Financiamiento: directo con Checor');
+          this.addSummaryPoint(puntos, 'Paso 4 - Financiamiento: directo con Checor');
         } else if (/\bhipotecario\b|\bbanco\b|\bcredito\b/.test(mensajeNormalizado)) {
-          puntos.push('Paso 4 - Financiamiento: crédito hipotecario');
+          this.addSummaryPoint(puntos, 'Paso 4 - Financiamiento: crédito hipotecario');
         } else if (/\bcontado\b|\bal cash\b/.test(mensajeNormalizado)) {
-          puntos.push('Paso 4 - Financiamiento: al contado');
+          this.addSummaryPoint(puntos, 'Paso 4 - Financiamiento: al contado');
         }
       }
 
@@ -1157,7 +1387,7 @@ export class AgentService {
         result.intereses_adicionales.forEach(interes => {
           // Buscar match parcial o directo en el mapa
           const key = Object.keys(mapaInteres).find(k => interes.toLowerCase().includes(k));
-          if (key) puntos.push(mapaInteres[key]);
+          if (key) this.addSummaryPoint(puntos, mapaInteres[key]);
         });
       }
 

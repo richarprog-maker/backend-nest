@@ -25,7 +25,7 @@ import {
     resolveMentionedProjects
 } from './utils/faq-project.utils';
 import { convertGoogleDriveToDirectUrl, formatMonto } from './utils/tool-format.utils';
-import { parseSessionSummary } from '../utils/session-summary.utils';
+import { parseSessionSummary, resolvePasoPendiente } from '../utils/session-summary.utils';
 import { TokenTrackingService } from '../token-tracking.service';
 
 @Injectable()
@@ -68,6 +68,12 @@ export class ToolsExecutionService {
             input: usage.prompt_tokens || usage.input_tokens || 0,
             output: usage.completion_tokens || usage.output_tokens || 0,
         };
+    }
+
+    private isValidDni(dni?: string | null): boolean {
+        if (!dni) return false;
+        const normalized = dni.trim();
+        return /^\d{8}$/.test(normalized) && normalized !== '00000000' && !normalized.startsWith('00');
     }
 
     private async registrarTokensFaq(
@@ -422,7 +428,9 @@ export class ToolsExecutionService {
             let instruccionContinuacion = '';
             if (esCambio) {
                 const resumen = parseSessionSummary(sesion?.resumenConversacion || '');
-                instruccionContinuacion = ` <<INSTRUCCION_IA: El cliente acaba de cambiarse al proyecto "${proyecto.nombre}". Los datos de fases previas (dormitorios, proposito, zona, tiempo de compra, financiamiento, presupuesto${resumen.nombreCompleto ? ', nombre' : ''}${resumen.dni ? ', DNI' : ''}) son VALIDOS para este nuevo proyecto. NO vuelvas a preguntar esos datos. Continua directamente desde el PASO ${resumen.pasoPendiente} del flujo. Si el paso es 6 y ya tienes dormitorios, busca departamentos en "${proyecto.nombre}" usando esos dormitorios del resumen.>>`;
+                const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
+                const pasoPendiente = resolvePasoPendiente(resumen, lead || undefined, { proyectoId: proyecto.id });
+                instruccionContinuacion = ` <<INSTRUCCION_IA: El cliente acaba de cambiarse al proyecto "${proyecto.nombre}". Los datos de fases previas (dormitorios, proposito, zona, tiempo de compra, financiamiento, presupuesto) son VALIDOS para este nuevo proyecto. Los datos personales validados se leen desde DATOS DEL CLIENTE. NO vuelvas a preguntar datos ya capturados. Continua directamente desde el PASO ${pasoPendiente} del flujo. Si el paso es 6 y ya tienes dormitorios, busca departamentos en "${proyecto.nombre}" usando esos dormitorios del resumen.>>`;
             }
 
             return {
@@ -478,8 +486,12 @@ export class ToolsExecutionService {
                 updateData.apellido = datos.apellido.trim();
             }
 
-            if (datos.dni && !lead.dni) {
-                updateData.dni = datos.dni.trim();
+            if (datos.dni && !this.isValidDni(lead.dni)) {
+                if (this.isValidDni(datos.dni)) {
+                    updateData.dni = datos.dni.trim();
+                } else {
+                    this.logger.warn(`DNI descartado por formato invalido para lead ${leadUuid}: ${datos.dni}`);
+                }
             }
 
             if (datos.email && !lead.email) {
@@ -492,25 +504,6 @@ export class ToolsExecutionService {
                     { uuid: leadUuid, codigoEmpresa },
                     updateData
                 );
-
-                const camposActualizados = Object.keys(updateData).join(', ');
-
-                // 4. Registrar en resumen de conversación
-                const puntosResumen: string[] = [];
-                if (updateData.nombre || updateData.apellido) {
-                    const nombreCompleto = `${updateData.nombre || ''} ${updateData.apellido || ''}`.trim();
-                    puntosResumen.push(`Paso 8 - Nombre completo: ${nombreCompleto}`);
-                }
-                if (updateData.dni) {
-                    puntosResumen.push(`Paso 8 - DNI: ${updateData.dni}`);
-                }
-                if (updateData.email) {
-                    puntosResumen.push(`Paso 11 - Email: ${updateData.email}`);
-                }
-
-                if (puntosResumen.length > 0) {
-                    await this.resumenService.agregarPuntos(leadUuid, codigoEmpresa, puntosResumen);
-                }
             } else {
                 this.logger.debug(`ℹ Lead ${leadUuid} ya tiene todos los datos proporcionados, no se actualiza`);
             }
@@ -1196,7 +1189,8 @@ RESPUESTA:`);
     }
 
     async validarDni(params: { dni: string; leadUuid?: string; codigoEmpresa?: number }) {
-        const { dni, leadUuid, codigoEmpresa } = params;
+        const dni = (params.dni || '').trim();
+        const { leadUuid, codigoEmpresa } = params;
 
         // Validaciones
         if (!dni || dni.length !== 8) {
@@ -1207,7 +1201,7 @@ RESPUESTA:`);
             return { success: false, mensaje: "El DNI solo debe contener números." };
         }
 
-        if (dni === '00000000' || dni.startsWith('00')) {
+        if (!this.isValidDni(dni)) {
             return { success: false, mensaje: "DNI invalido. Por favor verifica el numero." };
         }
 
@@ -1825,7 +1819,7 @@ RESPUESTA:`);
         if (unidadExacta) {
             const m = unidadExacta.document.metadata;
             await this.enviarPlanoSiCorresponde(m, params);
-            return this.formatearDetalleUnidad(m);
+            return await this.formatearDetalleUnidad(m, params);
         }
 
         return `[ACCION_COMPLETADA] No encontré la unidad ${params.unidad}. Revisa si el número es correcto.`;
@@ -1924,7 +1918,7 @@ RESPUESTA:`);
     }
 
     private formatearRespuestaBusqueda(items: any[], mensajeIntro: string) {
-        const lista = items.map((r, idx) => {
+        const lista = items.slice(0, 3).map((r, idx) => {
             const m = r.document.metadata;
 
             const pList = m.price_list ? parseFloat(m.price_list) : 0;
@@ -1953,13 +1947,51 @@ RESPUESTA:`);
             return `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - ${precioMostrar}`;
         }).join('\n');
 
-        return `[ACCION_COMPLETADA] ${mensajeIntro}\n\n${lista}\n\n<<INSTRUCCION_IA: Recomienda una opcion y pregunta si quiere ver el plano o agendar visita.>>`;
+        return `[ACCION_COMPLETADA] ${mensajeIntro}\n\n${lista}\n\n<<INSTRUCCION_IA: Lista estas opciones tal como vienen, sin autoelegir ninguna. Pregunta cual de estas opciones prefiere o si quiere ver mas alternativas. NO pidas nombre, DNI, proforma ni visita hasta que el cliente elija una unidad.>>`;
     }
 
-    private formatearDetalleUnidad(m: any) {
+    private async resolverNombreProyectoUnidad(m: any, params: any): Promise<string> {
+        if (m.project_name?.trim()) {
+            return m.project_name.trim();
+        }
+
+        if (params?.nombre_proyecto?.trim()) {
+            return params.nombre_proyecto.trim();
+        }
+
+        const proyectoId = m.project_id || params?.proyectoId || null;
+        if (proyectoId) {
+            const proyecto = await this.proyectosRepo.findOne({
+                where: { id: proyectoId }
+            });
+            if (proyecto?.nombre?.trim()) {
+                return proyecto.nombre.trim();
+            }
+        }
+
+        if (params?.leadUuid && params?.codigoEmpresa) {
+            const sesion = await this.sesionRepo.findOne({
+                where: { leadUuid: params.leadUuid, codigoEmpresa: params.codigoEmpresa }
+            });
+
+            if (sesion?.proyectoId) {
+                const proyectoSesion = await this.proyectosRepo.findOne({
+                    where: { id: sesion.proyectoId, codigoEmpresa: params.codigoEmpresa }
+                });
+                if (proyectoSesion?.nombre?.trim()) {
+                    return proyectoSesion.nombre.trim();
+                }
+            }
+        }
+
+        return 'Proyecto ';
+    }
+
+    private async formatearDetalleUnidad(m: any, params: any) {
         // Formatear precio mostrando lista y promocion si existe
         const pList = m.price_list ? parseFloat(m.price_list) : 0;
         const pPromo = m.price_promo ? parseFloat(m.price_promo) : 0;
+        const nombreProyecto = await this.resolverNombreProyectoUnidad(m, params);
 
         const fechaLimite = new Date('2025-01-01');
         const mostrarPromos = new Date() < fechaLimite;
@@ -1974,7 +2006,7 @@ RESPUESTA:`);
         // Construir detalle completo con TODOS los campos disponibles
         const detalles: string[] = [
             `[ACCION_COMPLETADA] **Unidad ${m.unit_number}**`,
-            `- Proyecto: ${m.project_name || 'el proyecto'}`,
+            `- Proyecto: ${nombreProyecto}`,
             `- Tipo: ${m.unit_type || 'Departamento'} (${m.typology || 'Standard'})`,
             `- Piso: ${m.floor}`,
             `- Dormitorios: ${m.bedrooms}`,
