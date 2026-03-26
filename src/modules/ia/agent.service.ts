@@ -142,33 +142,7 @@ export class AgentService {
     }
   }
 
-  private applyContextualSummaryFallbacks(
-    puntos: string[],
-    mensaje: string,
-    pasoPendienteActual: number,
-  ): void {
-    const mensajeTrim = (mensaje || '').trim();
-    const mensajeNormalizado = this.normalizeText(mensaje);
 
-    if (pasoPendienteActual === 1) {
-      const matchDormitorios = mensajeTrim.match(/^([123])$/);
-      if (matchDormitorios) {
-        this.addSummaryPoint(puntos, `Paso 1 - Dormitorios: ${matchDormitorios[1]}`);
-      }
-    }
-
-    if (pasoPendienteActual === 5) {
-      const matchMonto =
-        mensajeTrim.match(/^S\/\s*(\d[\d.,]*)$/i) ||
-        mensajeTrim.match(/^(\d[\d.,]*)\s*(?:soles?|sol)?$/i) ||
-        mensajeNormalizado.match(/^(\d[\d.,]*)\s*(?:soles?|sol|s\/)?(?:\s+al\s+mes|\s+mensuales?)?$/i);
-
-      if (matchMonto) {
-        const monto = matchMonto[1].replace(',', '.');
-        this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${monto} soles`);
-      }
-    }
-  }
 
   private async hasExplicitUnitSelection(userMessage: string, unidad?: string): Promise<boolean> {
     if (!userMessage?.trim()) return false;
@@ -304,7 +278,7 @@ Responde solo con el JSON requerido.`;
       tools.add('reagendar_cita');
     }
 
-    if (/\bdepartamento\b|\bdepa\b|\bunidades?\b|\bopciones?\b|\bdormitorio\b|\bdorm\b|\bcuartos?\b|\bpiso\b|\bvista\b|\bprecio\b|\bunidad\b/.test(normalized)) {
+    if (/\bdepartamentos?\b|\bdepas?\b|\bunidades?\b|\bopciones?\b|\bdormitorios?\b|\bdorms?\b|\bcuartos?\b|\bpisos?\b|\bvista\b|\bprecio\b|\bunidad\b/.test(normalized)) {
       tools.add('buscar_departamento');
     }
 
@@ -1213,61 +1187,88 @@ Responde solo con el JSON requerido.`;
       });
 
       const prompt = `
-      Analiza el siguiente mensaje del cliente inmobiliario. Un solo mensaje puede contener MULTIPLES datos de distintas categorias. Extrae TODOS los datos que encuentres, no solo uno.
+      Eres un extractor de datos de conversaciones inmobiliarias en Perú. Analiza el mensaje del cliente y extrae TODOS los datos útiles que puedas encontrar. Un solo mensaje puede contener múltiples datos de distintas categorías.
 
-      Este resumen sera la FUENTE PRINCIPAL de continuidad del flujo cuando el historial reciente sea corto, asi que debes priorizar con precision los datos del funnel comercial.
+      El cliente puede escribir con errores tipográficos, abreviaciones, jerga peruana o de forma muy casual. SIEMPRE interpreta la intención real aunque haya errores. Este resumen es la FUENTE PRINCIPAL de continuidad del flujo.
 
-      CONTEXTO DE SESION ACTUAL:
-      - Paso pendiente actual estimado: ${contextoActual.pasoPendiente}
-      - Dormitorios ya capturados: ${contextoActual.dormitorios || 'ninguno'}
-      - Zona ya capturada: ${contextoActual.zonaPreferida || 'ninguna'}
-      - Presupuesto ya capturado: ${contextoActual.presupuesto || 'ninguno'}
+      CONTEXTO DE SESIÓN ACTUAL:
+      - Paso actual del flujo: ${contextoActual.pasoPendiente}
+      - Dormitorios ya registrados: ${contextoActual.dormitorios || 'ninguno'}
+      - Zona ya registrada: ${contextoActual.zonaPreferida || 'ninguna'}
+      - Presupuesto ya registrado: ${contextoActual.presupuesto || 'ninguno'}
 
-      REGLA CRITICA - REFERENCIAS POSICIONALES (LEER PRIMERO):
-      Si el mensaje contiene frases como "la 1", "la 2", "la 3", "a ver la 3", "quiero la segunda", "opción 2", "esa la primera", "dame la 3 porfa" u similares, el cliente está ELIGIENDO UNA OPCION DE UNA LISTA que el agente le presentó anteriormente — NO está diciendo cuántos dormitorios quiere.
-      - NUNCA extraigas dormitorios de un número que sea referencia posicional de lista.
-      - Si el paso pendiente actual es >= 6, dormitorios YA fueron capturados en pasos anteriores. Un número 1-9 en el mensaje es casi seguro una selección de lista, NO dormitorios. Deja dormitorios como array vacío.
-      - Ejemplos de referencias POSICIONALES (dormitorios debe ser []):
-        * "a ver la 3 porfa" → dormitorios: []
-        * "la segunda" → dormitorios: []
-        * "quiero ver la 2" → dormitorios: []
-        * "opcion 1" → dormitorios: []
-        * "esa la tercera" → dormitorios: []
-      - Ejemplos REALES de dormitorios (solo si el cliente lo dice en contexto de búsqueda):
-        * "busco 2 dormitorios" → dormitorios: [2]
-        * "quiero un departamento de 3 cuartos" → dormitorios: [3]
-        * "necesito 1 dormitorio" → dormitorios: [1]
+      DORMITORIOS — cuántos cuartos/habitaciones busca el cliente
 
-      REGLAS PARA RESPUESTAS CORTAS:
-      - Si el paso pendiente actual es 1 y el mensaje es solo "1", "2" o "3" (sin articulo ni contexto de lista), interpretalo como dormitorios.
-      - Si el paso pendiente actual es 5 y el mensaje es solo un monto como "300", "1200" o "S/1200", interpretalo como presupuesto/cuota.
-      - Si el mensaje menciona un NOMBRE DE PROYECTO, NO lo confundas con distrito o zona preferida.
+      Extrae si el cliente describe cuántos dormitorios quiere. Acepta CUALQUIER forma de decirlo:
+      "1 dorm", "dos cuartos", "tres habitaciones", "3 ambientes", "una", "de 2", "quiero 2",
+      "busco de 3", "dijiste de 2", "2 dormis", "dos", "quiero un depa de 2", "con 2", etc.
 
-      IMPORTANTE: Si el mensaje tiene varios datos juntos, captúralos TODOS. Ejemplos:
-      - "para inversión en Lince" → proposito: "inversion" Y zonas: ["Lince"]
-      - "busco 2 dormitorios para vivir en Surco o Miraflores" → dormitorios: [2] Y proposito: "vivir" Y zonas: ["Surco", "Miraflores"]
-      - "quiero un depa de 3 cuartos, mi presupuesto es 3000 soles de cuota, crédito hipotecario" → dormitorios: [3] Y presupuesto: "3000 soles cuota" Y financiamiento: "hipotecario"
-      - "mis ingresos son 5000-6000" → ingresos: "5000-6000"
-      - "gano 8k" → ingresos: "8k"
-      - "me llamo Juan Pérez" → nombre_completo: "Juan Pérez"
-      - "mi dni es 12345678" → dni: "12345678"
-      - "mi correo es juan@gmail.com" → email: "juan@gmail.com"
-      - "soy contador" → ocupacion: "contador"
-      - "me interesa la 1003" → unidad_interes: "1003"
+      EXCEPCIÓN POSICIONAL: Si el paso actual es >= 6 (ya se mostró inventario), los dormitorios ya están capturados.
+      Un número suelto como "la 2", "la primera", "a ver la 3", "opción 2" es UNA ELECCIÓN DE LISTA → array vacío.
+      Ejemplos:
+      * "1" (paso 1) → dormitorios: [1]
+      * "dos" (paso 1) → dormitorios: [2]
+      * "de 2" (paso 1) → dormitorios: [2]
+      * "busco de tres cuartos" → dormitorios: [3]
+      * "quiero 2 o 3 dormitorios" → dormitorios: [2, 3]
+      * "a ver la 2" (paso 6+) → dormitorios: []
+      * "la primera" (paso 6+) → dormitorios: []
 
-      PRESUPUESTO - Ejemplos CRITICOS (cualquier monto que el cliente mencione como cuota/presupuesto):
-      - "mi presupuesto es de 400 soles" → presupuesto: "400 soles"
-      - "mi presuueto es de 400 soles" → presupuesto: "400 soles" (ignorar errores tipograficos)
-      - "podria unos 300 soles" → presupuesto: "300 soles"
-      - "unos 500 al mes" → presupuesto: "500 soles mensuales"
-      - "manejo 2000 de cuota" → presupuesto: "2000 soles cuota"
-      - "tengo 150k" → presupuesto: "150k"
-      - "puedo pagar 1500" → presupuesto: "1500 soles"
-      - "mi cuota sería de 800" → presupuesto: "800 soles cuota"
 
-      Si no hay información de un tipo, déjalo vacío. Ignora saludos o ruido.
+      PRESUPUESTO — cuota mensual o monto que puede pagar
+
+      Extrae si el cliente menciona un monto, aunque el mensaje sea corto o tenga errores. Acepta cualquier variante:
+      * "400" (paso 5) → presupuesto: "400 soles"
+      * "S/1200" → presupuesto: "1200 soles"
+      * "unos 800 al mes" → presupuesto: "800 soles mensuales"
+      * "puedo 1500" → presupuesto: "1500 soles"
+      * "maximo 2000" → presupuesto: "2000 soles"
+      * "3k de cuota" → presupuesto: "3k"
+      * "mi cuota seria de 900" → presupuesto: "900 soles cuota"
+      * "tengo como 500" → presupuesto: "500 soles"
+      * "no mas de 1000" → presupuesto: "1000 soles"
+      * "presupueto 600" (typo) → presupuesto: "600 soles"
+      * "manejaría hasta 1500" → presupuesto: "1500 soles"
+      * "mi cuota eria 700" (typo) → presupuesto: "700 soles cuota"
+      * "podria pagar unos 2500" → presupuesto: "2500 soles"
+      * "con 2000 al mes" → presupuesto: "2000 soles mensuales"
+
+
+      FINANCIAMIENTO — cómo pagará el departamento
+
+      - "hipotecario" → hipotecario: crédito hipotecario, banco, via banco, crédito, bbva, scotiabank, bcp, interbank, Mivivienda, Techo Propio, "con el banco", "crédito bancario"
+      - "directo" → directo con la empresa: con Checor, con ustedes, con la inmobiliaria, con la constructora, financiamiento propio, financiado por ustedes, financiamiento directo, "directo"
+      - "contado" → al contado, al cash, de contado, pago total, efectivo, "pago todo"
+
+
+      PROPÓSITO — para qué quiere el depa
+
+      - "vivir": para vivir, para mi familia, para mudarme, vivienda, para mi, para residencia
+      - "inversion": inversión, invertir, rentar, alquilar, arrendar, para negocio, para pasivo
+      - "mix_uso": los dos, vivir y rentar, para vivir/invertir, uso mixto
+
       
-      Mensaje: "${mensaje}"
+      TIEMPO DE COMPRA — cuándo planea comprar
+
+      Acepta cualquier forma: "este año", "en 6 meses", "pronto", "ahorita", "ya", "para diciembre",
+      "a fin de año", "no sé todavía", "en un año", "a largo plazo", "cuando pueda", "próximo año".
+
+
+      ZONA / DISTRITO — dónde quiere el depa
+
+      Extrae distritos o zonas de Lima u otras ciudades peruanas. NO confundas con nombres de proyectos inmobiliarios.
+      OTROS CAMPOS
+      - nombre_completo: si el cliente dice sus nombres o datos 
+      - dni: 8 dígitos consecutivos que el cliente mencione como DNI.
+      - email: correo electrónico si lo proporciona.
+      - ocupacion: profesión u oficio. Ej: "soy enfermera", "trabajo en construcción", "ingeniero civil".
+      - ingresos: sueldo o ingresos mensuales. Mantén rangos exactos. Ej: "5000-6000", "entre 3k y 4k", "unos 4500".
+      - unidad_interes: número o código de unidad específica si el cliente la menciona. Ej: "la 1003", "unidad 802", "A-602".
+      - intereses_adicionales: temas adicionales detectados (estacionamiento, mascota, fecha de entrega, areas_comunes, cuota inicial).
+
+      Si no encuentras información de un campo, déjalo vacío/null. Ignora saludos, gracias, emojis y texto sin datos útiles.
+
+      Mensaje del cliente: "${mensaje}"
       `;
 
       let result: any;
@@ -1341,38 +1342,7 @@ Responde solo con el JSON requerido.`;
         this.addSummaryPoint(puntos, `Paso 9 - Ingresos mensuales: ${result.ingresos}`);
       }
 
-      this.applyContextualSummaryFallbacks(puntos, mensaje, contextoActual.pasoPendiente);
 
-      // Fallback regex para PRESUPUESTO cuando el LLM no lo detecta.
-      // Cubre mensajes cortos como "mi presupuesto es de 400 soles", "podria 300", etc.
-      if (!result.presupuesto) {
-        const mensajeNorm = this.normalizeText(mensaje);
-        const matchPresupuesto = mensajeNorm.match(
-          /(?:presupuesto|presuueto|cuota|pagar|pago|manejo|podria|unos|tengo)[^\d]*(\d[\d.,]*)\s*(?:soles?|sol|s\/?|k)?/i
-        );
-        if (matchPresupuesto) {
-          const monto = matchPresupuesto[1].replace(',', '.');
-          this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${monto} soles`);
-        }
-      }
-
-      // Fallback regex para financiamiento cuando el LLM no lo detecta del enum.
-      // Ejemplo: "con checor" no matchea ['hipotecario','banco','directo','contado']
-      // pero sí es financiamiento directo.
-      if (!result.financiamiento) {
-        const mensajeNormalizado = this.normalizeText(mensaje);
-        if (
-          /\b(quiero|queiro|prefiero|con)\s+(checor|ustedes|la empresa|la inmobiliaria|la constructora)\b/.test(mensajeNormalizado) ||
-          /\bfinanciamiento directo\b/.test(mensajeNormalizado) ||
-          /\bdirecto\b/.test(mensajeNormalizado)
-        ) {
-          this.addSummaryPoint(puntos, 'Paso 4 - Financiamiento: directo con Checor');
-        } else if (/\bhipotecario\b|\bbanco\b|\bcredito\b/.test(mensajeNormalizado)) {
-          this.addSummaryPoint(puntos, 'Paso 4 - Financiamiento: crédito hipotecario');
-        } else if (/\bcontado\b|\bal cash\b/.test(mensajeNormalizado)) {
-          this.addSummaryPoint(puntos, 'Paso 4 - Financiamiento: al contado');
-        }
-      }
 
       // Intereses adicionales mapeados
       if (result.intereses_adicionales && result.intereses_adicionales.length > 0) {
