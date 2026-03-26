@@ -158,6 +158,37 @@ export class ServicioSperantService {
             throw new Error(`Lead ${params.leadUuid} no encontrado para sincronización SPERANT`);
         }
 
+        const clienteExistente = await this.buscarClienteSperantExistente({
+            codigoEmpresa: params.codigoEmpresa,
+            lead,
+        });
+
+        if (clienteExistente) {
+            const mappingPorCliente = await this.mapeoContactoRepo.findOne({
+                where: {
+                    codigoEmpresa: params.codigoEmpresa,
+                    clienteIdSperant: clienteExistente.clienteIdSperant,
+                },
+            });
+
+            if (mappingPorCliente) {
+                return mappingPorCliente;
+            }
+
+            const mapping = this.mapeoContactoRepo.create({
+                codigoEmpresa: params.codigoEmpresa,
+                leadId: lead.id,
+                leadUuid: lead.uuid,
+                clienteIdSperant: clienteExistente.clienteIdSperant,
+                documento: lead.dni || null,
+                email: lead.email || null,
+                telefono: lead.telefono || null,
+                estado: 'activo',
+            });
+
+            return this.mapeoContactoRepo.save(mapping);
+        }
+
         const inputChannelId = params.inputChannelId || Number(this.configService.get<string>('SPERANT_DEFAULT_INPUT_CHANNEL_ID') || 0);
         const sourceId = params.sourceId || Number(this.configService.get<string>('SPERANT_DEFAULT_SOURCE_ID') || 0);
         const interestTypeId = params.interestTypeId || Number(this.configService.get<string>('SPERANT_DEFAULT_INTEREST_TYPE_ID') || 0);
@@ -181,6 +212,17 @@ export class ServicioSperantService {
 
         const response = await this.servicioApiSperant.crearCliente(params.codigoEmpresa, payload);
         const clienteIdSperant = this.extraerIdSperant(response, 'cliente');
+
+        const mappingPorCliente = await this.mapeoContactoRepo.findOne({
+            where: {
+                codigoEmpresa: params.codigoEmpresa,
+                clienteIdSperant,
+            },
+        });
+
+        if (mappingPorCliente) {
+            return mappingPorCliente;
+        }
 
         const mapping = this.mapeoContactoRepo.create({
             codigoEmpresa: params.codigoEmpresa,
@@ -206,6 +248,21 @@ export class ServicioSperantService {
         eventTypeId?: number;
         unitIdSperant?: number;
     }): Promise<SincronizacionCitaSperant> {
+        const syncExistentePorCita = await this.syncCitaRepo.findOne({
+            where: {
+                codigoEmpresa: params.codigoEmpresa,
+                idCitaLocal: params.idCitaLocal,
+                leadUuid: params.leadUuid,
+            },
+            order: {
+                id: 'DESC',
+            },
+        });
+
+        if (syncExistentePorCita?.eventoIdSperant) {
+            return syncExistentePorCita;
+        }
+
         const cita = await this.citaRepo.findOne({
             where: {
                 id: params.idCitaLocal,
@@ -238,16 +295,30 @@ export class ServicioSperantService {
             codigoEmpresa: params.codigoEmpresa,
         });
 
-        const eventTypeId = params.eventTypeId || Number(this.configService.get<string>('SPERANT_DEFAULT_EVENT_TYPE_ID') || 0);
-        const creatorId = params.creatorId || Number(this.configService.get<string>('SPERANT_DEFAULT_CREATOR_ID') || 0);
+        const eventTypeId = await this.resolverEventTypeId(params.codigoEmpresa, params.eventTypeId);
+        const creatorId = await this.resolverCreatorId({
+            codigoEmpresa: params.codigoEmpresa,
+            clienteIdSperant: mapeo.clienteIdSperant,
+            telefono: lead.telefono,
+            creatorId: params.creatorId,
+        });
         const duration = params.duration || Number(this.configService.get<string>('SPERANT_DEFAULT_DURATION_MINUTES') || 60);
-
-        if (!eventTypeId || !creatorId) {
-            throw new Error('Faltan SPERANT_DEFAULT_EVENT_TYPE_ID o SPERANT_DEFAULT_CREATOR_ID para crear citas en SPERANT');
-        }
 
         const fechaHoraIso = `${cita.fechaCita}T${cita.horaCita}-05:00`;
         const fechaHoraUnix = Math.floor(new Date(fechaHoraIso).getTime() / 1000);
+
+        const syncDuplicado = await this.buscarEventoDuplicado(
+            params.codigoEmpresa,
+            mapeo.clienteIdSperant,
+            fechaHoraUnix,
+        );
+
+        if (syncDuplicado?.eventoIdSperant) {
+            this.logger.log(
+                `[Sperant][Cita] Reutilizando evento existente ${syncDuplicado.eventoIdSperant} para client_id=${mapeo.clienteIdSperant} datetime_start=${fechaHoraUnix}`,
+            );
+            return syncDuplicado;
+        }
 
         const payload = {
             event_type_id: eventTypeId,
@@ -585,6 +656,312 @@ export class ServicioSperantService {
 
             if (porTelefono) {
                 return porTelefono;
+            }
+        }
+
+        return null;
+    }
+
+    private async buscarClienteSperantExistente(params: {
+        codigoEmpresa: number;
+        lead: Lead;
+    }): Promise<{ clienteIdSperant: number; origen: 'webhook' | 'api' } | null> {
+        const { codigoEmpresa, lead } = params;
+
+        const desdeWebhook = await this.buscarClienteSperantEnWebhooks(codigoEmpresa, lead.telefono);
+        if (desdeWebhook) {
+            this.logger.log(
+                `[Sperant][Cliente] client_id=${desdeWebhook} recuperado desde historial de webhooks para lead ${lead.uuid}`,
+            );
+            return { clienteIdSperant: desdeWebhook, origen: 'webhook' };
+        }
+
+        const candidatosBusqueda = this.generarCandidatosBusquedaCliente(lead);
+
+        for (const q of candidatosBusqueda) {
+            const response = await this.servicioApiSperant.buscarClientes(codigoEmpresa, q);
+            const clienteIdSperant = this.extraerClienteIdDesdeListado(response, lead);
+
+            if (clienteIdSperant) {
+                this.logger.log(
+                    `[Sperant][Cliente] client_id=${clienteIdSperant} encontrado por API q=${q} para lead ${lead.uuid}`,
+                );
+                return { clienteIdSperant, origen: 'api' };
+            }
+        }
+
+        return null;
+    }
+
+    private async buscarClienteSperantEnWebhooks(
+        codigoEmpresa: number,
+        telefono?: string | null,
+    ): Promise<number | null> {
+        const telefonos = this.generarVariantesTelefono(telefono);
+
+        if (telefonos.length === 0) {
+            return null;
+        }
+
+        const evento = await this.eventoWebhookRepo
+            .createQueryBuilder('evento')
+            .where('evento.codigo_empresa = :codigoEmpresa', { codigoEmpresa })
+            .andWhere('evento.cliente_id_sperant IS NOT NULL')
+            .andWhere(`
+                (
+                    JSON_UNQUOTE(JSON_EXTRACT(evento.payload, '$.client.phone')) IN (:...telefonos)
+                    OR JSON_UNQUOTE(JSON_EXTRACT(evento.payload, '$.client.main_telephone')) IN (:...telefonos)
+                )
+            `, { telefonos })
+            .orderBy('evento.id', 'DESC')
+            .getOne();
+
+        return evento?.clienteIdSperant || null;
+    }
+
+    private generarCandidatosBusquedaCliente(lead: Lead): string[] {
+        const candidatos = new Set<string>();
+
+        for (const telefono of this.generarVariantesTelefono(lead.telefono)) {
+            candidatos.add(telefono);
+        }
+
+        if (lead.email) {
+            candidatos.add(String(lead.email).trim().toLowerCase());
+        }
+
+        if (lead.dni) {
+            candidatos.add(String(lead.dni).trim());
+        }
+
+        return Array.from(candidatos).filter(Boolean);
+    }
+
+    private generarVariantesTelefono(telefono?: string | null): string[] {
+        if (!telefono) {
+            return [];
+        }
+
+        const limpio = String(telefono).replace(/\D/g, '');
+        if (!limpio) {
+            return [];
+        }
+
+        const variantes = new Set<string>([limpio, `+${limpio}`]);
+        const ultimosNueve = limpio.slice(-9);
+
+        if (ultimosNueve && ultimosNueve !== limpio) {
+            variantes.add(ultimosNueve);
+            variantes.add(`+51${ultimosNueve}`);
+            variantes.add(`51${ultimosNueve}`);
+        }
+
+        return Array.from(variantes);
+    }
+
+    private extraerClienteIdDesdeListado(response: any, lead: Lead): number | null {
+        const data = Array.isArray(response?.data) ? response.data : [];
+
+        for (const item of data) {
+            const attributes = item?.attributes || {};
+            const telefono = String(attributes?.phone || attributes?.main_telephone || '').replace(/\D/g, '');
+            const email = String(attributes?.email || '').trim().toLowerCase();
+            const documento = String(attributes?.document || '').trim();
+            const variantesTelefono = this.generarVariantesTelefono(lead.telefono);
+            const coincideTelefono = !!lead.telefono
+                && (variantesTelefono.includes(telefono) || variantesTelefono.includes(`+${telefono}`));
+            const coincideEmail = !!lead.email && email === String(lead.email).trim().toLowerCase();
+            const coincideDocumento = !!lead.dni && documento === String(lead.dni).trim();
+
+            if (coincideTelefono || coincideEmail || coincideDocumento) {
+                const clienteId = Number(attributes?.id || item?.id);
+                if (clienteId) {
+                    return clienteId;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private async buscarEventoDuplicado(
+        codigoEmpresa: number,
+        clienteIdSperant: number,
+        datetimeStart: number,
+    ): Promise<SincronizacionCitaSperant | null> {
+        return this.syncCitaRepo
+            .createQueryBuilder('sync')
+            .where('sync.codigo_empresa = :codigoEmpresa', { codigoEmpresa })
+            .andWhere('sync.cliente_id_sperant = :clienteIdSperant', { clienteIdSperant })
+            .andWhere(`JSON_EXTRACT(sync.payload_request, '$.datetime_start') = :datetimeStart`, {
+                datetimeStart,
+            })
+            .andWhere('sync.estado != :estadoError', { estadoError: 'error' })
+            .orderBy('sync.id', 'DESC')
+            .getOne();
+    }
+
+    private async resolverEventTypeId(codigoEmpresa: number, eventTypeIdParam?: number): Promise<number> {
+        if (eventTypeIdParam) {
+            return eventTypeIdParam;
+        }
+
+        const eventTypeIdConfig = Number(this.configService.get<string>('SPERANT_DEFAULT_EVENT_TYPE_ID') || 0);
+        if (eventTypeIdConfig) {
+            return eventTypeIdConfig;
+        }
+
+        const ultimoEventTypeId = await this.obtenerUltimoCampoSincronizacion(codigoEmpresa, 'event_type_id');
+        if (ultimoEventTypeId) {
+            return ultimoEventTypeId;
+        }
+
+        try {
+            const response = await this.servicioApiSperant.listarTiposEvento(codigoEmpresa);
+            const tipos = Array.isArray(response?.data) ? response.data : [];
+            const preferido = tipos.find((item: any) => {
+                const nombre = String(item?.attributes?.name || '').toLowerCase();
+                return nombre.includes('cita');
+            }) || tipos[0];
+
+            const id = Number(preferido?.attributes?.id || preferido?.id || 0);
+            if (id) {
+                return id;
+            }
+        } catch (error) {
+            this.logger.warn(`[Sperant][Cita] No se pudo resolver event_type_id desde catalogo: ${error instanceof Error ? error.message : error}`);
+        }
+
+        throw new Error('No se pudo resolver event_type_id para crear la cita en SPERANT');
+    }
+
+    private async resolverCreatorId(params: {
+        codigoEmpresa: number;
+        clienteIdSperant: number;
+        telefono?: string | null;
+        creatorId?: number;
+    }): Promise<number> {
+        if (params.creatorId) {
+            return params.creatorId;
+        }
+
+        const creatorIdConfig = Number(this.configService.get<string>('SPERANT_DEFAULT_CREATOR_ID') || 0);
+        if (creatorIdConfig) {
+            return creatorIdConfig;
+        }
+
+        const ultimoCreatorId = await this.obtenerUltimoCampoSincronizacion(params.codigoEmpresa, 'creator_id');
+        if (ultimoCreatorId) {
+            return ultimoCreatorId;
+        }
+
+        const creatorDesdeWebhook = await this.buscarCreatorIdDesdeWebhooks(
+            params.codigoEmpresa,
+            params.clienteIdSperant,
+            params.telefono,
+        );
+
+        if (creatorDesdeWebhook) {
+            return creatorDesdeWebhook;
+        }
+
+        try {
+            const response = await this.servicioApiSperant.listarUsuarios(params.codigoEmpresa);
+            const usuarios = Array.isArray(response?.data) ? response.data : [];
+            const primero = usuarios[0];
+            const id = Number(primero?.attributes?.id || primero?.id || 0);
+            if (id) {
+                return id;
+            }
+        } catch (error) {
+            this.logger.warn(`[Sperant][Cita] No se pudo resolver creator_id desde /users: ${error instanceof Error ? error.message : error}`);
+        }
+
+        throw new Error('No se pudo resolver creator_id para crear la cita en SPERANT');
+    }
+
+    private async obtenerUltimoCampoSincronizacion(
+        codigoEmpresa: number,
+        campo: 'event_type_id' | 'creator_id',
+    ): Promise<number | null> {
+        const sync = await this.syncCitaRepo.findOne({
+            where: {
+                codigoEmpresa,
+                estado: 'procesado',
+            },
+            order: {
+                id: 'DESC',
+            },
+        });
+
+        const valor = Number(sync?.payloadRequest?.[campo] || 0);
+        return valor || null;
+    }
+
+    private async buscarCreatorIdDesdeWebhooks(
+        codigoEmpresa: number,
+        clienteIdSperant: number,
+        telefono?: string | null,
+    ): Promise<number | null> {
+        const eventosPorCliente = await this.eventoWebhookRepo.find({
+            where: {
+                codigoEmpresa,
+                clienteIdSperant,
+            },
+            order: {
+                id: 'DESC',
+            },
+            take: 10,
+        });
+
+        for (const evento of eventosPorCliente) {
+            const creatorId = this.extraerCreatorIdDesdePayload(evento.payload);
+            if (creatorId) {
+                return creatorId;
+            }
+        }
+
+        const telefonos = this.generarVariantesTelefono(telefono);
+        if (telefonos.length === 0) {
+            return null;
+        }
+
+        const eventosPorTelefono = await this.eventoWebhookRepo
+            .createQueryBuilder('evento')
+            .where('evento.codigo_empresa = :codigoEmpresa', { codigoEmpresa })
+            .andWhere(`
+                (
+                    JSON_UNQUOTE(JSON_EXTRACT(evento.payload, '$.client.phone')) IN (:...telefonos)
+                    OR JSON_UNQUOTE(JSON_EXTRACT(evento.payload, '$.client.main_telephone')) IN (:...telefonos)
+                )
+            `, { telefonos })
+            .orderBy('evento.id', 'DESC')
+            .limit(10)
+            .getMany();
+
+        for (const evento of eventosPorTelefono) {
+            const creatorId = this.extraerCreatorIdDesdePayload(evento.payload);
+            if (creatorId) {
+                return creatorId;
+            }
+        }
+
+        return null;
+    }
+
+    private extraerCreatorIdDesdePayload(payload: any): number | null {
+        const candidatos = [
+            payload?.current_user_id,
+            payload?.seller_id,
+            payload?.client?.seller_id,
+            payload?.client?.last_interaction_project?.seller_id,
+            payload?.client?.last_agent_assigned,
+        ];
+
+        for (const candidato of candidatos) {
+            const numero = Number(candidato || 0);
+            if (numero) {
+                return numero;
             }
         }
 

@@ -1127,9 +1127,11 @@ DATOS DE LA CITA:
                 instruccionCambioProyecto = ` <<INSTRUCCION_IA: Después de responder, pregúntale explícitamente: "Tu proyecto actual es ${proyectoSesionActual.nombre}. ¿Te gustaría cambiarte a ${proyectoPrincipal.nombre}?" Si el cliente confirma con un sí claro, recién ejecuta guardar_proyecto y desde ese momento continúa todo el flujo usando ${proyectoPrincipal.nombre}.>>`;
             }
 
+            const instruccionPrecisionRespuesta = ' <<INSTRUCCION_IA: Responde usando solo los datos literales recuperados arriba. Si el cliente pregunta por varios proyectos o por varios datos y alguno no aparece de forma explicita en esta respuesta, di que no lo tienes confirmado. NO inventes, completes ni deduzcas informacion faltante.>>';
+
             const respuestaDeterministica = this.getFaqDirectResponse(docs, modoBusqueda);
             if (respuestaDeterministica) {
-                return `[ACCION_COMPLETADA] ${respuestaDeterministica} ${instruccionNoCambio}${instruccionCambioProyecto}`;
+                return `[ACCION_COMPLETADA] ${respuestaDeterministica} ${instruccionNoCambio}${instruccionCambioProyecto}${instruccionPrecisionRespuesta}`;
             }
 
             const promptTemplate = ChatPromptTemplate.fromTemplate(`
@@ -1151,6 +1153,7 @@ REGLAS:
 - Responde de forma natural, NO menciones "segun la base de datos" ni "segun el contexto".
 - Si el contexto trae una fecha exacta o estimada de entrega, responde con esa fecha exacta. NO la transformes en "entrega inmediata", "listo para entrega" o frases equivalentes salvo que el contexto lo diga literalmente.
 - Si el contexto contiene informacion de varios proyectos, menciona claramente el nombre del proyecto al que pertenece cada dato relevante.
+- Si la pregunta es de ubicacion, direccion o mapa y el contexto NO trae una direccion o link literal para alguno de los proyectos preguntados, di que no tienes la ubicacion confirmada de ese proyecto. NO completes listas de proyectos con direcciones inventadas.
 - Si la pregunta es sobre otro proyecto distinto al activo, responde con ese proyecto sin decir que cambiaste la sesion ni insinuar que ya se actualizo el proyecto.
 - SOLO di "No tengo informacion sobre eso" si NINGUNA de las preguntas frecuentes del contexto tiene relacion alguna con lo que pregunta el usuario.
 
@@ -1177,7 +1180,7 @@ RESPUESTA:`);
                 return "[ACCION_COMPLETADA] No encontre informacion sobre eso en mis registros. <<INSTRUCCION_IA: No inventes ni reformules la misma consulta en bucle. Si esta duda es importante para que el cliente decida o ya hubo friccion, activa modo contencion y ofrece agendar una visita para que lo atienda un asesor.>>";
             }
 
-            return `[ACCION_COMPLETADA] ${resultado} ${instruccionNoCambio}${instruccionCambioProyecto}`;
+            return `[ACCION_COMPLETADA] ${resultado} ${instruccionNoCambio}${instruccionCambioProyecto}${instruccionPrecisionRespuesta}`;
 
         } catch (error) {
             if (error.message === 'PROYECTO_NO_SELECCIONADO') {
