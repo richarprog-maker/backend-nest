@@ -76,6 +76,10 @@ export class ToolsExecutionService {
         return /^\d{8}$/.test(normalized) && normalized !== '00000000' && !normalized.startsWith('00');
     }
 
+    private extractDniDigits(value?: string | null): string {
+        return String(value || '').replace(/\D/g, '');
+    }
+
     private async registrarTokensFaq(
         leadUuid: string | undefined,
         codigoEmpresa: number | undefined,
@@ -1192,23 +1196,28 @@ RESPUESTA:`);
     }
 
     async validarDni(params: { dni: string; leadUuid?: string; codigoEmpresa?: number }) {
-        const dni = (params.dni || '').trim();
+        const dniOriginal = (params.dni || '').trim();
+        const dni = this.extractDniDigits(dniOriginal);
         const { leadUuid, codigoEmpresa } = params;
 
         // Validaciones
-        if (!dni || dni.length !== 8) {
-            return { success: false, mensaje: "El DNI debe tener exactamente 8 dígitos." };
+        if (!dni) {
+            return { success: false, mensaje: "El DNI debe contener números." };
         }
 
-        if (!/^\d{8}$/.test(dni)) {
-            return { success: false, mensaje: "El DNI solo debe contener números." };
+        if (dni.length > 8) {
+            this.logger.warn(`DNI descartado por exceso de dígitos para lead ${leadUuid || 'sin_contexto'}: ${dniOriginal}`);
+            return { success: false, mensaje: "El DNI no puede tener más de 8 dígitos." };
+        }
+
+        if (dni.length < 8) {
+            return { success: false, mensaje: "El DNI debe tener exactamente 8 dígitos." };
         }
 
         if (!this.isValidDni(dni)) {
             return { success: false, mensaje: "DNI invalido. Por favor verifica el numero." };
         }
 
-        //  Actualizar lead en BD si tenemos contexto (solo si está vacío)
         if (leadUuid && codigoEmpresa) {
             await this.actualizarLeadSeguro(leadUuid, codigoEmpresa, { dni });
         }

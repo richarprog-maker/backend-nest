@@ -34,7 +34,7 @@ export const buscarInmuebleSchema = z.object({
 });
 
 export const validarDniSchema = z.object({
-    dni: z.string().regex(/^\d{8}$/, "El DNI debe tener 8 dígitos"),
+    dni: z.string().min(1, "El DNI es requerido"),
 });
 
 export const buscarPorCuotaSchema = z.object({

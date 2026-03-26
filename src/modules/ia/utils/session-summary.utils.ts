@@ -89,10 +89,10 @@ export function resolvePasoPendiente(
     options?: StepResolutionOptions,
 ): number {
     const tieneProyectoAsignado = !!options?.proyectoId;
-    const tieneUbicacionResuelta = !!context.zonaPreferida || tieneProyectoAsignado;
 
     if (!context.dormitorios) return 1;
-    if (!tieneUbicacionResuelta) return 2;
+    if (!context.proposito) return 2;
+    if (!context.zonaPreferida && !tieneProyectoAsignado) return 2;
     if (!context.tiempoCompra) return 3;
 
     if (!context.presupuesto && !context.financiamiento) return 4;

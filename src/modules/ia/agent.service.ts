@@ -480,7 +480,7 @@ Responde solo con el JSON requerido.`;
       name: 'validar_dni',
       description: 'Valida que un DNI peruano sea válido (8 dígitos, no todo ceros) y lo guarda en el sistema.',
       schema: z.object({
-        dni: z.string().length(8).describe('DNI de 8 dígitos'),
+        dni: z.string().describe('DNI capturado tal como lo escribió el cliente. No recortes ni transformes dígitos.'),
       }),
       func: async (input, config) => {
         const { codigoEmpresa, leadUuid } = (config as any)?.metadata || {};

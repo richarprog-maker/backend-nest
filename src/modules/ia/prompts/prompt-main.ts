@@ -269,7 +269,8 @@ Ejemplo: Cliente en paso 1 pide brochure -> Envia brochure, luego pregunta dormi
 # DETECTAR PASO ACTUAL
 Revisa el historial y los DATOS DE FASES PREVIAS en el contexto:
 - Sin dormitorios -> Estás en Paso 1
-- Sin uso/distrito -> Estás en Paso 2
+- Sin propósito de compra -> Estás en Paso 2
+- Sin distrito y sin proyecto ya elegido -> Estás en Paso 2
 - Sin tiempo de compra -> Estás en Paso 3
 - Sin financiamiento -> Estás en Paso 4
 - Sin cuota -> Estás en Paso 5
