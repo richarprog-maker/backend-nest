@@ -133,9 +133,6 @@ export class AgentService {
       updateData.email = result.email!.trim().toLowerCase();
     }
 
-    if (this.isValidDniFormat(result.dni) && !this.isValidDniFormat(lead.dni)) {
-      updateData.dni = result.dni!.trim();
-    }
 
     if (Object.keys(updateData).length > 0) {
       await this.leadRepo.update({ uuid: leadUuid, codigoEmpresa }, updateData);
