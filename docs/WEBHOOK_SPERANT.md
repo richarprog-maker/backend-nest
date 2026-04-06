@@ -40,9 +40,6 @@ Por el momento este webhook no requiere token en headers ni autenticación adici
 
 ```json
 {
-  "event_name": "client_digital",
-  "current_user_id": 5,
-  "seller_id": 5,
   "client": {
     "id": 14867,
     "created_at": 1745530560,
@@ -66,10 +63,14 @@ Por el momento este webhook no requiere token en headers ni autenticación adici
     "project_id": 71,
     "interest_type_name": "alto",
     "captation_way": "a donde vivir",
-    "input_channel_name": "contacto web"
+    "input_channel_name": "contacto web",
+    
   },
+  "event_name": "client_created",
+  "current_user_id": 5,
   "token": ""
 }
+
 ```
 
 ## Respuesta esperada
