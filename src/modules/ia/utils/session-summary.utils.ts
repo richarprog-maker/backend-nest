@@ -92,7 +92,6 @@ export function resolvePasoPendiente(
 
     if (!context.dormitorios) return 1;
     if (!context.proposito) return 2;
-    if (!context.zonaPreferida && !tieneProyectoAsignado) return 2;
     if (!context.tiempoCompra) return 3;
 
     if (!context.presupuesto && !context.financiamiento) return 4;

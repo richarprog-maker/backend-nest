@@ -311,14 +311,18 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
         }
 
         if (metadataEmpresa.length > 1) {
-            const lista = metadataEmpresa.map((p, i) => `${i + 1}. ${p.nombre_proyecto} (Atención: ${formatHorario(p.horario_atencion)})`).join('\n');
+            const nombresProyectos = metadataEmpresa.map(p => p.nombre_proyecto).join(', ');
+            const detallesProyectos = metadataEmpresa.map(p => `${p.nombre_proyecto} (Horario: ${formatHorario(p.horario_atencion)})`).join(' | ');
             return `
-## SELECCION DE PROYECTO (PASO OBLIGATORIO)
-- El cliente AUN NO ha elegido un proyecto.
-- ANTES de continuar con cualquier otro paso, pregunta:
-  "Tenemos los siguientes proyectos disponibles:\n${lista}\n  Cual te interesa?"
-- Una vez que el cliente elija, usa la herramienta guardar_proyecto para registrar su eleccion.
-- Despues de guardar el proyecto, continua con el flujo normal.`;
+## CONTEXTO MULTI-PROYECTO
+El cliente NO tiene proyecto asignado. Proyectos activos: ${detallesProyectos}
+
+**REGLAS OBLIGATORIAS**:
+1. **PROHIBIDO** copiar la lista de proyectos como respuesta. PROHIBIDO re-listar el menu de proyectos si el cliente ya lo vio.
+2. Si el cliente MENCIONA un proyecto por nombre → ejecuta guardar_proyecto inmediatamente.
+3. Si el cliente pide informacion, detalles, precios, opciones, unidades o CUALQUIER dato → EJECUTA explorar_inventario_proyectos. Muestra las unidades reales que devuelve la herramienta, NO la lista de nombres.
+4. SOLO si el PRIMER mensaje es un saludo puro ("hola", "buenas") sin pedir info, menciona brevemente los proyectos (${nombresProyectos}) y pregunta cual le interesa. PERO si luego el cliente pide info, USA herramientas.
+5. Cuando tengas resultados de herramientas, muestra ESOS datos. NUNCA ignores los resultados de una herramienta para volver a listar proyectos.`;
         }
 
         return '';
@@ -335,11 +339,11 @@ ${listaOtros ? `Otros proyectos disponibles:\n${listaOtros}` : '(No hay otros pr
         const pasoPendiente = resolvePasoPendiente(contexto, leadData, { proyectoId });
         const lineas: string[] = [];
 
-        if (contexto.dormitorios || contexto.proposito || contexto.zonaPreferida || contexto.tiempoCompra || contexto.financiamiento || contexto.presupuesto) {
+        if (contexto.dormitorios || contexto.proposito || contexto.tiempoCompra || contexto.financiamiento || contexto.presupuesto) {
             lineas.push('### FASE 1 - DESCUBRIMIENTO YA RESPONDIDO');
             if (contexto.dormitorios) lineas.push(`- Paso 1 / Dormitorios: ${contexto.dormitorios}`);
             if (contexto.proposito) lineas.push(`- Paso 2 / Propósito: ${contexto.proposito}`);
-            if (contexto.zonaPreferida) lineas.push(`- Paso 2 / Zona preferida: ${contexto.zonaPreferida}`);
+            if (contexto.zonaPreferida) lineas.push(`- Zona mencionada: ${contexto.zonaPreferida}`);
             if (contexto.tiempoCompra) lineas.push(`- Paso 3 / Tiempo de compra: ${contexto.tiempoCompra}`);
             if (contexto.financiamiento) lineas.push(`- Paso 4 / Financiamiento: ${contexto.financiamiento}`);
             if (contexto.presupuesto) lineas.push(`- Paso 5 / Presupuesto o cuota: ${contexto.presupuesto}`);

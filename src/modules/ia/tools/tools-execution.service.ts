@@ -1153,13 +1153,14 @@ PREGUNTA DEL USUARIO: {question}
 REGLAS:
 - USA la informacion del contexto para responder. Si alguna pregunta frecuente trata un tema similar o relacionado a lo que pregunta el usuario, USA esa respuesta.
 - Por ejemplo: si el usuario pregunta "direccion" y el contexto tiene info sobre "ubicacion", SON LO MISMO, responde con esa info.
+- Si el usuario pide "detalles", "info general", "descripcion" o "que me puedes decir del proyecto", ARMA un resumen usando TODOS los datos disponibles del contexto (nombre, etapa, fecha entrega, direccion, horario, etc.). NO digas "no tengo info" si hay datos en el contexto.
 - Si el contexto dice "No contamos con...", responde "No contamos con...".
 - Responde de forma natural, NO menciones "segun la base de datos" ni "segun el contexto".
 - Si el contexto trae una fecha exacta o estimada de entrega, responde con esa fecha exacta. NO la transformes en "entrega inmediata", "listo para entrega" o frases equivalentes salvo que el contexto lo diga literalmente.
 - Si el contexto contiene informacion de varios proyectos, menciona claramente el nombre del proyecto al que pertenece cada dato relevante.
 - Si la pregunta es de ubicacion, direccion o mapa y el contexto NO trae una direccion o link literal para alguno de los proyectos preguntados, di que no tienes la ubicacion confirmada de ese proyecto. NO completes listas de proyectos con direcciones inventadas.
 - Si la pregunta es sobre otro proyecto distinto al activo, responde con ese proyecto sin decir que cambiaste la sesion ni insinuar que ya se actualizo el proyecto.
-- SOLO di "No tengo informacion sobre eso" si NINGUNA de las preguntas frecuentes del contexto tiene relacion alguna con lo que pregunta el usuario.
+- SOLO di "No tengo informacion sobre eso" si el contexto esta COMPLETAMENTE vacio o si realmente NINGUNO de los datos del contexto tiene relacion con la pregunta. Si hay CUALQUIER dato util en el contexto, usalo.
 
 RESPUESTA:`);
 
@@ -1487,6 +1488,137 @@ RESPUESTA:`);
         } catch (error) {
             this.logger.error(`Error generando proforma: ${error.message}`);
             return "Hubo un problema al generar la proforma. Por favor intenta de nuevo.";
+        }
+    }
+
+
+    /**
+     * EXPLORAR INVENTARIO EN TODOS LOS PROYECTOS ACTIVOS
+     * Busca departamentos en todas las colecciones de inventario a la vez.
+     * Devuelve resultados agrupados por proyecto.
+     */
+    async explorarInventarioProyectos(params: {
+        dormitorios?: number | string;
+        tipo_unidad?: string;
+        codigoEmpresa?: number;
+        leadUuid?: string;
+    }): Promise<string> {
+        try {
+            if (!params.codigoEmpresa) {
+                return '[ACCION_COMPLETADA] No se pudo determinar la empresa. <<INSTRUCCION_IA: Pide al cliente que especifique un proyecto.>>';
+            }
+
+            const proyectos = await this.obtenerProyectosActivosOrdenados(params.codigoEmpresa);
+            if (proyectos.length === 0) {
+                return '[ACCION_COMPLETADA] No hay proyectos activos disponibles.';
+            }
+
+            // Normalizar dormitorios
+            let dormsNumber: number | undefined;
+            if (params.dormitorios !== undefined) {
+                if (typeof params.dormitorios === 'string') {
+                    const v = params.dormitorios.toLowerCase();
+                    if (v.includes('mono') || v.includes('estudio') || v.includes('loft')) {
+                        dormsNumber = 0;
+                    } else {
+                        const parsed = parseInt(params.dormitorios);
+                        if (!isNaN(parsed)) dormsNumber = parsed;
+                    }
+                } else {
+                    dormsNumber = params.dormitorios;
+                }
+            }
+
+            // Normalizar tipo_unidad
+            let tipoUnidad: string | undefined;
+            if (params.tipo_unidad) {
+                let tipo = params.tipo_unidad.toString().trim();
+                if (tipo.toLowerCase() === 'duplex') tipo = 'Dúplex';
+                tipoUnidad = tipo;
+            }
+
+            // Buscar en paralelo en todos los proyectos
+            const resultadosPorProyecto = await Promise.all(
+                proyectos.map(async (proyecto) => {
+                    try {
+                        const collectionName = await this.obtenerColeccionInventario(proyecto.id);
+
+                        const queryParts = ['departamento disponible'];
+                        if (dormsNumber !== undefined) queryParts.push(`${dormsNumber} dormitorios`);
+                        if (tipoUnidad) queryParts.push(tipoUnidad);
+
+                        const filters: any = {};
+                        if (dormsNumber !== undefined) filters.dormitorios = dormsNumber;
+                        if (tipoUnidad) filters.tipoUnidad = tipoUnidad;
+
+                        const items = await this.qdrantVectorService.searchPropertiesWithFilters(
+                            collectionName,
+                            queryParts.join(' '),
+                            filters,
+                            { limit: 5, threshold: 0.4 }
+                        );
+
+                        return {
+                            proyecto: proyecto.nombre,
+                            proyectoId: proyecto.id,
+                            items,
+                        };
+                    } catch (err) {
+                        this.logger.warn(`Error buscando en inventario de ${proyecto.nombre}: ${err.message}`);
+                        return {
+                            proyecto: proyecto.nombre,
+                            proyectoId: proyecto.id,
+                            items: [],
+                        };
+                    }
+                })
+            );
+
+            // Formatear resultados agrupados
+            const proyectosConResultados = resultadosPorProyecto.filter(r => r.items.length > 0);
+            const proyectosSinResultados = resultadosPorProyecto.filter(r => r.items.length === 0);
+
+            if (proyectosConResultados.length === 0) {
+                const filtroDesc = [];
+                if (dormsNumber !== undefined) filtroDesc.push(`${dormsNumber === 0 ? 'monoambiente' : dormsNumber + ' dormitorios'}`);
+                if (tipoUnidad) filtroDesc.push(tipoUnidad);
+                return `[ACCION_COMPLETADA] No encontre departamentos ${filtroDesc.join(' tipo ')} en ninguno de los proyectos disponibles. <<INSTRUCCION_IA: Pregunta si quiere buscar con otros criterios (diferente cantidad de dormitorios o tipo).>>`;
+            }
+
+            let respuesta = `[ACCION_COMPLETADA] Aqui estan las opciones disponibles en nuestros proyectos:\n\n`;
+
+            for (const resultado of proyectosConResultados) {
+                respuesta += `**${resultado.proyecto}:**\n`;
+                const top = resultado.items.slice(0, 3);
+                top.forEach((r, idx) => {
+                    const m = r.document.metadata;
+                    const pList = m.price_list ? parseFloat(m.price_list) : 0;
+
+                    const detalles = [
+                        m.bedrooms !== undefined ? (m.bedrooms === 0 ? 'Monoambiente' : `${m.bedrooms} dorm`) : '',
+                        m.area_total ? `${m.area_total}m2` : '',
+                        m.view ? `vista ${m.view}` : '',
+                        m.floor ? `piso ${m.floor}` : '',
+                        m.unit_type || '',
+                    ].filter(Boolean).join(', ');
+
+                    respuesta += `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - **S/${pList.toLocaleString('es-PE')}**\n`;
+                });
+                respuesta += '\n';
+            }
+
+            if (proyectosSinResultados.length > 0) {
+                const nombres = proyectosSinResultados.map(r => r.proyecto).join(', ');
+                respuesta += `No se encontraron opciones con esos criterios en: ${nombres}.\n\n`;
+            }
+
+            respuesta += `<<INSTRUCCION_IA: Pregunta al cliente cual de estas opciones o proyectos le interesa mas. Si elige un proyecto, ejecuta guardar_proyecto para registrarlo. NO vuelvas a listar los proyectos como menu.>>`;
+
+            return respuesta;
+
+        } catch (error) {
+            this.logger.error(`Error en explorarInventarioProyectos: ${error.message}`, error.stack);
+            return 'Ocurrio un error tecnico al buscar en los proyectos. Por favor intenta de nuevo.';
         }
     }
 

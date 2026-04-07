@@ -41,7 +41,7 @@ export class AgentService {
     const modelName = this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
     const isReasoningModel = modelName.includes('o1-') || modelName.includes('o3-') || modelName.includes('o4-') || modelName === 'o4-mini' || modelName.includes('gpt-5');
 
-    const temperature = isReasoningModel ? 1 : 0.3;
+    const temperature = isReasoningModel ? 1 : 0.6;
 
     this.logger.log(`Inicializando IA con modelo: ${modelName} (Reasoning: ${isReasoningModel}, Temp: ${temperature})`);
 
@@ -141,6 +141,18 @@ export class AgentService {
 
 
 
+  private sanitizeLlmOutput(output: string): string {
+    if (!output) return "No pude generar una respuesta.";
+    let cleaned = output;
+    
+    // Elimina artifacts de fugas de GPT (to=functions... etc)
+    cleaned = cleaned.replace(/to=functions\.[a-zA-Z0-9_]+/g, '');
+    cleaned = cleaned.replace(/ặtassistant\.jsonildaifié[^\s]*/g, '');
+    cleaned = cleaned.replace(/to=functions\.[^\n]+/g, '');
+    
+    return cleaned.trim() || "No pude generar una respuesta.";
+  }
+
   private async hasExplicitUnitSelection(userMessage: string, unidad?: string): Promise<boolean> {
     if (!userMessage?.trim()) return false;
 
@@ -183,57 +195,29 @@ Responde solo con el JSON requerido.`;
     }
   }
 
-  private shouldForceFaqTool(userMessage: string, toolsEjecutados: string[]): boolean {
-    if (!userMessage?.trim()) return false;
-    if (toolsEjecutados.includes('buscar_preguntas_frecuentes')) {
-      return false;
-    }
 
-    const normalized = this.normalizeText(userMessage);
-    const faqPatterns = [
-      /\bentrega\b/,
-      /\bentrega inmediata\b/,
-      /\bfecha de entrega\b/,
-      /\bcuando entregan\b/,
-      /\bubicacion\b/,
-      /\bdireccion\b/,
-      /\bdonde queda\b/,
-      /\bhorario\b/,
-      /\barea(s)? comunes\b/,
-      /\bacabados\b/,
-      /\bfinanciamiento\b/,
-      /\bcuota\b/,
-      /\bshowroom\b/,
-      /\bsala de ventas\b/,
-      /\brecorrido virtual\b/,
-      /\btour virtual\b/,
-      /\bexhibicion\b/,
-      /\betapa\b/,
-      /\bprecio\b/,
-      /\bdisponibilidad\b/,
-    ];
-
-    return faqPatterns.some((pattern) => pattern.test(normalized));
-  }
 
   private getBaseToolNamesByPaso(pasoPendiente: number, tieneCitaActiva = false): string[] {
     if (tieneCitaActiva) {
-      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'reagendar_cita', 'agendar_cita', 'enviar_brochure', 'enviar_videos_proyecto'];
+      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'reagendar_cita', 'agendar_cita', 'enviar_brochure', 'enviar_videos_proyecto', 'buscar_departamento', 'explorar_inventario_proyectos'];
     }
 
+    // Core tools always available
+    const base = ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'enviar_brochure', 'enviar_videos_proyecto', 'buscar_departamento', 'explorar_inventario_proyectos'];
+
     if (pasoPendiente <= 5) {
-      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'enviar_brochure', 'enviar_videos_proyecto'];
+      return base;
     }
 
     if (pasoPendiente <= 7) {
-      return ['buscar_departamento', 'enviar_plano_departamento', 'descartar_cliente'];
+      return [...base, 'enviar_plano_departamento'];
     }
 
     if (pasoPendiente <= 9) {
-      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'buscar_departamento', 'validar_dni', 'generar_proforma', 'enviar_brochure', 'enviar_videos_proyecto'];
+      return [...base, 'enviar_plano_departamento', 'validar_dni', 'generar_proforma'];
     }
 
-    return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'agendar_cita', 'reagendar_cita', 'enviar_brochure', 'enviar_videos_proyecto'];
+    return [...base, 'agendar_cita', 'reagendar_cita'];
   }
 
   private detectIntentToolNames(userMessage: string): string[] {
@@ -277,6 +261,11 @@ Responde solo con el JSON requerido.`;
 
     if (/\bdepartamentos?\b|\bdepas?\b|\bunidades?\b|\bopciones?\b|\bdormitorios?\b|\bdorms?\b|\bcuartos?\b|\bpisos?\b|\bvista\b|\bprecio\b|\bunidad\b/.test(normalized)) {
       tools.add('buscar_departamento');
+      tools.add('explorar_inventario_proyectos');
+    }
+
+    if (/\bproyectos?\b|\bcomparar\b|\btodos\b|\bque tienen\b|\bduplex\b/.test(normalized)) {
+      tools.add('explorar_inventario_proyectos');
     }
 
     return Array.from(tools);
@@ -329,39 +318,6 @@ Responde solo con el JSON requerido.`;
       return 'bajos';
     }
     return undefined;
-  }
-
-
-  private hasCompletedDiscoveryForSearch(resumenSesion?: string): boolean {
-    const parsed = parseSessionSummary(resumenSesion || '');
-    return !!parsed.dormitorios && !!parsed.presupuesto;
-  }
-
-
-  private shouldForceDepartmentSearch(
-    _promptConfig: AgentPromptConfig,
-    metadata: {
-      proyectoId?: number;
-      resumenSesion?: string;
-    },
-    toolsEjecutados: string[],
-    _historial: BaseMessage[],
-    _mensajeUsuario: string,
-  ): boolean {
-    if (!metadata.proyectoId) return false;
-    if (toolsEjecutados.includes('buscar_departamento')) return false;
-
-    const dormitorios = this.extractDormitoriosForSearch(metadata.resumenSesion);
-    if (dormitorios === undefined) return false;
-
-    // Recomputar paso real desde el resumen fresco
-    const parsed = parseSessionSummary(metadata.resumenSesion || '');
-
-    if (parsed.pasoPendiente >= 6 && parsed.pasoPendiente <= 7) {
-      return this.hasCompletedDiscoveryForSearch(metadata.resumenSesion);
-    }
-
-    return false;
   }
 
   private async registrarTokens(
@@ -659,12 +615,33 @@ Responde solo con el JSON requerido.`;
           codigoEmpresa,
           leadUuid
         );
-        return JSON.stringify(result);
+         return JSON.stringify(result);
+      },
+    });
+
+    // HERRAMIENTA: Explorar inventario en TODOS los proyectos activos
+    const explorarInventarioProyectosTool = new DynamicStructuredTool({
+      name: 'explorar_inventario_proyectos',
+      description: 'Busca departamentos en TODOS los proyectos activos a la vez y devuelve resultados agrupados por proyecto. EJECUTA ESTA HERRAMIENTA cuando el cliente NO tiene proyecto asignado y pide cualquier tipo de informacion: detalles, info, precios, opciones, unidades, que tienen, duplex, dormitorios, etc. Ejemplos: "dame detalles de los proyectos", "pasame info", "que tienen?", "opciones de 3 dormitorios?", "tienen duplex?", "cuales son los precios?". NUNCA re-listes el menu de proyectos como respuesta a un pedido de informacion.',
+      schema: z.object({
+        dormitorios: z.union([z.number(), z.string()]).optional().describe('Dormitorios deseados (ej: 2, 3, "monoambiente")'),
+        tipo_unidad: z.string().optional().describe('Tipo: "Duplex" o "Flat"'),
+      }),
+      func: async (input, config) => {
+        const metadata = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.explorarInventarioProyectos({
+          dormitorios: input.dormitorios,
+          tipo_unidad: input.tipo_unidad,
+          codigoEmpresa: metadata.codigoEmpresa,
+          leadUuid: metadata.leadUuid,
+        });
+        return result;
       },
     });
 
     const tools = [
       buscarDepartamentoUniversalTool,
+      explorarInventarioProyectosTool,
       agendarCitaTool,
       reagendarCitaTool,
       buscarPreguntasFrecuentesTool,
@@ -813,129 +790,10 @@ Responde solo con el JSON requerido.`;
 
         // Si NO hay tool_calls, esta es la respuesta final
         if (!response.tool_calls || response.tool_calls.length === 0) {
-          if (this.shouldForceDepartmentSearch(promptConfig, metadata, toolsEjecutados, messages, mensajeUsuario)) {
-            this.logger.warn('Respuesta sin tool_calls en fase de presentacion. Forzando buscar_departamento.');
-
-            const dormitorios = this.extractDormitoriosForSearch(metadata.resumenSesion);
-            const preferenciaPiso = this.extractPisoPreference(mensajeUsuario);
-
-            const searchResult = await this.toolsExecutionService.buscarDepartamentoUniversal({
-              dormitorios,
-              preferencia_piso: preferenciaPiso,
-              phoneNumber: metadata.phoneNumber,
-              codigoEmpresa: metadata.codigoEmpresa,
-              leadUuid: metadata.leadUuid,
-              proyectoId: metadata.proyectoId,
-            });
-
-            toolsEjecutados.push('buscar_departamento');
-
-            try {
-              await this.historialChatService.guardarMensaje({
-                leadUuid: metadata.leadUuid,
-                codigoEmpresa: metadata.codigoEmpresa,
-                mensaje: { role: 'function', content: `[buscar_departamento] ${searchResult}` },
-                role: 'function',
-                metadatos: {
-                  toolName: 'buscar_departamento',
-                  args: {
-                    dormitorios,
-                    preferencia_piso: preferenciaPiso,
-                    proyectoId: metadata.proyectoId,
-                  }
-                }
-              });
-            } catch (histError) {
-              this.logger.warn(`No se pudo guardar buscar_departamento forzada en historial: ${histError.message}`);
-            }
-
-            const forcedFinal = await this.llm.invoke([
-              ...systemMessages,
-              { role: 'system', content: 'El flujo exige mostrar unidades disponibles ahora. Usa el resultado de buscar_departamento para responder y listar hasta 3 unidades si existen, respetando el orden recibido. NO hagas preguntas opcionales previas. NO recomiendes una sola unidad ni ofrezcas plano o visita hasta que el cliente elija una. NO llames más herramientas.' },
-              ...messages,
-              { role: 'user', content: mensajeUsuario },
-              { role: 'system', content: `Resultado de buscar_departamento:\n${searchResult}` }
-            ]);
-
-            const output = forcedFinal.content?.toString() || "No pude generar una respuesta.";
-            const forcedTokens = this.extraerTokens(forcedFinal);
-            if (forcedTokens) {
-              tokensAcumulados.input += forcedTokens.input;
-              tokensAcumulados.output += forcedTokens.output;
-            }
-            await this.registrarTokens('main_chat', metadata, forcedFinal, {
-              iteracion,
-              forced: true,
-              tool: 'buscar_departamento',
-              pasoPendiente: promptConfig.pasoPendiente,
-            });
-
-            return {
-              output,
-              tokensUsados: tokensAcumulados,
-              toolsEjecutados,
-            };
-          }
-
-          if (this.shouldForceFaqTool(mensajeUsuario, toolsEjecutados)) {
-            this.logger.warn('Respuesta sin tool_calls para consulta FAQ. Forzando buscar_preguntas_frecuentes.');
-
-            const faqResult = await this.toolsExecutionService.buscarPreguntasFrecuentes(
-              {
-                queries_de_busqueda: [mensajeUsuario],
-                codigoEmpresa: metadata.codigoEmpresa,
-                leadUuid: metadata.leadUuid,
-                proyectoIdSesion: metadata.proyectoId,
-              },
-              metadata.proyectoId
-            );
-
-            toolsEjecutados.push('buscar_preguntas_frecuentes');
-
-            try {
-              await this.historialChatService.guardarMensaje({
-                leadUuid: metadata.leadUuid,
-                codigoEmpresa: metadata.codigoEmpresa,
-                mensaje: { role: 'function', content: `[buscar_preguntas_frecuentes] ${faqResult}` },
-                role: 'function',
-                metadatos: { toolName: 'buscar_preguntas_frecuentes', args: { queries_de_busqueda: [mensajeUsuario] } }
-              });
-            } catch (histError) {
-              this.logger.warn(`No se pudo guardar FAQ forzada en historial: ${histError.message}`);
-            }
-
-            const forcedFinal = await this.llm.invoke([
-              ...systemMessages,
-              { role: 'system', content: 'La consulta del usuario requería herramienta obligatoria. Usa el resultado de la herramienta para responder. NO inventes datos. NO llames más herramientas.' },
-              ...messages,
-              { role: 'user', content: mensajeUsuario },
-              { role: 'system', content: `Resultado de herramienta obligatoria:\n${faqResult}` }
-            ]);
-
-            const output = forcedFinal.content?.toString() || "No pude generar una respuesta.";
-            const forcedTokens = this.extraerTokens(forcedFinal);
-            if (forcedTokens) {
-              tokensAcumulados.input += forcedTokens.input;
-              tokensAcumulados.output += forcedTokens.output;
-            }
-            await this.registrarTokens('main_chat', metadata, forcedFinal, {
-              iteracion,
-              forced: true,
-              pasoPendiente: promptConfig.pasoPendiente,
-            });
-
-            this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ')}`);
-
-            return {
-              output,
-              tokensUsados: tokensAcumulados,
-              toolsEjecutados,
-            };
-          }
 
           this.logger.log('Respuesta sin tool_calls - Finalizando');
 
-          const output = response.content?.toString() || "No pude generar una respuesta.";
+          const output = this.sanitizeLlmOutput(response.content?.toString() || "");
 
           this.logger.log(`Agente completado - Tools usados: ${toolsEjecutados.join(', ') || 'ninguno'}`);
 
@@ -957,9 +815,9 @@ Responde solo con el JSON requerido.`;
           this.logger.log(`Ejecutando tool: ${toolCall.name}`);
 
           let toolResult: string;
-          let cerrarTurnoTrasBusquedaInicial = false;
 
-          const HERRAMIENTAS_REPETIBLES = ['buscar_departamento'];
+
+          const HERRAMIENTAS_REPETIBLES = ['buscar_departamento', 'buscar_preguntas_frecuentes', 'explorar_inventario_proyectos'];
 
           // Verificar si la tool ya fue ejecutada en esta sesión
           if (accionesEjecutadas.has(toolCall.name) && !HERRAMIENTAS_REPETIBLES.includes(toolCall.name)) {
@@ -1014,13 +872,7 @@ Responde solo con el JSON requerido.`;
                 this.logger.warn(`No se pudo guardar tool en historial: ${histError.message}`);
               }
 
-              if (
-                toolCall.name === 'buscar_departamento' &&
-                !toolCall.args?.unidad &&
-                !(await this.hasExplicitUnitSelection(mensajeUsuario))
-              ) {
-                cerrarTurnoTrasBusquedaInicial = true;
-              }
+
 
             } catch (error) {
               this.logger.error(`Error ejecutando tool ${toolCall.name}: ${error.message}`);
@@ -1036,33 +888,7 @@ Responde solo con el JSON requerido.`;
             })
           );
 
-          if (cerrarTurnoTrasBusquedaInicial) {
-            const forcedFinal = await this.llm.invoke([
-              ...systemMessages,
-              { role: 'system', content: 'Acabas de recibir el resultado inicial de buscar_departamento. RESPONDE AHORA listando MAXIMO 3 opciones en el orden recibido. NO elijas una unidad por el cliente. NO pidas nombre, DNI, proforma ni visita. SOLO pregunta cual de esas opciones prefiere o si quiere ver otras alternativas. NO llames más herramientas.' },
-              ...messages,
-              { role: 'user', content: mensajeUsuario },
-            ]);
 
-            const output = forcedFinal.content?.toString() || 'No pude generar una respuesta.';
-            const forcedTokens = this.extraerTokens(forcedFinal);
-            if (forcedTokens) {
-              tokensAcumulados.input += forcedTokens.input;
-              tokensAcumulados.output += forcedTokens.output;
-            }
-            await this.registrarTokens('main_chat', metadata, forcedFinal, {
-              iteracion,
-              forced: true,
-              tool: 'buscar_departamento_resultado_inicial',
-              pasoPendiente: promptConfig.pasoPendiente,
-            });
-
-            return {
-              output,
-              tokensUsados: tokensAcumulados,
-              toolsEjecutados,
-            };
-          }
         }
 
         // Continuar al siguiente loop - el modelo generará respuesta o pedirá más tools
@@ -1079,7 +905,7 @@ Responde solo con el JSON requerido.`;
           ...messages,
         ]);
 
-        const output = finalResponse.content?.toString() || "No pude generar una respuesta.";
+        const output = this.sanitizeLlmOutput(finalResponse.content?.toString() || "");
         const finalTokens = this.extraerTokens(finalResponse);
         if (finalTokens) {
           tokensAcumulados.input += finalTokens.input;
