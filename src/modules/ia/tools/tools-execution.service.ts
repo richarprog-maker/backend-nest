@@ -2061,6 +2061,107 @@ RESPUESTA:`);
         return { ok: true, items: resultados.slice(0, 6) };
     }
 
+    /**
+     * Verifica si el proyecto asignado en sesión tiene stock disponible
+     */
+    async verificarStockDormitorios(params: {
+        dormitorios: number | string;
+        proyectoId?: number;
+        codigoEmpresa?: number;
+    }): Promise<{
+        hayStock: boolean;
+        dormitoriosDisponibles: number[];
+        nombreProyecto: string;
+        mensaje: string;
+    }> {
+        const sinProyecto = { hayStock: true, dormitoriosDisponibles: [], nombreProyecto: '', mensaje: 'Sin proyecto asignado, verificacion omitida.' };
+
+        if (!params.proyectoId || !params.codigoEmpresa) {
+            return sinProyecto;
+        }
+
+        try {
+            // Obtener datos del proyecto
+            const proyecto = await this.proyectosRepo.findOne({
+                where: { id: params.proyectoId, codigoEmpresa: params.codigoEmpresa, estado: 'activo' }
+            });
+
+            if (!proyecto) {
+                return sinProyecto;
+            }
+
+            const collectionName = await this.obtenerColeccionInventario(params.proyectoId);
+
+            // Normalizar dormitorios pedidos a número
+            let dormsNum: number;
+            if (typeof params.dormitorios === 'string') {
+                const v = params.dormitorios.toLowerCase();
+                if (v.includes('mono') || v.includes('estudio') || v.includes('loft')) {
+                    dormsNum = 0;
+                } else {
+                    const parsed = parseInt(params.dormitorios);
+                    dormsNum = isNaN(parsed) ? -1 : parsed;
+                }
+            } else {
+                dormsNum = params.dormitorios;
+            }
+
+            if (dormsNum === -1) {
+                return sinProyecto;
+            }
+
+            // Verificar stock para los dormitorios solicitados
+            const resultadosExactos = await this.qdrantVectorService.searchPropertiesWithFilters(
+                collectionName,
+                `departamento disponible ${dormsNum === 0 ? 'monoambiente' : dormsNum + ' dormitorios'}`,
+                { dormitorios: dormsNum },
+                { limit: 1, threshold: 0.4 }
+            );
+
+            if (resultadosExactos.length > 0) {
+                return {
+                    hayStock: true,
+                    dormitoriosDisponibles: [dormsNum],
+                    nombreProyecto: proyecto.nombre,
+                    mensaje: `OK - Hay stock de ${dormsNum === 0 ? 'monoambiente' : dormsNum + ' dormitorios'} en ${proyecto.nombre}.`,
+                };
+            }
+
+            // No hay stock exacto → buscar qué dormitorios SÍ están disponibles
+            const todoElInventario = await this.qdrantVectorService.searchPropertiesWithFilters(
+                collectionName,
+                'departamento disponible',
+                {},
+                { limit: 50, threshold: 0.3 }
+            );
+
+            const dormitoriosDisponibles = [
+                ...new Set<number>(
+                    todoElInventario
+                        .map(r => r.document.metadata.bedrooms)
+                        .filter((b): b is number => b !== undefined && b !== null)
+                )
+            ].sort((a, b) => a - b);
+
+            const dormsLabel = dormsNum === 0 ? 'monoambiente' : `${dormsNum} dormitorio${dormsNum > 1 ? 's' : ''}`;
+            const alternativasLabel = dormitoriosDisponibles.length > 0
+                ? dormitoriosDisponibles.map(d => d === 0 ? 'monoambiente' : `${d} dormitorio${d > 1 ? 's' : ''}`).join(', ')
+                : 'ninguno disponible actualmente';
+
+            return {
+                hayStock: false,
+                dormitoriosDisponibles,
+                nombreProyecto: proyecto.nombre,
+                mensaje: `En el proyecto "${proyecto.nombre}" no hay unidades disponibles de ${dormsLabel}. Los tipos disponibles son: ${alternativasLabel}.`,
+            };
+
+        } catch (error) {
+            this.logger.warn(`[VerificarStock] Error verificando stock de dormitorios: ${error.message}`);
+            // En caso de error retornamos hayStock=true para no bloquear el flujo
+            return { hayStock: true, dormitoriosDisponibles: [], nombreProyecto: '', mensaje: 'Error en verificacion, flujo continua normalmente.' };
+        }
+    }
+
     private formatearRespuestaBusqueda(items: any[], mensajeIntro: string) {
         const lista = items.slice(0, 3).map((r, idx) => {
             const m = r.document.metadata;

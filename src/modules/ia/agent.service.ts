@@ -197,7 +197,7 @@ Responde solo con el JSON requerido.`;
 
 
 
-  private getBaseToolNamesByPaso(pasoPendiente: number, tieneCitaActiva = false): string[] {
+  private getBaseToolNamesByPaso(pasoPendiente: number, tieneCitaActiva = false, tieneProyectoAsignado = false): string[] {
     if (tieneCitaActiva) {
       return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'reagendar_cita', 'agendar_cita', 'enviar_brochure', 'enviar_videos_proyecto', 'buscar_departamento', 'explorar_inventario_proyectos'];
     }
@@ -206,6 +206,10 @@ Responde solo con el JSON requerido.`;
     const base = ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'enviar_brochure', 'enviar_videos_proyecto', 'buscar_departamento', 'explorar_inventario_proyectos'];
 
     if (pasoPendiente <= 5) {
+      // Incluir verificacion de stock solo si el cliente ya tiene proyecto asignado
+      if (tieneProyectoAsignado) {
+        return [...base, 'verificar_stock_dormitorios'];
+      }
       return base;
     }
 
@@ -276,8 +280,9 @@ Responde solo con el JSON requerido.`;
     pasoPendiente: number,
     tieneCitaActiva: boolean,
     userMessage: string,
+    tieneProyectoAsignado = false,
   ): DynamicStructuredTool[] {
-    const baseNames = this.getBaseToolNamesByPaso(pasoPendiente, tieneCitaActiva);
+    const baseNames = this.getBaseToolNamesByPaso(pasoPendiente, tieneCitaActiva, tieneProyectoAsignado);
     const intentNames = this.detectIntentToolNames(userMessage);
 
    
@@ -619,6 +624,29 @@ Responde solo con el JSON requerido.`;
       },
     });
 
+    // HERRAMIENTA: Verificar stock de dormitorios en el proyecto asignado (Paso 1)
+    const verificarStockDormitoriosTool = new DynamicStructuredTool({
+      name: 'verificar_stock_dormitorios',
+      description: `EJECUTA INMEDIATAMENTE cuando el cliente indique cuántos dormitorios desea (Paso 1).
+Verifica en tiempo real si el proyecto asignado en sesión tiene unidades disponibles con esa cantidad.
+- Si hayStock=true → el flujo continúa normalmente al Paso 2. NO menciones la verificación al cliente.
+- Si hayStock=false → informa al cliente de forma natural que esa cantidad no está disponible y propón las alternativas de dormitoriosDisponibles.
+Ejemplo respuesta sin stock: "En este proyecto actualmente no contamos con departamentos de 3 dormitorios disponibles, pero sí tenemos opciones de 2 dormitorios. ¿Te interesaría ver esas alternativas?"
+USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera vez. Si ya verificaste antes no repitas.`,
+      schema: z.object({
+        dormitorios: z.union([z.number(), z.string()]).describe('Número de dormitorios que pide el cliente (1, 2, 3 o "monoambiente")'),
+      }),
+      func: async (input, config) => {
+        const { codigoEmpresa, proyectoId } = (config as any)?.metadata || {};
+        const result = await this.toolsExecutionService.verificarStockDormitorios({
+          dormitorios: input.dormitorios,
+          proyectoId,
+          codigoEmpresa,
+        });
+        return JSON.stringify(result);
+      },
+    });
+
     // HERRAMIENTA: Explorar inventario en TODOS los proyectos activos
     const explorarInventarioProyectosTool = new DynamicStructuredTool({
       name: 'explorar_inventario_proyectos',
@@ -642,6 +670,7 @@ Responde solo con el JSON requerido.`;
     const tools = [
       buscarDepartamentoUniversalTool,
       explorarInventarioProyectosTool,
+      verificarStockDormitoriosTool,
       agendarCitaTool,
       reagendarCitaTool,
       buscarPreguntasFrecuentesTool,
@@ -714,7 +743,8 @@ Responde solo con el JSON requerido.`;
         allTools,
         promptConfig.pasoPendiente,
         !!metadata.tieneCitaActiva,
-        mensajeUsuario
+        mensajeUsuario,
+        !!metadata.proyectoId,
       );
       const modelWithTools = this.llm.bindTools(actTools);
 
@@ -817,7 +847,7 @@ Responde solo con el JSON requerido.`;
           let toolResult: string;
 
 
-          const HERRAMIENTAS_REPETIBLES = ['buscar_departamento', 'buscar_preguntas_frecuentes', 'explorar_inventario_proyectos'];
+          const HERRAMIENTAS_REPETIBLES = ['buscar_departamento', 'buscar_preguntas_frecuentes', 'explorar_inventario_proyectos', 'verificar_stock_dormitorios'];
 
           // Verificar si la tool ya fue ejecutada en esta sesión
           if (accionesEjecutadas.has(toolCall.name) && !HERRAMIENTAS_REPETIBLES.includes(toolCall.name)) {
