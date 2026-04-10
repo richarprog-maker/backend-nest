@@ -100,13 +100,13 @@ export class AiService {
             const sesionPrevia = await this.sesionRepo.findOne({
                 where: { leadUuid, codigoEmpresa }
             });
-            const proyectoId = sesionPrevia?.proyectoId || null;
+            const proyectoIdPrevio = sesionPrevia?.proyectoId || null;
             const proyectosActivos = await this.proyectoRepo.find({
                 where: { codigoEmpresa, estado: 'activo' }
             });
 
             await this.agentService.actualizarResumenSesion(mensajeUsuario, leadUuid, codigoEmpresa, {
-                omitirSiSeleccionProyectoNumerica: !proyectoId && proyectosActivos.length > 1 && /^\s*\d{1,2}\s*$/.test(mensajeUsuario || ''),
+                omitirSiSeleccionProyectoNumerica: !proyectoIdPrevio && proyectosActivos.length > 1 && /^\s*\d{1,2}\s*$/.test(mensajeUsuario || ''),
                 nombresProyectosActivos: proyectosActivos.map((proyecto) => proyecto.nombre).filter(Boolean),
             });
 
@@ -114,6 +114,7 @@ export class AiService {
             const sesion = await this.sesionRepo.findOne({
                 where: { leadUuid, codigoEmpresa }
             });
+            const proyectoId = sesion?.proyectoId || proyectoIdPrevio || null;
 
             const botConfig = await this.botRepo.findOne({
                 where: { codigoEmpresa, habilitado: 1 }

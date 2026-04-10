@@ -429,10 +429,19 @@ export class QdrantVectorService {
     }
 
     if (filters.tipoUnidad) {
-      conditions.push({
-        key: 'metadata.unit_type',
-        match: { value: filters.tipoUnidad }
-      });
+      const unitTypeVariants = this.expandUnitTypeVariants(filters.tipoUnidad);
+
+      if (unitTypeVariants.length === 1) {
+        conditions.push({
+          key: 'metadata.unit_type',
+          match: { value: unitTypeVariants[0] }
+        });
+      } else {
+        conditions.push({
+          key: 'metadata.unit_type',
+          match: { any: unitTypeVariants }
+        });
+      }
     }
 
     // NOTE: Removido el filtro de availability aquí porque causa problemas de encoding con 'sí'
@@ -441,6 +450,22 @@ export class QdrantVectorService {
     const finalFilter = conditions.length > 0 ? { must: conditions } : undefined;
     this.logger.log(`>>> Filtro Qdrant construido: ${JSON.stringify(finalFilter)}`);
     return finalFilter;
+  }
+
+  private expandUnitTypeVariants(tipoUnidad: string): string[] {
+    const trimmed = tipoUnidad?.trim();
+    if (!trimmed) return [];
+
+    const normalized = trimmed
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+
+    if (normalized === 'duplex') {
+      return ['Dúplex', 'Duplex'];
+    }
+
+    return [trimmed];
   }
 
   private async searchWithScoring(

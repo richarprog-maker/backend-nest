@@ -581,7 +581,7 @@ Responde solo con el JSON requerido.`;
           ...paramsWithContext,
           dormitorios: input.dormitorios,
           nombre_proyecto: input.nombre_proyecto,
-          proyectoId: metadata.proyectoId
+          proyectoId: input.nombre_proyecto?.trim() ? undefined : metadata.proyectoId
         });
       },
     });
@@ -611,7 +611,8 @@ Responde solo con el JSON requerido.`;
         nombre_proyecto: z.string().describe(`Nombre del proyecto que eligio o al que quiere cambiarse. ${nombresProyectosStr}`),
       }),
       func: async (input, config) => {
-        const { codigoEmpresa, leadUuid, mensajeUsuarioOriginal } = (config as any)?.metadata || {};
+        const metadata = (config as any)?.metadata || {};
+        const { codigoEmpresa, leadUuid, mensajeUsuarioOriginal } = metadata;
         const result = await this.toolsExecutionService.guardarProyecto(
           {
             ...input,
@@ -620,7 +621,10 @@ Responde solo con el JSON requerido.`;
           codigoEmpresa,
           leadUuid
         );
-         return JSON.stringify(result);
+        if (result?.success && result?.proyectoId) {
+          metadata.proyectoId = result.proyectoId;
+        }
+        return JSON.stringify(result);
       },
     });
 
