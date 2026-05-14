@@ -28,6 +28,8 @@ import { convertGoogleDriveToDirectUrl, formatMonto } from './utils/tool-format.
 import { parseSessionSummary, resolvePasoPendiente } from '../utils/session-summary.utils';
 import { TokenTrackingService } from '../token-tracking.service';
 
+const VALOR_UNIDAD_NO_DISPONIBLE = 'no';
+
 @Injectable()
 export class ToolsExecutionService {
     private readonly logger = new Logger(ToolsExecutionService.name);
@@ -78,6 +80,28 @@ export class ToolsExecutionService {
 
     private extractDniDigits(value?: string | null): string {
         return String(value || '').replace(/\D/g, '');
+    }
+
+    private NormalizarTextoDisponibilidad(Valor?: string | null): string {
+        return String(Valor || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim()
+            .toLowerCase();
+    }
+
+    private EsUnidadDisponible(Metadata?: any): boolean {
+        const DisponibilidadNormalizada = this.NormalizarTextoDisponibilidad(Metadata?.availability);
+
+        if (!DisponibilidadNormalizada) {
+            return true;
+        }
+
+        return DisponibilidadNormalizada !== VALOR_UNIDAD_NO_DISPONIBLE;
+    }
+
+    private FiltrarUnidadesDisponibles(Resultados: any[]): any[] {
+        return Resultados.filter((Resultado) => this.EsUnidadDisponible(Resultado?.document?.metadata));
     }
 
     private async registrarTokensFaq(
@@ -1561,7 +1585,7 @@ RESPUESTA:`);
                         return {
                             proyecto: proyecto.nombre,
                             proyectoId: proyecto.id,
-                            items,
+                            items: this.FiltrarUnidadesDisponibles(items),
                         };
                     } catch (err) {
                         this.logger.warn(`Error buscando en inventario de ${proyecto.nombre}: ${err.message}`);
@@ -2016,11 +2040,12 @@ RESPUESTA:`);
             filters,
             { limit: 20, threshold: 0.4 }
         );
+        const ResultadosDisponibles = this.FiltrarUnidadesDisponibles(resultados);
 
         // LÓGICA DE ORDENAMIENTO INTELIGENTE
         // Prioridad 1: Si especificó preferencia de piso
         if (preferenciaPiso) {
-            resultados.sort((a, b) => {
+            ResultadosDisponibles.sort((a, b) => {
                 const pisoA = a.document.metadata.floor || 0;
                 const pisoB = b.document.metadata.floor || 0;
 
@@ -2036,7 +2061,7 @@ RESPUESTA:`);
         else if (params.precio_max || params.precio_min) {
             const precioObjetivo = params.precio_max || params.precio_min;
 
-            resultados.sort((a, b) => {
+            ResultadosDisponibles.sort((a, b) => {
                 const getPrecio = (item: any) => {
                     const m = item.document.metadata;
                     // Usar precio promo si existe y es menor, sino precio lista
@@ -2058,7 +2083,7 @@ RESPUESTA:`);
         }
 
         // Devolvemos solo los top 6 después de ordenar
-        return { ok: true, items: resultados.slice(0, 6) };
+        return { ok: true, items: ResultadosDisponibles.slice(0, 6) };
     }
 
     /**
@@ -2118,7 +2143,9 @@ RESPUESTA:`);
                 { limit: 1, threshold: 0.4 }
             );
 
-            if (resultadosExactos.length > 0) {
+            const ResultadosExactosDisponibles = this.FiltrarUnidadesDisponibles(resultadosExactos);
+
+            if (ResultadosExactosDisponibles.length > 0) {
                 return {
                     hayStock: true,
                     dormitoriosDisponibles: [dormsNum],
@@ -2134,10 +2161,11 @@ RESPUESTA:`);
                 {},
                 { limit: 50, threshold: 0.3 }
             );
+            const TodoElInventarioDisponible = this.FiltrarUnidadesDisponibles(todoElInventario);
 
             const dormitoriosDisponibles = [
                 ...new Set<number>(
-                    todoElInventario
+                    TodoElInventarioDisponible
                         .map(r => r.document.metadata.bedrooms)
                         .filter((b): b is number => b !== undefined && b !== null)
                 )
@@ -2163,7 +2191,7 @@ RESPUESTA:`);
     }
 
     private formatearRespuestaBusqueda(items: any[], mensajeIntro: string) {
-        const lista = items.slice(0, 3).map((r, idx) => {
+        const lista = this.FiltrarUnidadesDisponibles(items).slice(0, 3).map((r, idx) => {
             const m = r.document.metadata;
 
             const pList = m.price_list ? parseFloat(m.price_list) : 0;
