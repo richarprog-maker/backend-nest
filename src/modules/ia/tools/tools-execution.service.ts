@@ -17,6 +17,7 @@ import { ResumenConversacionService } from '../resumen-conversacion.service';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 import { ColeccionQdrant } from '../../proyectos/entities/coleccion-qdrant.entity';
 import { ServicioSperantService } from '../../sperant/services/servicio-sperant.service';
+import { NotificacionesCitasService } from '../../notificaciones/notificaciones-citas.service';
 import {
     buildFaqContext,
     FaqDocumentResult,
@@ -51,6 +52,7 @@ export class ToolsExecutionService {
         private resumenService: ResumenConversacionService,
         private servicioSperant: ServicioSperantService,
         private tokenTrackingService: TokenTrackingService,
+        private notificacionesCitasService: NotificacionesCitasService,
     ) {
         this.llm = new ChatOpenAI({
             modelName: 'gpt-4o-mini',
@@ -874,9 +876,14 @@ ${precioStr}
                 });
                 await this.clasificacionRepo.save(historial);
                 this.logger.log(`[AgendarCita] Lead clasificado como ALTO y Sesion actualizada a estado 2`);
+                await this.notificacionesCitasService.NotificarCitaLeadCaliente({
+                    Cita: citaCreada,
+                    CodigoEmpresa: codigoEmpresa,
+                    LeadUuid: leadUuid,
+                });
             }
         } catch (err) {
-            this.logger.error(`[AgendarCita] Error actualizando clasificacion: ${err.message}`);
+            this.logger.error(`[AgendarCita] Error actualizando clasificacion o notificando asesor: ${err.message}`);
         }
 
 

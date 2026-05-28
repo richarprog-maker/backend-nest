@@ -23,6 +23,7 @@ import { ClasificacionLeadsModule } from '../clasificacion-leads/clasificacion-l
 import { ResumenConversacionService } from './resumen-conversacion.service';
 import { SperantModule } from '../sperant/sperant.module';
 import { TokenTrackingService } from './token-tracking.service';
+import { NotificacionesCitasModule } from '../notificaciones/notificaciones-citas.module';
 
 @Module({
     imports: [
@@ -32,6 +33,7 @@ import { TokenTrackingService } from './token-tracking.service';
         forwardRef(() => import('../webhook_meta/webhook.module').then(m => m.WebhookModule)),
         forwardRef(() => InboxModule),
         SperantModule,
+        NotificacionesCitasModule,
         TypeOrmModule.forFeature([HistorialChatAi, SesionConversacion, Bot, IaTokenLog, Lead, Cita, Proyecto, ColeccionQdrant]),
         ClasificacionLeadsModule
     ],
