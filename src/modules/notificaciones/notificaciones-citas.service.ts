@@ -25,6 +25,7 @@ const ASUNTO_CITA_LEAD_CALIENTE = 'Nueva cita agendada con lead caliente';
 const TEXTO_SIN_DATO = 'No registrado';
 const TEXTO_TIPO_CITA_DEFAULT = 'PRESENCIAL';
 const TEXTO_PROYECTO_DEFAULT = 'Proyecto no especificado';
+const MAX_ASESORES_NOTIFICACION_CITA = 2;
 const PARAM_ASESOR_NOMBRE = 'asesor_nombre';
 const PARAM_LEAD_NOMBRE = 'lead_nombre';
 const PARAM_LEAD_TELEFONO = 'lead_telefono';
@@ -76,16 +77,18 @@ export class NotificacionesCitasService {
 
     async NotificarCitaLeadCaliente(Datos: DatosNotificacionCitaCaliente): Promise<void> {
         const LeadAsignado = await this.ObtenerLead(Datos.LeadUuid, Datos.CodigoEmpresa);
-        const AsesorAsignado = await this.ObtenerAsesorAsignado(Datos.Cita);
+        const AsesoresAsignados = await this.ObtenerAsesoresAsignados(Datos.Cita);
 
-        if (!AsesorAsignado) {
-            this.Logger.warn(`No se encontro asesor activo para notificar cita ${Datos.Cita.id}`);
+        if (!AsesoresAsignados.length) {
+            this.Logger.warn(`No se encontraron asesores activos para notificar cita ${Datos.Cita.id}`);
             return;
         }
 
-        const VariablesMensaje = this.ConstruirVariablesMensaje(AsesorAsignado, LeadAsignado, Datos.Cita);
-        await this.EnviarCorreoAsesor(AsesorAsignado, Datos.Cita, VariablesMensaje);
-        await this.EnviarWhatsappAsesor(Datos.CodigoEmpresa, AsesorAsignado, Datos.Cita, VariablesMensaje);
+        for (const AsesorAsignado of AsesoresAsignados) {
+            const VariablesMensaje = this.ConstruirVariablesMensaje(AsesorAsignado, LeadAsignado, Datos.Cita);
+            await this.EnviarCorreoAsesor(AsesorAsignado, Datos.Cita, VariablesMensaje);
+            await this.EnviarWhatsappAsesor(Datos.CodigoEmpresa, AsesorAsignado, Datos.Cita, VariablesMensaje);
+        }
     }
 
     private async VerificarConfiguracionSmtp(): Promise<void> {
@@ -109,23 +112,34 @@ export class NotificacionesCitasService {
         });
     }
 
-    private async ObtenerAsesorAsignado(CitaAgendada: Cita): Promise<Vendedor | null> {
-        if (CitaAgendada.idVendedor) {
-            const VendedorAsignado = await this.VendedorRepo.findOne({
-                where: {
-                    id: CitaAgendada.idVendedor,
-                    codigoEmpresa: CitaAgendada.codigoEmpresa,
-                    estado: ESTADO_VENDEDOR_ACTIVO,
-                },
-            });
+    private async ObtenerAsesoresAsignados(CitaAgendada: Cita): Promise<Vendedor[]> {
+        const AsesoresProyecto = await this.ObtenerAsesoresProyecto(CitaAgendada);
 
-            if (VendedorAsignado) {
-                return VendedorAsignado;
-            }
+        if (AsesoresProyecto.length) {
+            return AsesoresProyecto;
         }
 
-        if (!CitaAgendada.proyectoId) {
+        const AsesorDirecto = await this.ObtenerAsesorDirecto(CitaAgendada);
+        return AsesorDirecto ? [AsesorDirecto] : [];
+    }
+
+    private async ObtenerAsesorDirecto(CitaAgendada: Cita): Promise<Vendedor | null> {
+        if (!CitaAgendada.idVendedor) {
             return null;
+        }
+
+        return this.VendedorRepo.findOne({
+            where: {
+                id: CitaAgendada.idVendedor,
+                codigoEmpresa: CitaAgendada.codigoEmpresa,
+                estado: ESTADO_VENDEDOR_ACTIVO,
+            },
+        });
+    }
+
+    private async ObtenerAsesoresProyecto(CitaAgendada: Cita): Promise<Vendedor[]> {
+        if (!CitaAgendada.proyectoId) {
+            return [];
         }
 
         const AsignacionesProyecto = await this.VendedorProyectoRepo.find({
@@ -138,12 +152,15 @@ export class NotificacionesCitasService {
             },
         });
 
-        const AsignacionActiva = AsignacionesProyecto.find((Asignacion) => {
-            return Asignacion.vendedor?.estado === ESTADO_VENDEDOR_ACTIVO
-                && Asignacion.vendedor?.codigoEmpresa === CitaAgendada.codigoEmpresa;
-        });
+        return AsignacionesProyecto
+            .map((Asignacion) => Asignacion.vendedor)
+            .filter((AsesorAsignado) => this.EsAsesorNotificable(AsesorAsignado, CitaAgendada.codigoEmpresa))
+            .slice(0, MAX_ASESORES_NOTIFICACION_CITA);
+    }
 
-        return AsignacionActiva?.vendedor || null;
+    private EsAsesorNotificable(AsesorAsignado: Vendedor | undefined, CodigoEmpresa: number): AsesorAsignado is Vendedor {
+        return AsesorAsignado?.estado === ESTADO_VENDEDOR_ACTIVO
+            && AsesorAsignado?.codigoEmpresa === CodigoEmpresa;
     }
 
     private async EnviarCorreoAsesor(

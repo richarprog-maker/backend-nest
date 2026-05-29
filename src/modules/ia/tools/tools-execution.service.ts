@@ -1578,6 +1578,11 @@ RESPUESTA:`);
                 tipoUnidad = tipo;
             }
 
+            const TieneCriteriosBusqueda = dormsNumber !== undefined || Boolean(tipoUnidad);
+            if (!TieneCriteriosBusqueda) {
+                return '[INFO_FALTANTE]';
+            }
+
             // Buscar en paralelo en todos los proyectos
             const resultadosPorProyecto = await Promise.all(
                 proyectos.map(async (proyecto) => {
@@ -1800,6 +1805,19 @@ RESPUESTA:`);
                     const val = processDorm(params.dormitorios);
                     if (val !== -1) normalizedDorms = val;
                 }
+            }
+
+            const TieneCriteriosBusqueda =
+                normalizedDorms !== undefined ||
+                Boolean(params.tipo_unidad) ||
+                Boolean(params.tipologia) ||
+                Boolean(params.area_min) ||
+                Boolean(params.piso) ||
+                Boolean(params.vista) ||
+                Boolean(params.preferencia_piso);
+
+            if (!TieneCriteriosBusqueda) {
+                return '[INFO_FALTANTE]';
             }
 
             // Actualizar params con valores normalizados para uso interno (Qdrant usa numeros)

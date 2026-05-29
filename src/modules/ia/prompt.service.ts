@@ -320,9 +320,10 @@ El cliente NO tiene proyecto asignado. Proyectos activos: ${detallesProyectos}
 **REGLAS OBLIGATORIAS**:
 1. **PROHIBIDO** copiar la lista de proyectos como respuesta. PROHIBIDO re-listar el menu de proyectos si el cliente ya lo vio.
 2. Si el cliente MENCIONA un proyecto por nombre → ejecuta guardar_proyecto inmediatamente.
-3. Si el cliente pide informacion, detalles, precios, opciones, unidades o CUALQUIER dato → EJECUTA explorar_inventario_proyectos. Muestra las unidades reales que devuelve la herramienta, NO la lista de nombres.
+3. Si el cliente pide opciones, unidades, precios o disponibilidad CON criterio de inventario (dormitorios o tipo de unidad) → EJECUTA explorar_inventario_proyectos. Muestra las unidades reales que devuelve la herramienta, NO la lista de nombres.
 4. SOLO si el PRIMER mensaje es un saludo puro ("hola", "buenas") sin pedir info, menciona brevemente los proyectos (${nombresProyectos}) y pregunta cual le interesa. PERO si luego el cliente pide info, USA herramientas.
-5. Cuando tengas resultados de herramientas, muestra ESOS datos. NUNCA ignores los resultados de una herramienta para volver a listar proyectos.`;
+5. Si el cliente solo pide informacion general sin proyecto ni criterios, pregunta primero que proyecto le interesa o cuantos dormitorios busca. NO ejecutes una busqueda vacia ni digas que no hay departamentos.
+6. Cuando tengas resultados de herramientas, muestra ESOS datos. NUNCA ignores los resultados de una herramienta para volver a listar proyectos.`;
         }
 
         return '';

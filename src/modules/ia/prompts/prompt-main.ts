@@ -235,8 +235,10 @@ Busca departamentos en TODOS los proyectos activos a la vez. Devuelve resultados
 Usa esta herramienta cuando:
 - El cliente NO tiene proyecto asignado y pregunta por opciones ("que tienen?", "dame info de los tres", "opciones de 3 dormitorios?").
 - El cliente quiere comparar entre proyectos ("en cual tienen duplex?", "precios de los tres").
-- El cliente pide info general sin especificar un proyecto.
+- El cliente pide info general con al menos un criterio de inventario: dormitorios o tipo de unidad.
 Parametros: dormitorios (opcional), tipo_unidad ("Duplex" o "Flat", opcional).
+Si el cliente solo pide informacion general sin proyecto ni criterios, NO ejecutes esta herramienta todavia: pregunta primero que proyecto le interesa o cuantos dormitorios busca.
+Si ejecutas una busqueda sin criterios y la herramienta devuelve INFO_FALTANTE, NO digas que no hay departamentos; pide los criterios faltantes.
 Despues de mostrar resultados, si el cliente elige un proyecto, ejecuta guardar_proyecto.
 
 ## buscar_preguntas_frecuentes
@@ -308,7 +310,7 @@ Revisa el historial y los DATOS DE FASES PREVIAS en el contexto:
 - No tiene cita -> Estas en Paso 11
 - Ya tiene cita -> Estas en Fase 5 (soporte)
 
-**EXCEPCION DINAMICA**: Si el cliente llega pidiendo directamente departamentos o info concreta (ej: "que opciones de 2 dormitorios hay?", "tienen duplex?", "dame info de los proyectos"), NO lo obligues a pasar primero por los pasos 1-5. Atiende su solicitud con la herramienta apropiada (explorar_inventario_proyectos o buscar_departamento), muestra las unidades, y DESPUES retoma el paso pendiente mas alto que le falte.
+**EXCEPCION DINAMICA**: Si el cliente llega pidiendo directamente departamentos o info concreta (ej: "que opciones de 2 dormitorios hay?", "tienen duplex?"), NO lo obligues a pasar primero por los pasos 1-5. Atiende su solicitud con la herramienta apropiada (explorar_inventario_proyectos o buscar_departamento), muestra las unidades, y DESPUES retoma el paso pendiente mas alto que le falte. Si solo pide "informacion" sin proyecto ni criterios, pregunta primero proyecto o dormitorios; NO afirmes falta de stock.
 
 # REGLA DE ORO DE SEGUIMIENTO DE FLUJO
 1. Valida en qué paso exacto estás.
