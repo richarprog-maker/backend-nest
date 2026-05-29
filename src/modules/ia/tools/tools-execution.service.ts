@@ -301,6 +301,16 @@ export class ToolsExecutionService {
         });
     }
 
+    private async obtenerProyectoAleatorioActivo(codigoEmpresa?: number): Promise<Proyecto | null> {
+        const Proyectos = await this.obtenerProyectosActivosOrdenados(codigoEmpresa);
+
+        if (Proyectos.length === 0) {
+            return null;
+        }
+
+        return Proyectos[Math.floor(Math.random() * Proyectos.length)];
+    }
+
     private async buscarDocumentosFaq(
         query: string,
         proyectosObjetivo: Proyecto[],
@@ -1610,6 +1620,24 @@ RESPUESTA:`);
             const proyectosSinResultados = resultadosPorProyecto.filter(r => r.items.length === 0);
 
             if (proyectosConResultados.length === 0) {
+                const ProyectoAleatorio = await this.obtenerProyectoAleatorioActivo(params.codigoEmpresa);
+
+                if (ProyectoAleatorio) {
+                    await this.sincronizarProyectoSesionPorId(
+                        ProyectoAleatorio.id,
+                        params.codigoEmpresa,
+                        params.leadUuid
+                    );
+
+                    return this.buscarDepartamentoUniversal({
+                        dormitorios: params.dormitorios,
+                        tipo_unidad: params.tipo_unidad,
+                        codigoEmpresa: params.codigoEmpresa,
+                        leadUuid: params.leadUuid,
+                        proyectoId: ProyectoAleatorio.id,
+                    });
+                }
+
                 const filtroDesc = [];
                 if (dormsNumber !== undefined) filtroDesc.push(`${dormsNumber === 0 ? 'monoambiente' : dormsNumber + ' dormitorios'}`);
                 if (tipoUnidad) filtroDesc.push(tipoUnidad);
@@ -1697,6 +1725,20 @@ RESPUESTA:`);
                     params.leadUuid,
                     'buscar_departamento'
                 );
+            }
+
+            if (!actualProyectoId && params.codigoEmpresa) {
+                const ProyectoAleatorio = await this.obtenerProyectoAleatorioActivo(params.codigoEmpresa);
+
+                if (ProyectoAleatorio) {
+                    actualProyectoId = ProyectoAleatorio.id;
+
+                    await this.sincronizarProyectoSesionPorId(
+                        actualProyectoId,
+                        params.codigoEmpresa,
+                        params.leadUuid
+                    );
+                }
             }
 
             const collectionName = await this.obtenerColeccionInventario(actualProyectoId);
