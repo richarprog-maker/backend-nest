@@ -12,6 +12,7 @@ import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { WapiService } from '../webhook_meta/wapi.service';
+import { Vendedor } from '../auth/entities/vendedor.entity';
 import * as xlsx from 'xlsx';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -37,6 +38,8 @@ export class CampaniasProcessor extends WorkerHost {
         private clasificacionRepo: Repository<HistorialClasificacionLead>,
         @InjectRepository(Mensaje)
         private mensajeRepo: Repository<Mensaje>,
+        @InjectRepository(Vendedor)
+        private vendedorRepo: Repository<Vendedor>,
         private wapiService: WapiService,
         @InjectQueue('campanias') private campaniasQueue: Queue,
         private dataSource: DataSource
@@ -110,11 +113,17 @@ export class CampaniasProcessor extends WorkerHost {
 
             if (campania.tipoAudiencia === 'excel' && campania.archivoAudienciaPath) {
                 if (fs.existsSync(campania.archivoAudienciaPath)) {
+                    const VendedoresEmpresa = await this.vendedorRepo.find({
+                        where: { codigoEmpresa: campania.codigoEmpresa }
+                    });
+                    const VendedoresPorId = new Map(
+                        VendedoresEmpresa.map((VendedorActual) => [VendedorActual.id, VendedorActual])
+                    );
                     const workbook = xlsx.readFile(campania.archivoAudienciaPath);
                     const sheet = workbook.Sheets[workbook.SheetNames[0]];
                     const rawData = xlsx.utils.sheet_to_json(sheet);
 
-                    destinatarios = rawData.map((row: any) => ({
+                    destinatarios = rawData.map((row: any, index: number) => ({
                         telefono: row['telefono'] || row['celular'] || row['movil'] || row['Telefono'] || row['Celular'] || row['phone'] || row['Phone'],
                         nombre: row['nombre'] || row['nombres'] || row['Nombre'] || row['fname'] || row['Fname'] || '',
                         apellido: row['apellido'] || row['apellidos'] || row['Apellido'] || row['lname'] || row['Lname'] || '',
@@ -127,6 +136,11 @@ export class CampaniasProcessor extends WorkerHost {
                         departamento: row['department'] || row['departamento'] || '',
                         fechaNacimiento: row['date_of_birth'] || row['fecha_nacimiento'] || row['fechaNacimiento'] || '',
                         projectId: row['project_id'] || row['proyecto_id'] || '',
+                        asesorId: this.ResolverAsesorIdAudienciaExcel(
+                            this.ObtenerValorFilaExcel(row, ['asesor_id', 'id_asesor', 'asesorId', 'AsesorId', 'Asesor ID']),
+                            VendedoresPorId,
+                            index,
+                        ),
                         utmSource: row['utm_source'] || '',
                         utmMedium: row['utm_medium'] || '',
                         utmCampaign: row['utm_campaign'] || '',
@@ -219,7 +233,8 @@ export class CampaniasProcessor extends WorkerHost {
                             leadUuid: lead?.uuid || null,
                             prospectoId: prospecto?.id || null,
                             clasificacionLead: clasificacion || null,
-                            projectId: campania.proyectoId || d.projectId || null
+                            projectId: campania.proyectoId || d.projectId || null,
+                            asesorId: d.asesorId || campania.asesorId || null,
                         };
                     }));
                     detallesConLeads.push(...subResults);
@@ -232,12 +247,14 @@ export class CampaniasProcessor extends WorkerHost {
 
                 const leadUuidMap = new Map<number, string>();
                 const projectIdMap = new Map<number, number | null>();
+                const asesorIdMap = new Map<number, number | null>();
                 detallesConLeads.forEach((d, idx) => {
                     if (d.leadUuid && savedChunk[idx]) {
                         leadUuidMap.set(savedChunk[idx].id, d.leadUuid);
                     }
                     if (savedChunk[idx]) {
                         projectIdMap.set(savedChunk[idx].id, d.projectId ? Number(d.projectId) : null);
+                        asesorIdMap.set(savedChunk[idx].id, d.asesorId ? Number(d.asesorId) : null);
                     }
                 });
 
@@ -254,7 +271,8 @@ export class CampaniasProcessor extends WorkerHost {
                         tipoMultimedia: detalle.tipoMultimedia,
                         urlMultimedia: detalle.urlMultimedia,
                         leadUuid: leadUuidMap.get(detalle.id) || null,
-                        proyectoId: projectIdMap.get(detalle.id) ?? null
+                        proyectoId: projectIdMap.get(detalle.id) ?? null,
+                        asesorId: asesorIdMap.get(detalle.id) ?? campania.asesorId ?? null
                     },
                     opts: {
                         removeOnComplete: true,
@@ -449,6 +467,7 @@ export class CampaniasProcessor extends WorkerHost {
         urlMultimedia?: string;
         leadUuid?: string;
         proyectoId?: number;
+        asesorId?: number;  // ID del vendedor asignado en la campaña
     }) {
         const { detalleId, campaniaId, plantillaCuerpo, codigoEmpresa, usarTemplate, templateName, templateLanguage, templateParams, tipoMultimedia, urlMultimedia, leadUuid } = data;
 
@@ -543,8 +562,9 @@ export class CampaniasProcessor extends WorkerHost {
                 });
 
                 // Resetear o crear sesion de conversacion para reiniciar ciclo de recuperacion
+                // Si la campaña tiene asesorId, se persiste en la sesión (fuente de verdad para notificaciones)
                 if (leadUuid) {
-                    await this.resetearOCrearSesion(leadUuid, codigoEmpresa, data.proyectoId);
+                    await this.resetearOCrearSesion(leadUuid, codigoEmpresa, data.proyectoId, data.asesorId);
                 }
 
                 if (detalle.prospectoId) {
@@ -674,6 +694,38 @@ export class CampaniasProcessor extends WorkerHost {
         return resultado;
     }
 
+    private ObtenerValorFilaExcel(Fila: any, Claves: string[]): unknown {
+        for (const Clave of Claves) {
+            const Valor = Fila?.[Clave];
+            if (Valor !== undefined && Valor !== null && Valor !== '') {
+                return Valor;
+            }
+        }
+
+        return null;
+    }
+
+    private ResolverAsesorIdAudienciaExcel(
+        RawAsesorId: unknown,
+        VendedoresPorId: Map<number, Vendedor>,
+        Index: number,
+    ): number | null {
+        if (RawAsesorId === undefined || RawAsesorId === null || RawAsesorId === '') {
+            return null;
+        }
+
+        const AsesorId = Number(RawAsesorId);
+        if (!Number.isInteger(AsesorId) || AsesorId <= 0) {
+            throw new Error(`Fila ${Index + 1}: el ID de asesor "${RawAsesorId}" no es válido.`);
+        }
+
+        if (!VendedoresPorId.has(AsesorId)) {
+            throw new Error(`Fila ${Index + 1}: el ID de asesor ${AsesorId} no pertenece a esta empresa.`);
+        }
+
+        return AsesorId;
+    }
+
 
     private async obtenerLeadsPorFiltros(
         filtrosAudiencia: any,
@@ -748,7 +800,12 @@ export class CampaniasProcessor extends WorkerHost {
      * Resetea la sesión de conversación existente o crea una nueva
      * para que el ciclo de recuperación (1h -> 8h -> 24h) se reinicie
      */
-    private async resetearOCrearSesion(leadUuid: string, codigoEmpresa: number, proyectoId?: number): Promise<void> {
+    private async resetearOCrearSesion(
+        leadUuid: string,
+        codigoEmpresa: number,
+        proyectoId?: number,
+        asesorId?: number,
+    ): Promise<void> {
         try {
             let sesion = await this.sesionRepo.findOne({
                 where: { leadUuid, codigoEmpresa }
@@ -759,15 +816,19 @@ export class CampaniasProcessor extends WorkerHost {
                 sesion.proximoMensajeMinutos = 60;
                 sesion.fechaHoraUltimoMsj = new Date();
                 if (proyectoId) sesion.proyectoId = proyectoId;
+                if (asesorId && sesion.asesorId !== asesorId) {
+                    sesion.asesorId = asesorId;
+                }
 
-                // Add phone number if missing
                 const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
                 if (lead && (!sesion.numeroTelefono || sesion.numeroTelefono !== lead.telefono)) {
                     sesion.numeroTelefono = lead.telefono;
                 }
 
                 await this.sesionRepo.save(sesion);
-                this.logger.debug(`[Campania] Sesion ${sesion.id} reseteada: estado=1, proximo=60min, proyecto=${proyectoId || 'sin cambio'}`);
+                this.logger.debug(
+                    `[Campania] Sesion ${sesion.id} reseteada. proyecto=${proyectoId || 'sin cambio'}, asesor=${asesorId || 'sin cambio'}`
+                );
             } else {
                 const lead = await this.leadRepo.findOne({ where: { uuid: leadUuid, codigoEmpresa } });
                 const nuevaSesion = this.sesionRepo.create({
@@ -778,9 +839,12 @@ export class CampaniasProcessor extends WorkerHost {
                     proximoMensajeMinutos: 60,
                     fechaHoraUltimoMsj: new Date(),
                     proyectoId: proyectoId || null,
+                    asesorId: asesorId || null,  // Asesor de campaña guardado en la nueva sesión
                 });
                 await this.sesionRepo.save(nuevaSesion);
-                this.logger.debug(`[Campania] Nueva sesion creada para lead ${leadUuid}: estado=1, proximo=60min, proyecto=${proyectoId || 'ninguno'}`);
+                this.logger.debug(
+                    `[Campania] Nueva sesion creada para lead ${leadUuid}. proyecto=${proyectoId || 'ninguno'}, asesor=${asesorId || 'ninguno'}`
+                );
             }
         } catch (error) {
             this.logger.error(`Error reseteando/creando sesion para lead ${leadUuid}: ${error.message}`);

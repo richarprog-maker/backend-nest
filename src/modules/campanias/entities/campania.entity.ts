@@ -77,6 +77,9 @@ export class Campania {
     @Column({ name: 'usuario_id', nullable: true })
     usuarioId: number;
 
+    @Column({ name: 'asesor_id', nullable: true })
+    asesorId: number; // Asesor responsable: su id_vendedor se propaga a sesion_conversacion al procesar
+
     @CreateDateColumn({ name: 'fecha_registro' })
     createdAt: Date;
 

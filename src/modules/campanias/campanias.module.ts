@@ -15,6 +15,7 @@ import { Prospecto } from '../inbox/entities/prospecto.entity';
 import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Mensaje } from '../inbox/entities/mensaje.entity';
+import { Vendedor } from '../auth/entities/vendedor.entity';
 
 @Module({
     imports: [
@@ -26,7 +27,8 @@ import { Mensaje } from '../inbox/entities/mensaje.entity';
             Prospecto,
             SesionConversacion,
             HistorialClasificacionLead,
-            Mensaje
+            Mensaje,
+            Vendedor
         ]),
         BullModule.registerQueue({
             name: 'campanias',
@@ -40,4 +42,3 @@ import { Mensaje } from '../inbox/entities/mensaje.entity';
     exports: [CampaniasService],
 })
 export class CampaniasModule { }
-

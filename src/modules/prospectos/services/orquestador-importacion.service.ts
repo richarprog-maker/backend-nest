@@ -11,6 +11,7 @@ import { PlantillasService } from '../../plantillas/services/plantillas.service'
 import { HistorialEnviosService } from '../../historial-envios/services/historial-envios.service';
 import { TipoPlantilla } from '../../plantillas/entities/plantilla.entity';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
+import { Vendedor } from '../../auth/entities/vendedor.entity';
 
 import { Mensaje } from '../../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../../ia/entities/historial-chat-ai.entity';
@@ -32,6 +33,7 @@ export class OrquestadorImportacionService {
         @InjectRepository(Mensaje) private mensajeRepo: Repository<Mensaje>,
         @InjectRepository(HistorialChatAi) private historialAiRepo: Repository<HistorialChatAi>,
         @InjectRepository(Proyecto) private proyectoRepo: Repository<Proyecto>,
+        @InjectRepository(Vendedor) private vendedorRepo: Repository<Vendedor>,
     ) { }
 
     async procesarArchivoExcel(buffer: Buffer, codigoEmpresa: number, proposito: string, nombreBd: string) {
@@ -48,8 +50,14 @@ export class OrquestadorImportacionService {
         const proyectosActivosPorId = new Map(
             proyectosActivos.map((proyecto) => [proyecto.id, proyecto])
         );
+        const VendedoresEmpresa = await this.vendedorRepo.find({
+            where: { codigoEmpresa }
+        });
+        const VendedoresPorId = new Map(
+            VendedoresEmpresa.map((VendedorActual) => [VendedorActual.id, VendedorActual])
+        );
 
-        this.validarFilasExcel(datosCrudos, proyectosActivosPorId);
+        this.validarFilasExcel(datosCrudos, proyectosActivosPorId, VendedoresPorId);
 
         // Asegurar que existe origen "Excel"
         let origenExcel = await this.origenRepo.findOne({ where: { nombre: 'Excel' } });
@@ -103,6 +111,11 @@ export class OrquestadorImportacionService {
                 const proyectoIdExcel = this.resolverProyectoIdExcel(
                     fila.project_id,
                     proyectosActivosPorId,
+                    index,
+                );
+                const AsesorIdExcel = this.ResolverAsesorIdExcel(
+                    this.ObtenerAsesorIdFila(fila),
+                    VendedoresPorId,
                     index,
                 );
 
@@ -169,6 +182,7 @@ export class OrquestadorImportacionService {
                     sesion.numeroTelefono = lead.telefono;
                     sesion.proximoMensajeMinutos = 60;
                     if (proyectoIdExcel) sesion.proyectoId = proyectoIdExcel;
+                    if (AsesorIdExcel) sesion.asesorId = AsesorIdExcel;
 
                     await queryRunner.manager.save(sesion);
                 } else {
@@ -179,6 +193,10 @@ export class OrquestadorImportacionService {
                     }
                     if (!sesion.numeroTelefono || sesion.numeroTelefono !== lead.telefono) {
                         sesion.numeroTelefono = lead.telefono;
+                        necesitaActualizar = true;
+                    }
+                    if (AsesorIdExcel && sesion.asesorId !== AsesorIdExcel) {
+                        sesion.asesorId = AsesorIdExcel;
                         necesitaActualizar = true;
                     }
                     if (necesitaActualizar) {
@@ -385,9 +403,35 @@ export class OrquestadorImportacionService {
         return proyectoId;
     }
 
+    private ObtenerAsesorIdFila(fila: any): unknown {
+        return fila.asesor_id ?? fila.id_asesor ?? null;
+    }
+
+    private ResolverAsesorIdExcel(
+        rawAsesorId: unknown,
+        VendedoresPorId: Map<number, Vendedor>,
+        index: number,
+    ): number | null {
+        if (rawAsesorId === undefined || rawAsesorId === null || rawAsesorId === '') {
+            return null;
+        }
+
+        const AsesorId = Number(rawAsesorId);
+        if (!Number.isInteger(AsesorId) || AsesorId <= 0) {
+            throw new BadRequestException(`Fila ${index + 1}: el ID de asesor "${rawAsesorId}" no es válido.`);
+        }
+
+        if (!VendedoresPorId.has(AsesorId)) {
+            throw new BadRequestException(`Fila ${index + 1}: el ID de asesor ${AsesorId} no pertenece a esta empresa.`);
+        }
+
+        return AsesorId;
+    }
+
     private validarFilasExcel(
         datosCrudos: any[],
         proyectosActivosPorId: Map<number, Proyecto>,
+        VendedoresPorId: Map<number, Vendedor>,
     ): void {
         for (const [index, fila] of datosCrudos.entries()) {
             const telefono = this.limpiarTelefono(fila.phone || fila.celular || fila.telefono);
@@ -400,6 +444,12 @@ export class OrquestadorImportacionService {
             this.resolverProyectoIdExcel(
                 fila.project_id,
                 proyectosActivosPorId,
+                index,
+            );
+
+            this.ResolverAsesorIdExcel(
+                this.ObtenerAsesorIdFila(fila),
+                VendedoresPorId,
                 index,
             );
         }

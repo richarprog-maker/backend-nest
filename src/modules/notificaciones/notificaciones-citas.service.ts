@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { Vendedor } from '../auth/entities/vendedor.entity';
 import { Cita } from '../citas/entities/cita.entity';
 import { Lead } from '../inbox/entities/lead.entity';
+import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
 import { WapiService } from '../webhook_meta/wapi.service';
 import {
@@ -53,6 +54,8 @@ export class NotificacionesCitasService {
         private readonly VendedorRepo: Repository<Vendedor>,
         @InjectRepository(Lead)
         private readonly LeadRepo: Repository<Lead>,
+        @InjectRepository(SesionConversacion)
+        private readonly SesionRepo: Repository<SesionConversacion>,
         @InjectRepository(VendedorProyecto)
         private readonly VendedorProyectoRepo: Repository<VendedorProyecto>,
         @InjectRepository(PlantillaNotificacionAsesor)
@@ -76,7 +79,7 @@ export class NotificacionesCitasService {
 
     async NotificarCitaLeadCaliente(Datos: DatosNotificacionCitaCaliente): Promise<void> {
         const LeadAsignado = await this.ObtenerLead(Datos.LeadUuid, Datos.CodigoEmpresa);
-        const AsesorAsignado = await this.ObtenerAsesorAsignado(Datos.Cita);
+        const AsesorAsignado = await this.ObtenerAsesorAsignado(Datos.Cita, Datos.LeadUuid);
 
         if (!AsesorAsignado) {
             this.Logger.warn(`No se encontro asesor activo para notificar cita ${Datos.Cita.id}`);
@@ -109,9 +112,48 @@ export class NotificacionesCitasService {
         });
     }
 
-    private async ObtenerAsesorAsignado(CitaAgendada: Cita): Promise<Vendedor | null> {
+    /**
+     * Resuelve el asesor siguiendo la prioridad:
+     *   1. sesion_conversacion.asesor_id  → fuente de verdad (CRM, campaña, manual)
+     *   2. cita.idVendedor                → fallback si la cita ya traía vendedor
+     *   3. Round-robin entre responsables activos del proyecto de la sesión
+     *
+     * El asesor SIEMPRE debe estar activo. Si está inactivo (vacaciones/descanso)
+     * se escala al siguiente responsable activo del proyecto.
+     */
+    private async ObtenerAsesorAsignado(CitaAgendada: Cita, LeadUuid: string): Promise<Vendedor | null> {
+        // --- Prioridad 1: asesor asignado en la sesión de conversación ---
+        if (LeadUuid) {
+            const Sesion = await this.SesionRepo.findOne({
+                where: {
+                    leadUuid: LeadUuid,
+                    codigoEmpresa: CitaAgendada.codigoEmpresa,
+                },
+            });
+
+            if (Sesion?.asesorId) {
+                const AsesorSesion = await this.VendedorRepo.findOne({
+                    where: {
+                        id: Sesion.asesorId,
+                        codigoEmpresa: CitaAgendada.codigoEmpresa,
+                    },
+                });
+
+                if (AsesorSesion?.estado === ESTADO_VENDEDOR_ACTIVO) {
+                    this.Logger.log(`[Notificacion] Asesor desde sesion: ${AsesorSesion.id} (${AsesorSesion.nombre})`);
+                    return AsesorSesion;
+                }
+
+                // Asesor asignado está inactivo (vacaciones) → escalar al proyecto
+                this.Logger.warn(
+                    `[Notificacion] Asesor ${Sesion.asesorId} de la sesion esta inactivo. Escalando al proyecto.`
+                );
+            }
+        }
+
+        // --- Prioridad 2: idVendedor en la cita (fallback legacy) ---
         if (CitaAgendada.idVendedor) {
-            const VendedorAsignado = await this.VendedorRepo.findOne({
+            const VendedorCita = await this.VendedorRepo.findOne({
                 where: {
                     id: CitaAgendada.idVendedor,
                     codigoEmpresa: CitaAgendada.codigoEmpresa,
@@ -119,29 +161,37 @@ export class NotificacionesCitasService {
                 },
             });
 
-            if (VendedorAsignado) {
-                return VendedorAsignado;
+            if (VendedorCita) {
+                this.Logger.log(`[Notificacion] Asesor desde cita.idVendedor: ${VendedorCita.id}`);
+                return VendedorCita;
             }
         }
 
-        if (!CitaAgendada.proyectoId) {
+        // --- Prioridad 3: primer responsable activo del proyecto (round-robin base) ---
+        const ProyectoId = CitaAgendada.proyectoId;
+        if (!ProyectoId) {
+            this.Logger.warn(`[Notificacion] Cita ${CitaAgendada.id} sin proyectoId. No se puede asignar asesor.`);
             return null;
         }
 
         const AsignacionesProyecto = await this.VendedorProyectoRepo.find({
-            where: {
-                proyectoId: CitaAgendada.proyectoId,
-            },
+            where: { proyectoId: ProyectoId },
             relations: ['vendedor'],
-            order: {
-                createdAt: 'ASC',
-            },
+            order: { createdAt: 'ASC' },
         });
 
         const AsignacionActiva = AsignacionesProyecto.find((Asignacion) => {
-            return Asignacion.vendedor?.estado === ESTADO_VENDEDOR_ACTIVO
-                && Asignacion.vendedor?.codigoEmpresa === CitaAgendada.codigoEmpresa;
+            return (
+                Asignacion.vendedor?.estado === ESTADO_VENDEDOR_ACTIVO &&
+                Asignacion.vendedor?.codigoEmpresa === CitaAgendada.codigoEmpresa
+            );
         });
+
+        if (AsignacionActiva?.vendedor) {
+            this.Logger.log(
+                `[Notificacion] Asesor por responsable activo del proyecto ${ProyectoId}: ${AsignacionActiva.vendedor.id}`
+            );
+        }
 
         return AsignacionActiva?.vendedor || null;
     }

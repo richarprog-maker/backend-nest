@@ -31,6 +31,25 @@ export class InboxService {
         private historialChatService: HistorialChatService,
     ) { }
 
+    /**
+     * Reglas de visibilidad de leads en el inbox (para roles no-admin):
+     *
+     * CASO 1 – Lead SIN asesor asignado (sesion.asesor_id IS NULL)
+     *   → Pueden verlo todos los vendedores asignados al proyecto del lead.
+     *   → Fundamento: nadie es responsable aún, cualquier asesor del proyecto puede atenderlo.
+     *
+     * CASO 2 – Lead CON asesor asignado y ese asesor está ACTIVO
+     *   → Solo lo ve el asesor asignado (sesion.asesor_id = vendedorId).
+     *   → Los demás vendedores del mismo proyecto NO lo ven.
+     *   → Fundamento: el lead tiene dueño y no debe verse duplicado en otras bandejas.
+     *
+     * CASO 3 – Lead CON asesor asignado pero ese asesor está INACTIVO (vacaciones/descanso)
+     *   → Los otros vendedores activos asignados al mismo proyecto SÍ lo ven.
+     *   → El asesor inactivo no entra al sistema, así el lead no queda huérfano.
+     *   → Fundamento: continuidad de atención sin reasignar permanentemente el lead.
+     *
+     * ADMIN / SUPER_ADMIN: ven todo, sin filtro.
+     */
     async getConversaciones(codigoEmpresa: number, page: number = 1, limit: number = 50, filter: string = 'all', search: string = '', vendedorId?: number, rol?: string) {
         try {
             const skip = (page - 1) * limit;
@@ -116,9 +135,29 @@ export class InboxService {
 
             if (vendedorId && rol && rol !== 'admin' && rol !== 'super_admin') {
                 if (idsProyectos.length > 0) {
-                    query.andWhere('(sesion.proyecto_id IS NULL OR sesion.proyecto_id IN (:...idsProyectos))', { idsProyectos });
+                    /**
+                     * Caso 1: sin asesor + proyecto coincide → visible
+                     * Caso 2: asesor asignado directamente a este vendedor → visible
+                     * Caso 3: asesor asignado pero inactivo + mismo proyecto → visible
+                     *         (para que el lead no quede sin atención durante vacaciones)
+                     */
+                    query.andWhere(`(
+                        (sesion.asesor_id IS NULL AND sesion.proyecto_id IN (:...idsProyectos))
+                        OR (sesion.asesor_id = :vendedorId)
+                        OR (
+                            sesion.asesor_id IS NOT NULL
+                            AND sesion.asesor_id != :vendedorId
+                            AND sesion.proyecto_id IN (:...idsProyectos)
+                            AND EXISTS (
+                                SELECT 1 FROM tbl_vendedores v_inact
+                                WHERE v_inact.id_vendedor = sesion.asesor_id
+                                  AND v_inact.estado_vendedor = 'inactivo'
+                            )
+                        )
+                    )`, { idsProyectos, vendedorId });
                 } else {
-                    query.andWhere('sesion.proyecto_id IS NULL');
+                    // Vendedor sin proyectos asignados → solo ve leads que le asignaron directamente
+                    query.andWhere('sesion.asesor_id = :vendedorId', { vendedorId });
                 }
             }
 

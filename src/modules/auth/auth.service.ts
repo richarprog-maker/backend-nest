@@ -153,4 +153,33 @@ export class AuthService {
 
         return { success: true, data: result };
     }
+
+    /**
+     * Activa o desactiva un vendedor desde el backoffice.
+     * Usado para gestionar disponibilidad por vacaciones, descanso, etc.
+     * Cuando está inactivo, el motor de asignación lo omite y escala al siguiente responsable activo.
+     */
+    async toggleEstadoVendedor(userPayload: any, id: number, estado: 'activo' | 'inactivo') {
+        if (userPayload.rol !== 'admin' && userPayload.rol !== 'super_admin') {
+            throw new UnauthorizedException('No tienes permiso para realizar esta acción');
+        }
+
+        const vendedor = await this.vendedoresRepository.findOne({
+            where: { id, codigoEmpresa: userPayload.empresaId }
+        });
+
+        if (!vendedor) {
+            throw new UnauthorizedException('Vendedor no encontrado');
+        }
+
+        vendedor.estado = estado;
+        const actualizado = await this.vendedoresRepository.save(vendedor);
+        const { password, ...result } = actualizado;
+
+        return {
+            success: true,
+            message: `Vendedor ${estado === 'activo' ? 'activado' : 'desactivado'} correctamente`,
+            data: result
+        };
+    }
 }

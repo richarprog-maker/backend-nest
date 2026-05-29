@@ -48,4 +48,16 @@ export class AuthController {
     async updateVendedor(@Req() req: any, @Param('id') id: number, @Body() body: any) {
         return this.authService.updateVendedor(req.user, id, body);
     }
+
+    @Put('vendedores/:id/estado')
+    @ApiBearerAuth()
+    @UseGuards(AuthGuard('jwt'))
+    @ApiOperation({ summary: 'Activar o desactivar vendedor (gestión de vacaciones/disponibilidad)' })
+    async toggleEstadoVendedor(
+        @Req() req: any,
+        @Param('id') id: number,
+        @Body('estado') estado: 'activo' | 'inactivo',
+    ) {
+        return this.authService.toggleEstadoVendedor(req.user, id, estado);
+    }
 }

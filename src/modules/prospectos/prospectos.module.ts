@@ -17,6 +17,7 @@ import { HistorialChatAi } from '../ia/entities/historial-chat-ai.entity';
 import { HistorialClasificacionLead } from '../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Cita } from '../citas/entities/cita.entity';
 import { Proyecto } from '../proyectos/entities/proyecto.entity';
+import { Vendedor } from '../auth/entities/vendedor.entity';
 
 @Module({
     imports: [
@@ -29,7 +30,8 @@ import { Proyecto } from '../proyectos/entities/proyecto.entity';
             HistorialChatAi,
             HistorialClasificacionLead,
             Cita,
-            Proyecto
+            Proyecto,
+            Vendedor
         ]),
         PlantillasModule,
         HistorialEnviosModule,

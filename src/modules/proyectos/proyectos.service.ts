@@ -134,6 +134,16 @@ export class ProyectosService {
             if (existente) {
                 return { success: false, message: 'El vendedor ya esta asignado a este proyecto' };
             }
+
+            // Validar máximo de 2 responsables por proyecto
+            const totalAsignados = await this.vendedorProyectoRepo.count({ where: { proyectoId } });
+            if (totalAsignados >= 2) {
+                return {
+                    success: false,
+                    message: 'El proyecto ya tiene 2 responsables asignados. Desasigna uno antes de agregar otro.'
+                };
+            }
+
             const asignacion = this.vendedorProyectoRepo.create({ proyectoId, idVendedor });
             await this.vendedorProyectoRepo.save(asignacion);
             return { success: true, message: 'Vendedor asignado correctamente' };

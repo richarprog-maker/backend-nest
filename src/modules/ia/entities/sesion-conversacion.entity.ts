@@ -19,6 +19,10 @@ export class SesionConversacion {
     @Column({ name: 'proyecto_id', type: 'int', nullable: true })
     proyectoId: number;
 
+    @Column({ name: 'asesor_id', type: 'int', nullable: true })
+    asesorId: number; // Asesor asignado al lead. Es el punto de verdad para notificaciones.
+                      // Origen: CRM (sperant_vendedor_id), CAMPANIA (campo asesor), ORGANICO (round-robin activos)
+
     @Column({ name: 'id_msj_inicio', type: 'int', nullable: true })
     idMsjInicio: number;
 

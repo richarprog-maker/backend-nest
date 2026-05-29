@@ -26,14 +26,14 @@ export class ServicioExcel {
     generarPlantilla(): Buffer {
         const cabeceras = [
             'fname', 'lname', 'phone', 'email', 'document', 'address', 'gender', 'date_of_birth',
-            'country', 'department', 'city', 'project_id', 'utm_source', 'utm_medium', 'utm_campaign', 'observacion'
+            'country', 'department', 'city', 'project_id', 'asesor_id', 'utm_source', 'utm_medium', 'utm_campaign', 'observacion'
         ];
 
         const ejemplo = [
             {
                 fname: 'Juan', lname: 'Perez', phone: '51999888777', email: 'juan@example.com',
                 document: '12345678', address: 'Av. Siempre Viva 123', gender: 'Masculino', date_of_birth: '1990-01-01',
-                country: 'Peru', department: 'Lima', city: 'Miraflores', project_id: '1',
+                country: 'Peru', department: 'Lima', city: 'Miraflores', project_id: '1', asesor_id: '12',
                 utm_source: 'facebook', utm_medium: 'cpc', utm_campaign: 'verano_2026', observacion: 'Interesado en el proyecto X'
             }
         ];
