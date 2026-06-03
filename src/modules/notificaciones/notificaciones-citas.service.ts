@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createTransport, Transporter } from 'nodemailer';
-import { Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 import { Vendedor } from '../auth/entities/vendedor.entity';
 import { Cita } from '../citas/entities/cita.entity';
 import { Lead } from '../inbox/entities/lead.entity';
@@ -30,11 +30,13 @@ const PARAM_ASESOR_NOMBRE = 'asesor_nombre';
 const PARAM_LEAD_NOMBRE = 'lead_nombre';
 const PARAM_LEAD_TELEFONO = 'lead_telefono';
 const PARAM_LEAD_EMAIL = 'lead_email';
+const PARAM_LEAD_DNI = 'lead_dni';
 const PARAM_PROYECTO = 'proyecto';
 const PARAM_FECHA_CITA = 'fecha_cita';
 const PARAM_HORA_CITA = 'hora_cita';
 const PARAM_TIPO_CITA = 'tipo_cita';
 const PARAM_CITA_ID = 'cita_id';
+const PARAM_RESUMEN_CONVERSACION = 'resumen_conversacion';
 
 interface DatosNotificacionCitaCaliente {
     Cita: Cita;
@@ -79,18 +81,17 @@ export class NotificacionesCitasService {
 
     async NotificarCitaLeadCaliente(Datos: DatosNotificacionCitaCaliente): Promise<void> {
         const LeadAsignado = await this.ObtenerLead(Datos.LeadUuid, Datos.CodigoEmpresa);
-        const AsesoresAsignados = await this.ObtenerAsesoresAsignados(Datos.Cita, Datos.LeadUuid);
+        const SesionActual = await this.ObtenerSesionConversacion(Datos.CodigoEmpresa, Datos.LeadUuid);
+        const AsesorAsignado = await this.ObtenerAsesorNotificacion(Datos.Cita, Datos.LeadUuid, LeadAsignado, SesionActual);
 
-        if (!AsesoresAsignados.length) {
-            this.Logger.warn(`No se encontraron asesores activos para notificar cita ${Datos.Cita.id}`);
+        if (!AsesorAsignado) {
+            this.Logger.warn(`No se encontro asesor para notificar cita ${Datos.Cita.id}`);
             return;
         }
 
-        for (const AsesorActual of AsesoresAsignados) {
-            const VariablesMensaje = this.ConstruirVariablesMensaje(AsesorActual, LeadAsignado, Datos.Cita);
-            await this.EnviarCorreoAsesor(AsesorActual, Datos.Cita, VariablesMensaje);
-            await this.EnviarWhatsappAsesor(Datos.CodigoEmpresa, AsesorActual, Datos.Cita, VariablesMensaje);
-        }
+        const VariablesMensaje = this.ConstruirVariablesMensaje(AsesorAsignado, LeadAsignado, Datos.Cita, SesionActual);
+        await this.EnviarCorreoAsesor(AsesorAsignado, Datos.Cita, VariablesMensaje);
+        await this.EnviarWhatsappAsesor(Datos.CodigoEmpresa, AsesorAsignado, Datos.Cita, VariablesMensaje);
     }
 
     private async VerificarConfiguracionSmtp(): Promise<void> {
@@ -114,35 +115,41 @@ export class NotificacionesCitasService {
         });
     }
 
-    private async ObtenerAsesoresAsignados(CitaAgendada: Cita, LeadUuid: string): Promise<Vendedor[]> {
-        const AsesoresUnicos = new Map<number, Vendedor>();
+    private async ObtenerAsesorNotificacion(
+        CitaAgendada: Cita,
+        LeadUuid: string,
+        LeadAsignado: Lead | null,
+        SesionActual: SesionConversacion | null,
+    ): Promise<Vendedor | null> {
+        const AsesorSesion = await this.ObtenerAsesorSesion(CitaAgendada.codigoEmpresa, SesionActual);
 
-        const AsesorSesion = await this.ObtenerAsesorSesion(CitaAgendada.codigoEmpresa, LeadUuid);
-        this.AgregarAsesorNotificable(AsesoresUnicos, AsesorSesion, CitaAgendada.codigoEmpresa);
-
-        const AsesorDirecto = await this.ObtenerAsesorDirecto(CitaAgendada);
-        this.AgregarAsesorNotificable(AsesoresUnicos, AsesorDirecto, CitaAgendada.codigoEmpresa);
-
-        const AsesoresProyecto = await this.ObtenerAsesoresProyecto(CitaAgendada);
-        for (const AsesorProyecto of AsesoresProyecto) {
-            this.AgregarAsesorNotificable(AsesoresUnicos, AsesorProyecto, CitaAgendada.codigoEmpresa);
+        if (AsesorSesion) {
+            return AsesorSesion;
         }
 
-        return Array.from(AsesoresUnicos.values());
+        return this.AsignarAsesorRoundRobin(CitaAgendada, LeadUuid, LeadAsignado, SesionActual);
     }
 
-    private async ObtenerAsesorSesion(CodigoEmpresa: number, LeadUuid: string): Promise<Vendedor | null> {
+    private async ObtenerSesionConversacion(
+        CodigoEmpresa: number,
+        LeadUuid: string,
+    ): Promise<SesionConversacion | null> {
         if (!LeadUuid) {
             return null;
         }
 
-        const SesionActual = await this.SesionRepo.findOne({
+        return this.SesionRepo.findOne({
             where: {
                 leadUuid: LeadUuid,
                 codigoEmpresa: CodigoEmpresa,
             },
         });
+    }
 
+    private async ObtenerAsesorSesion(
+        CodigoEmpresa: number,
+        SesionActual: SesionConversacion | null,
+    ): Promise<Vendedor | null> {
         if (!SesionActual?.asesorId) {
             return null;
         }
@@ -151,23 +158,100 @@ export class NotificacionesCitasService {
             where: {
                 id: SesionActual.asesorId,
                 codigoEmpresa: CodigoEmpresa,
-                estado: ESTADO_VENDEDOR_ACTIVO,
             },
         });
     }
 
-    private async ObtenerAsesorDirecto(CitaAgendada: Cita): Promise<Vendedor | null> {
-        if (!CitaAgendada.idVendedor) {
+    private async AsignarAsesorRoundRobin(
+        CitaAgendada: Cita,
+        LeadUuid: string,
+        LeadAsignado: Lead | null,
+        SesionActual: SesionConversacion | null,
+    ): Promise<Vendedor | null> {
+        const AsesoresProyecto = await this.ObtenerAsesoresProyecto(CitaAgendada);
+        if (!AsesoresProyecto.length) {
             return null;
         }
 
-        return this.VendedorRepo.findOne({
+        const UltimaSesionAsignada = await this.SesionRepo.findOne({
             where: {
-                id: CitaAgendada.idVendedor,
+                proyectoId: CitaAgendada.proyectoId,
                 codigoEmpresa: CitaAgendada.codigoEmpresa,
-                estado: ESTADO_VENDEDOR_ACTIVO,
+                asesorId: Not(IsNull()),
+            },
+            order: {
+                updatedAt: 'DESC',
+                id: 'DESC',
             },
         });
+
+        const AsesorSeleccionado = this.ObtenerSiguienteAsesorRoundRobin(
+            AsesoresProyecto,
+            UltimaSesionAsignada?.asesorId || null,
+        );
+
+        if (!AsesorSeleccionado) {
+            return null;
+        }
+
+        await this.GuardarAsesorEnSesion(CitaAgendada, LeadUuid, LeadAsignado, SesionActual, AsesorSeleccionado.id);
+        return AsesorSeleccionado;
+    }
+
+    private ObtenerSiguienteAsesorRoundRobin(
+        AsesoresProyecto: Vendedor[],
+        UltimoAsesorId: number | null,
+    ): Vendedor | null {
+        if (!AsesoresProyecto.length) {
+            return null;
+        }
+
+        if (!UltimoAsesorId) {
+            return AsesoresProyecto[0];
+        }
+
+        const IndiceUltimoAsesor = AsesoresProyecto.findIndex((AsesorActual) => AsesorActual.id === UltimoAsesorId);
+        if (IndiceUltimoAsesor < 0) {
+            return AsesoresProyecto[0];
+        }
+
+        const IndiceSiguienteAsesor = (IndiceUltimoAsesor + 1) % AsesoresProyecto.length;
+        return AsesoresProyecto[IndiceSiguienteAsesor];
+    }
+
+    private async GuardarAsesorEnSesion(
+        CitaAgendada: Cita,
+        LeadUuid: string,
+        LeadAsignado: Lead | null,
+        SesionActual: SesionConversacion | null,
+        AsesorId: number,
+    ): Promise<void> {
+        if (!LeadUuid) {
+            return;
+        }
+
+        if (SesionActual) {
+            SesionActual.asesorId = AsesorId;
+            if (!SesionActual.proyectoId && CitaAgendada.proyectoId) {
+                SesionActual.proyectoId = CitaAgendada.proyectoId;
+            }
+
+            if (!SesionActual.numeroTelefono && LeadAsignado?.telefono) {
+                SesionActual.numeroTelefono = LeadAsignado.telefono;
+            }
+
+            await this.SesionRepo.save(SesionActual);
+            return;
+        }
+
+        const NuevaSesion = this.SesionRepo.create({
+            leadUuid: LeadUuid,
+            codigoEmpresa: CitaAgendada.codigoEmpresa,
+            numeroTelefono: LeadAsignado?.telefono || null,
+            proyectoId: CitaAgendada.proyectoId || null,
+            asesorId: AsesorId,
+        });
+        await this.SesionRepo.save(NuevaSesion);
     }
 
     private async ObtenerAsesoresProyecto(CitaAgendada: Cita): Promise<Vendedor[]> {
@@ -185,27 +269,18 @@ export class NotificacionesCitasService {
             },
         });
 
-        return AsignacionesProyecto.map((Asignacion) => Asignacion.vendedor);
+        return AsignacionesProyecto
+            .map((Asignacion) => Asignacion.vendedor)
+            .filter((AsesorActual) => this.EsAsesorProyectoActivo(AsesorActual, CitaAgendada.codigoEmpresa));
     }
 
-    private AgregarAsesorNotificable(
-        AsesoresUnicos: Map<number, Vendedor>,
-        AsesorActual: Vendedor | null,
-        CodigoEmpresa: number,
-    ): void {
+    private EsAsesorProyectoActivo(AsesorActual: Vendedor | null | undefined, CodigoEmpresa: number): AsesorActual is Vendedor {
         if (!AsesorActual) {
-            return;
+            return false;
         }
 
-        if (AsesorActual.estado !== ESTADO_VENDEDOR_ACTIVO) {
-            return;
-        }
-
-        if (AsesorActual.codigoEmpresa !== CodigoEmpresa) {
-            return;
-        }
-
-        AsesoresUnicos.set(AsesorActual.id, AsesorActual);
+        return AsesorActual.estado === ESTADO_VENDEDOR_ACTIVO
+            && AsesorActual.codigoEmpresa === CodigoEmpresa;
     }
 
     private async EnviarCorreoAsesor(
@@ -293,23 +368,28 @@ export class NotificacionesCitasService {
         Asesor: Vendedor,
         LeadAsignado: Lead | null,
         CitaAgendada: Cita,
+        SesionActual: SesionConversacion | null,
     ): Record<string, string> {
         const NombreLead = this.ObtenerNombreLead(LeadAsignado);
         const TelefonoLead = LeadAsignado?.telefono || TEXTO_SIN_DATO;
         const EmailLead = LeadAsignado?.email || TEXTO_SIN_DATO;
+        const DniLead = LeadAsignado?.dni || TEXTO_SIN_DATO;
         const Proyecto = CitaAgendada.nombreProyecto || TEXTO_PROYECTO_DEFAULT;
         const TipoCita = CitaAgendada.tipoCita || TEXTO_TIPO_CITA_DEFAULT;
+        const ResumenConversacion = SesionActual?.resumenConversacion || TEXTO_SIN_DATO;
 
         return {
             [PARAM_ASESOR_NOMBRE]: Asesor.nombre || TEXTO_SIN_DATO,
             [PARAM_LEAD_NOMBRE]: NombreLead,
             [PARAM_LEAD_TELEFONO]: TelefonoLead,
             [PARAM_LEAD_EMAIL]: EmailLead,
+            [PARAM_LEAD_DNI]: DniLead,
             [PARAM_PROYECTO]: Proyecto,
             [PARAM_FECHA_CITA]: String(CitaAgendada.fechaCita || TEXTO_SIN_DATO),
             [PARAM_HORA_CITA]: String(CitaAgendada.horaCita || TEXTO_SIN_DATO),
             [PARAM_TIPO_CITA]: TipoCita,
             [PARAM_CITA_ID]: String(CitaAgendada.id),
+            [PARAM_RESUMEN_CONVERSACION]: ResumenConversacion,
         };
     }
 
@@ -352,11 +432,13 @@ export class NotificacionesCitasService {
             `Lead: {{${PARAM_LEAD_NOMBRE}}}`,
             `Telefono: {{${PARAM_LEAD_TELEFONO}}}`,
             `Email: {{${PARAM_LEAD_EMAIL}}}`,
+            `DNI: {{${PARAM_LEAD_DNI}}}`,
             `Proyecto: {{${PARAM_PROYECTO}}}`,
             `Fecha: {{${PARAM_FECHA_CITA}}}`,
             `Hora: {{${PARAM_HORA_CITA}}}`,
             `Tipo: {{${PARAM_TIPO_CITA}}}`,
             `Cita ID: {{${PARAM_CITA_ID}}}`,
+            `Resumen conversacion: {{${PARAM_RESUMEN_CONVERSACION}}}`,
         ].join('\n');
     }
 
