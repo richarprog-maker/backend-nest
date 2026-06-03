@@ -661,7 +661,7 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
     // HERRAMIENTA: Explorar inventario en TODOS los proyectos activos
     const explorarInventarioProyectosTool = new DynamicStructuredTool({
       name: 'explorar_inventario_proyectos',
-      description: 'Busca departamentos en TODOS los proyectos activos a la vez y devuelve resultados agrupados por proyecto. EJECUTA ESTA HERRAMIENTA cuando el cliente NO tiene proyecto asignado y pide cualquier tipo de informacion: detalles, info, precios, opciones, unidades, que tienen, duplex, dormitorios, etc. Ejemplos: "dame detalles de los proyectos", "pasame info", "que tienen?", "opciones de 3 dormitorios?", "tienen duplex?", "cuales son los precios?". NUNCA re-listes el menu de proyectos como respuesta a un pedido de informacion.',
+      description: 'Busca departamentos en TODOS los proyectos activos a la vez y devuelve resultados agrupados por proyecto. Usala cuando el cliente NO tiene proyecto asignado y pide opciones con al menos un criterio de inventario: dormitorios o tipo de unidad. Si solo pide informacion general sin proyecto ni criterios, primero pregunta cuantos dormitorios busca o que proyecto le interesa. NUNCA afirmes que no hay departamentos por una busqueda sin criterios.',
       schema: z.object({
         dormitorios: z.union([z.number(), z.string()]).optional().describe('Dormitorios deseados (ej: 2, 3, "monoambiente")'),
         tipo_unidad: z.string().optional().describe('Tipo: "Duplex" o "Flat"'),

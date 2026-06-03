@@ -81,7 +81,7 @@ export class NotificacionesCitasService {
         const LeadAsignado = await this.ObtenerLead(Datos.LeadUuid, Datos.CodigoEmpresa);
         const AsesoresAsignados = await this.ObtenerAsesoresAsignados(Datos.Cita, Datos.LeadUuid);
 
-        if (AsesoresAsignados.length === 0) {
+        if (!AsesoresAsignados.length) {
             this.Logger.warn(`No se encontraron asesores activos para notificar cita ${Datos.Cita.id}`);
             return;
         }
@@ -114,110 +114,98 @@ export class NotificacionesCitasService {
         });
     }
 
-    /**
-     * Resuelve los asesores siguiendo la prioridad:
-     *   1. sesion_conversacion.asesor_id  → se incluye si está activo
-     *   2. cita.idVendedor                → se incluye si está activo
-     *   3. todos los responsables activos del proyecto
-     *
-     * Solo se notifican asesores activos y se eliminan duplicados por ID.
-     */
     private async ObtenerAsesoresAsignados(CitaAgendada: Cita, LeadUuid: string): Promise<Vendedor[]> {
         const AsesoresUnicos = new Map<number, Vendedor>();
 
-        const AgregarAsesorSiActivo = (AsesorActual: Vendedor | null | undefined) => {
-            if (!AsesorActual) {
-                return;
-            }
+        const AsesorSesion = await this.ObtenerAsesorSesion(CitaAgendada.codigoEmpresa, LeadUuid);
+        this.AgregarAsesorNotificable(AsesoresUnicos, AsesorSesion, CitaAgendada.codigoEmpresa);
 
-            if (AsesorActual.estado !== ESTADO_VENDEDOR_ACTIVO) {
-                return;
-            }
+        const AsesorDirecto = await this.ObtenerAsesorDirecto(CitaAgendada);
+        this.AgregarAsesorNotificable(AsesoresUnicos, AsesorDirecto, CitaAgendada.codigoEmpresa);
 
-            if (AsesorActual.codigoEmpresa !== CitaAgendada.codigoEmpresa) {
-                return;
-            }
-
-            AsesoresUnicos.set(AsesorActual.id, AsesorActual);
-        };
-
-        // --- Prioridad 1: asesor asignado en la sesión de conversación ---
-        if (LeadUuid) {
-            const Sesion = await this.SesionRepo.findOne({
-                where: {
-                    leadUuid: LeadUuid,
-                    codigoEmpresa: CitaAgendada.codigoEmpresa,
-                },
-            });
-
-            if (Sesion?.asesorId) {
-                const AsesorSesion = await this.VendedorRepo.findOne({
-                    where: {
-                        id: Sesion.asesorId,
-                        codigoEmpresa: CitaAgendada.codigoEmpresa,
-                    },
-                });
-
-                if (AsesorSesion?.estado === ESTADO_VENDEDOR_ACTIVO) {
-                    this.Logger.log(`[Notificacion] Asesor desde sesion: ${AsesorSesion.id} (${AsesorSesion.nombre})`);
-                    AgregarAsesorSiActivo(AsesorSesion);
-                }
-
-                if (AsesorSesion?.estado !== ESTADO_VENDEDOR_ACTIVO) {
-                    this.Logger.warn(
-                        `[Notificacion] Asesor ${Sesion.asesorId} de la sesion esta inactivo. Escalando al proyecto.`
-                    );
-                }
-            }
-        }
-
-        // --- Prioridad 2: idVendedor en la cita (fallback legacy) ---
-        if (CitaAgendada.idVendedor) {
-            const VendedorCita = await this.VendedorRepo.findOne({
-                where: {
-                    id: CitaAgendada.idVendedor,
-                    codigoEmpresa: CitaAgendada.codigoEmpresa,
-                    estado: ESTADO_VENDEDOR_ACTIVO,
-                },
-            });
-
-            if (VendedorCita) {
-                this.Logger.log(`[Notificacion] Asesor desde cita.idVendedor: ${VendedorCita.id}`);
-                AgregarAsesorSiActivo(VendedorCita);
-            }
-        }
-
-        // --- Prioridad 3: responsables activos del proyecto ---
-        const ProyectoId = CitaAgendada.proyectoId;
-        if (!ProyectoId) {
-            if (AsesoresUnicos.size === 0) {
-                this.Logger.warn(`[Notificacion] Cita ${CitaAgendada.id} sin proyectoId. No se puede resolver mas asesores.`);
-            }
-            return Array.from(AsesoresUnicos.values());
-        }
-
-        const AsignacionesProyecto = await this.VendedorProyectoRepo.find({
-            where: { proyectoId: ProyectoId },
-            relations: ['vendedor'],
-            order: { createdAt: 'ASC' },
-        });
-
-        const AsignacionesActivas = AsignacionesProyecto.filter((Asignacion) => {
-            return Asignacion.vendedor?.estado === ESTADO_VENDEDOR_ACTIVO &&
-                Asignacion.vendedor?.codigoEmpresa === CitaAgendada.codigoEmpresa;
-        });
-
-        for (const AsignacionActual of AsignacionesActivas) {
-            AgregarAsesorSiActivo(AsignacionActual.vendedor);
-        }
-
-        if (AsignacionesActivas.length > 0) {
-            this.Logger.log(
-                `[Notificacion] Asesores activos del proyecto ${ProyectoId}: ${AsignacionesActivas.map((AsignacionActual) => AsignacionActual.vendedor.id).join(', ')}`
-            );
+        const AsesoresProyecto = await this.ObtenerAsesoresProyecto(CitaAgendada);
+        for (const AsesorProyecto of AsesoresProyecto) {
+            this.AgregarAsesorNotificable(AsesoresUnicos, AsesorProyecto, CitaAgendada.codigoEmpresa);
         }
 
         return Array.from(AsesoresUnicos.values());
+    }
+
+    private async ObtenerAsesorSesion(CodigoEmpresa: number, LeadUuid: string): Promise<Vendedor | null> {
+        if (!LeadUuid) {
+            return null;
+        }
+
+        const SesionActual = await this.SesionRepo.findOne({
+            where: {
+                leadUuid: LeadUuid,
+                codigoEmpresa: CodigoEmpresa,
+            },
+        });
+
+        if (!SesionActual?.asesorId) {
+            return null;
+        }
+
+        return this.VendedorRepo.findOne({
+            where: {
+                id: SesionActual.asesorId,
+                codigoEmpresa: CodigoEmpresa,
+                estado: ESTADO_VENDEDOR_ACTIVO,
+            },
+        });
+    }
+
+    private async ObtenerAsesorDirecto(CitaAgendada: Cita): Promise<Vendedor | null> {
+        if (!CitaAgendada.idVendedor) {
+            return null;
+        }
+
+        return this.VendedorRepo.findOne({
+            where: {
+                id: CitaAgendada.idVendedor,
+                codigoEmpresa: CitaAgendada.codigoEmpresa,
+                estado: ESTADO_VENDEDOR_ACTIVO,
+            },
+        });
+    }
+
+    private async ObtenerAsesoresProyecto(CitaAgendada: Cita): Promise<Vendedor[]> {
+        if (!CitaAgendada.proyectoId) {
+            return [];
+        }
+
+        const AsignacionesProyecto = await this.VendedorProyectoRepo.find({
+            where: {
+                proyectoId: CitaAgendada.proyectoId,
+            },
+            relations: ['vendedor'],
+            order: {
+                createdAt: 'ASC',
+            },
+        });
+
+        return AsignacionesProyecto.map((Asignacion) => Asignacion.vendedor);
+    }
+
+    private AgregarAsesorNotificable(
+        AsesoresUnicos: Map<number, Vendedor>,
+        AsesorActual: Vendedor | null,
+        CodigoEmpresa: number,
+    ): void {
+        if (!AsesorActual) {
+            return;
+        }
+
+        if (AsesorActual.estado !== ESTADO_VENDEDOR_ACTIVO) {
+            return;
+        }
+
+        if (AsesorActual.codigoEmpresa !== CodigoEmpresa) {
+            return;
+        }
+
+        AsesoresUnicos.set(AsesorActual.id, AsesorActual);
     }
 
     private async EnviarCorreoAsesor(
