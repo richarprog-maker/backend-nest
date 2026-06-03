@@ -39,7 +39,6 @@ vuelve a ser solo suyo si está activo).
 tbl_vendedores (maestro de asesores)
   - id_vendedor          → clave en todo el sistema
   - estado_vendedor      → activo / inactivo (para vacaciones/descanso)
-  - codigo_asesor        → código genérico externo
   - sperant_vendedor_id  → ID en Sperant CRM para mapear asignaciones CRM
 
 tbl_sesion_conversacion (fuente de verdad por lead)
@@ -80,13 +79,15 @@ tbl_campanias
 - Hecho: campo `asesor_id` en `tbl_sesion_conversacion` (fuente de verdad de asignacion).
 - Hecho: campo `sperant_vendedor_id` en `tbl_vendedores` (mapeo con CRM de Sperant).
 - Hecho: campo `asesor_id` en `tbl_campanias` (asesor seleccionado al crear campaña).
-- Hecho: `NotificacionesCitasService.ObtenerAsesorAsignado` lee desde `sesion_conversacion.asesor_id` con prioridad y escala si inactivo.
+- Hecho: `NotificacionesCitasService` lee `sesion_conversacion.asesor_id` con prioridad, filtra asesores inactivos y notifica a todos los responsables activos del proyecto sin duplicados.
 - Hecho: `campanias.processor.ts` propaga `campania.asesorId` a `sesion_conversacion` al procesar (NO sobreescribe si ya tenia asesor).
-- Hecho: `ProyectosService.asignarVendedor` valida maximo 2 responsables por proyecto.
+- Hecho: `ProyectosService.asignarVendedor` valida maximo 10 responsables por proyecto.
 - Hecho: `AuthService.toggleEstadoVendedor` para activar/desactivar asesor desde backoffice.
 - Hecho: endpoint `PUT auth/vendedores/:id/estado` con body `{ estado: 'activo' | 'inactivo' }`.
 - Hecho: migraciones SQL en `scripts/migration_asignacion_asesor_lead.sql` y `scripts/migration_campania_asesor.sql`.
-- Pendiente: poblar `sesion_conversacion.asesor_id` para leads importados del CRM (usar `sperant_vendedor_id`).
+- Hecho: importacion Excel de Base de Datos exige `project_id` y `asesor_id`, valida que el asesor pertenezca al proyecto y propaga ambos a `sesion_conversacion`.
+- Hecho: la importacion Excel de campanias usa `project_id` y `asesor_id` por fila; al procesar audiencia propaga ambos a `sesion_conversacion`.
+- Pendiente: poblar `sesion_conversacion.asesor_id` para leads importados directamente del CRM usando `sperant_vendedor_id`.
 - Pendiente: endpoint API para que el backoffice edite `sesion_conversacion.asesor_id` manualmente.
 - Pendiente: API CRUD de plantillas de notificacion para backoffice.
 - Pendiente: configurar `nombre_template_whatsapp` cuando Meta apruebe la plantilla oficial de WhatsApp.
@@ -112,4 +113,4 @@ scripts/migration_campania_asesor.sql         ← asesor_id en campanias
 ## Siguiente paso recomendado
 
 Ejecutar las dos migraciones SQL en la base de datos de staging/produccion.
-Luego implementar la propagacion del asesor para leads importados del CRM usando `sperant_vendedor_id`.
+Luego poblar asignaciones historicas de CRM usando `sperant_vendedor_id`.

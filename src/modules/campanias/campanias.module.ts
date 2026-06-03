@@ -16,6 +16,8 @@ import { SesionConversacion } from '../ia/entities/sesion-conversacion.entity';
 import { HistorialClasificacionLead } from '../clasificacion-leads/entities/historial-clasificacion-lead.entity';
 import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { Vendedor } from '../auth/entities/vendedor.entity';
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
+import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
 
 @Module({
     imports: [
@@ -28,7 +30,9 @@ import { Vendedor } from '../auth/entities/vendedor.entity';
             SesionConversacion,
             HistorialClasificacionLead,
             Mensaje,
-            Vendedor
+            Vendedor,
+            Proyecto,
+            VendedorProyecto
         ]),
         BullModule.registerQueue({
             name: 'campanias',

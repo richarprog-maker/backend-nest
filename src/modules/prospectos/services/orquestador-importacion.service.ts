@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Lead } from '../../inbox/entities/lead.entity';
 import { Prospecto } from '../../inbox/entities/prospecto.entity';
 import { OrigenDato } from '../../inbox/entities/origen-dato.entity';
@@ -12,6 +12,7 @@ import { HistorialEnviosService } from '../../historial-envios/services/historia
 import { TipoPlantilla } from '../../plantillas/entities/plantilla.entity';
 import { Proyecto } from '../../proyectos/entities/proyecto.entity';
 import { Vendedor } from '../../auth/entities/vendedor.entity';
+import { VendedorProyecto } from '../../proyectos/entities/asesor-proyecto.entity';
 
 import { Mensaje } from '../../inbox/entities/mensaje.entity';
 import { HistorialChatAi } from '../../ia/entities/historial-chat-ai.entity';
@@ -34,6 +35,7 @@ export class OrquestadorImportacionService {
         @InjectRepository(HistorialChatAi) private historialAiRepo: Repository<HistorialChatAi>,
         @InjectRepository(Proyecto) private proyectoRepo: Repository<Proyecto>,
         @InjectRepository(Vendedor) private vendedorRepo: Repository<Vendedor>,
+        @InjectRepository(VendedorProyecto) private vendedorProyectoRepo: Repository<VendedorProyecto>,
     ) { }
 
     async procesarArchivoExcel(buffer: Buffer, codigoEmpresa: number, proposito: string, nombreBd: string) {
@@ -56,8 +58,11 @@ export class OrquestadorImportacionService {
         const VendedoresPorId = new Map(
             VendedoresEmpresa.map((VendedorActual) => [VendedorActual.id, VendedorActual])
         );
+        const AsignacionesAsesorProyecto = await this.ObtenerAsignacionesAsesorProyecto(
+            Array.from(proyectosActivosPorId.keys()),
+        );
 
-        this.validarFilasExcel(datosCrudos, proyectosActivosPorId, VendedoresPorId);
+        this.ValidarFilasExcel(datosCrudos, proyectosActivosPorId, VendedoresPorId, AsignacionesAsesorProyecto);
 
         // Asegurar que existe origen "Excel"
         let origenExcel = await this.origenRepo.findOne({ where: { nombre: 'Excel' } });
@@ -109,13 +114,15 @@ export class OrquestadorImportacionService {
                 lead = await queryRunner.manager.save(lead);
 
                 const proyectoIdExcel = this.resolverProyectoIdExcel(
-                    fila.project_id,
+                    this.ObtenerProyectoIdFila(fila),
                     proyectosActivosPorId,
                     index,
                 );
                 const AsesorIdExcel = this.ResolverAsesorIdExcel(
                     this.ObtenerAsesorIdFila(fila),
                     VendedoresPorId,
+                    AsignacionesAsesorProyecto,
+                    proyectoIdExcel,
                     index,
                 );
 
@@ -386,9 +393,9 @@ export class OrquestadorImportacionService {
         rawProjectId: unknown,
         proyectosActivosPorId: Map<number, Proyecto>,
         index: number,
-    ): number | null {
+    ): number {
         if (rawProjectId === undefined || rawProjectId === null || rawProjectId === '') {
-            return null;
+            throw new BadRequestException(`Fila ${index + 1}: el ID de proyecto es obligatorio.`);
         }
 
         const proyectoId = Number(rawProjectId);
@@ -403,17 +410,23 @@ export class OrquestadorImportacionService {
         return proyectoId;
     }
 
+    private ObtenerProyectoIdFila(fila: any): unknown {
+        return fila.project_id ?? fila.proyecto_id ?? fila.codigo_proyecto ?? null;
+    }
+
     private ObtenerAsesorIdFila(fila: any): unknown {
-        return fila.asesor_id ?? fila.id_asesor ?? null;
+        return fila.asesor_id ?? fila.id_asesor ?? fila.codigo_responsable ?? null;
     }
 
     private ResolverAsesorIdExcel(
         rawAsesorId: unknown,
         VendedoresPorId: Map<number, Vendedor>,
+        AsignacionesAsesorProyecto: Set<string>,
+        ProyectoId: number,
         index: number,
-    ): number | null {
+    ): number {
         if (rawAsesorId === undefined || rawAsesorId === null || rawAsesorId === '') {
-            return null;
+            throw new BadRequestException(`Fila ${index + 1}: el ID de asesor es obligatorio.`);
         }
 
         const AsesorId = Number(rawAsesorId);
@@ -425,13 +438,18 @@ export class OrquestadorImportacionService {
             throw new BadRequestException(`Fila ${index + 1}: el ID de asesor ${AsesorId} no pertenece a esta empresa.`);
         }
 
+        if (!AsignacionesAsesorProyecto.has(`${ProyectoId}:${AsesorId}`)) {
+            throw new BadRequestException(`Fila ${index + 1}: el asesor ${AsesorId} no está asignado al proyecto ${ProyectoId}.`);
+        }
+
         return AsesorId;
     }
 
-    private validarFilasExcel(
+    private ValidarFilasExcel(
         datosCrudos: any[],
         proyectosActivosPorId: Map<number, Proyecto>,
         VendedoresPorId: Map<number, Vendedor>,
+        AsignacionesAsesorProyecto: Set<string>,
     ): void {
         for (const [index, fila] of datosCrudos.entries()) {
             const telefono = this.limpiarTelefono(fila.phone || fila.celular || fila.telefono);
@@ -441,8 +459,8 @@ export class OrquestadorImportacionService {
                 throw new BadRequestException(`Fila ${index + 1}: debe incluir al menos un teléfono o un correo electrónico.`);
             }
 
-            this.resolverProyectoIdExcel(
-                fila.project_id,
+            const ProyectoId = this.resolverProyectoIdExcel(
+                this.ObtenerProyectoIdFila(fila),
                 proyectosActivosPorId,
                 index,
             );
@@ -450,9 +468,25 @@ export class OrquestadorImportacionService {
             this.ResolverAsesorIdExcel(
                 this.ObtenerAsesorIdFila(fila),
                 VendedoresPorId,
+                AsignacionesAsesorProyecto,
+                ProyectoId,
                 index,
             );
         }
+    }
+
+    private async ObtenerAsignacionesAsesorProyecto(ProyectoIds: number[]): Promise<Set<string>> {
+        if (ProyectoIds.length === 0) {
+            return new Set();
+        }
+
+        const Asignaciones = await this.vendedorProyectoRepo.find({
+            where: { proyectoId: In(ProyectoIds) }
+        });
+
+        return new Set(
+            Asignaciones.map((AsignacionActual) => `${AsignacionActual.proyectoId}:${AsignacionActual.idVendedor}`)
+        );
     }
 
     private limpiarTelefono(t: string): string {

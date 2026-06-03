@@ -2,7 +2,7 @@ import { Processor, WorkerHost, OnWorkerEvent, InjectQueue } from '@nestjs/bullm
 import { Job, Queue } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Campania, EstadoCampania } from './entities/campania.entity';
 import { CampaniaDetalle, EstadoCampaniaDetalle } from './entities/campania-detalle.entity';
 import { CampaniaProgramada, EstadoCampaniaProgramada } from './entities/campania-programada.entity';
@@ -13,6 +13,8 @@ import { HistorialClasificacionLead } from '../clasificacion-leads/entities/hist
 import { Mensaje } from '../inbox/entities/mensaje.entity';
 import { WapiService } from '../webhook_meta/wapi.service';
 import { Vendedor } from '../auth/entities/vendedor.entity';
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
+import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
 import * as xlsx from 'xlsx';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -40,6 +42,10 @@ export class CampaniasProcessor extends WorkerHost {
         private mensajeRepo: Repository<Mensaje>,
         @InjectRepository(Vendedor)
         private vendedorRepo: Repository<Vendedor>,
+        @InjectRepository(Proyecto)
+        private proyectoRepo: Repository<Proyecto>,
+        @InjectRepository(VendedorProyecto)
+        private vendedorProyectoRepo: Repository<VendedorProyecto>,
         private wapiService: WapiService,
         @InjectQueue('campanias') private campaniasQueue: Queue,
         private dataSource: DataSource
@@ -119,6 +125,15 @@ export class CampaniasProcessor extends WorkerHost {
                     const VendedoresPorId = new Map(
                         VendedoresEmpresa.map((VendedorActual) => [VendedorActual.id, VendedorActual])
                     );
+                    const ProyectosActivos = await this.proyectoRepo.find({
+                        where: { codigoEmpresa: campania.codigoEmpresa, estado: 'activo' }
+                    });
+                    const ProyectosActivosPorId = new Map(
+                        ProyectosActivos.map((ProyectoActual) => [ProyectoActual.id, ProyectoActual])
+                    );
+                    const AsignacionesAsesorProyecto = await this.ObtenerAsignacionesAsesorProyecto(
+                        Array.from(ProyectosActivosPorId.keys())
+                    );
                     const workbook = xlsx.readFile(campania.archivoAudienciaPath);
                     const sheet = workbook.Sheets[workbook.SheetNames[0]];
                     const rawData = xlsx.utils.sheet_to_json(sheet);
@@ -135,10 +150,20 @@ export class CampaniasProcessor extends WorkerHost {
                         ciudad: row['city'] || row['ciudad'] || '',
                         departamento: row['department'] || row['departamento'] || '',
                         fechaNacimiento: row['date_of_birth'] || row['fecha_nacimiento'] || row['fechaNacimiento'] || '',
-                        projectId: row['project_id'] || row['proyecto_id'] || '',
+                        projectId: this.ResolverProyectoIdAudienciaExcel(
+                            this.ObtenerValorFilaExcel(row, ['project_id', 'proyecto_id', 'codigo_proyecto']),
+                            ProyectosActivosPorId,
+                            index,
+                        ),
                         asesorId: this.ResolverAsesorIdAudienciaExcel(
-                            this.ObtenerValorFilaExcel(row, ['asesor_id', 'id_asesor', 'asesorId', 'AsesorId', 'Asesor ID']),
+                            this.ObtenerValorFilaExcel(row, ['asesor_id', 'id_asesor', 'codigo_responsable', 'asesorId', 'AsesorId', 'Asesor ID']),
                             VendedoresPorId,
+                            AsignacionesAsesorProyecto,
+                            this.ResolverProyectoIdAudienciaExcel(
+                                this.ObtenerValorFilaExcel(row, ['project_id', 'proyecto_id', 'codigo_proyecto']),
+                                ProyectosActivosPorId,
+                                index,
+                            ),
                             index,
                         ),
                         utmSource: row['utm_source'] || '',
@@ -190,7 +215,8 @@ export class CampaniasProcessor extends WorkerHost {
                                 ciudad: d.ciudad,
                                 observacion: d.observacion,
                                 fechaNacimiento: d.fechaNacimiento,
-                                projectId: campania.proyectoId || d.projectId,
+                                projectId: d.projectId || campania.proyectoId,
+                                asesorId: d.asesorId || campania.asesorId,
                                 utmSource: d.utmSource,
                                 utmMedium: d.utmMedium,
                                 utmCampaign: d.utmCampaign,
@@ -233,7 +259,7 @@ export class CampaniasProcessor extends WorkerHost {
                             leadUuid: lead?.uuid || null,
                             prospectoId: prospecto?.id || null,
                             clasificacionLead: clasificacion || null,
-                            projectId: campania.proyectoId || d.projectId || null,
+                            projectId: d.projectId || campania.proyectoId || null,
                             asesorId: d.asesorId || campania.asesorId || null,
                         };
                     }));
@@ -337,6 +363,7 @@ export class CampaniasProcessor extends WorkerHost {
             observacion?: string;
             fechaNacimiento?: string | Date;
             projectId?: string | number;
+            asesorId?: string | number;
             utmSource?: string;
             utmMedium?: string;
             utmCampaign?: string;
@@ -423,6 +450,7 @@ export class CampaniasProcessor extends WorkerHost {
                     proximoMensajeMinutos: 60,
                     fechaHoraUltimoMsj: new Date(),
                     proyectoId: datosExtra?.projectId ? Number(datosExtra.projectId) : null,
+                    asesorId: datosExtra?.asesorId ? Number(datosExtra.asesorId) : null,
                 });
                 await this.sesionRepo.save(nuevaSesion);
                 this.logger.debug(`[Excel] Sesión pre-creada para nuevo lead ${lead.uuid}`);
@@ -437,6 +465,12 @@ export class CampaniasProcessor extends WorkerHost {
                 const projectId = datosExtra?.projectId ? Number(datosExtra.projectId) : null;
                 if (projectId && sesion.proyectoId !== projectId) {
                     sesion.proyectoId = projectId;
+                    sesionActualizada = true;
+                }
+
+                const AsesorId = datosExtra?.asesorId ? Number(datosExtra.asesorId) : null;
+                if (AsesorId && sesion.asesorId !== AsesorId) {
+                    sesion.asesorId = AsesorId;
                     sesionActualizada = true;
                 }
 
@@ -708,10 +742,12 @@ export class CampaniasProcessor extends WorkerHost {
     private ResolverAsesorIdAudienciaExcel(
         RawAsesorId: unknown,
         VendedoresPorId: Map<number, Vendedor>,
+        AsignacionesAsesorProyecto: Set<string>,
+        ProyectoId: number,
         Index: number,
-    ): number | null {
+    ): number {
         if (RawAsesorId === undefined || RawAsesorId === null || RawAsesorId === '') {
-            return null;
+            throw new Error(`Fila ${Index + 1}: el ID de asesor es obligatorio.`);
         }
 
         const AsesorId = Number(RawAsesorId);
@@ -723,7 +759,46 @@ export class CampaniasProcessor extends WorkerHost {
             throw new Error(`Fila ${Index + 1}: el ID de asesor ${AsesorId} no pertenece a esta empresa.`);
         }
 
+        if (!AsignacionesAsesorProyecto.has(`${ProyectoId}:${AsesorId}`)) {
+            throw new Error(`Fila ${Index + 1}: el asesor ${AsesorId} no está asignado al proyecto ${ProyectoId}.`);
+        }
+
         return AsesorId;
+    }
+
+    private ResolverProyectoIdAudienciaExcel(
+        RawProjectId: unknown,
+        ProyectosActivosPorId: Map<number, Proyecto>,
+        Index: number,
+    ): number {
+        if (RawProjectId === undefined || RawProjectId === null || RawProjectId === '') {
+            throw new Error(`Fila ${Index + 1}: el ID de proyecto es obligatorio.`);
+        }
+
+        const ProyectoId = Number(RawProjectId);
+        if (!Number.isInteger(ProyectoId) || ProyectoId <= 0) {
+            throw new Error(`Fila ${Index + 1}: el ID de proyecto "${RawProjectId}" no es válido.`);
+        }
+
+        if (!ProyectosActivosPorId.has(ProyectoId)) {
+            throw new Error(`Fila ${Index + 1}: el ID de proyecto ${ProyectoId} no corresponde a un proyecto activo habilitado para esta empresa.`);
+        }
+
+        return ProyectoId;
+    }
+
+    private async ObtenerAsignacionesAsesorProyecto(ProyectoIds: number[]): Promise<Set<string>> {
+        if (ProyectoIds.length === 0) {
+            return new Set();
+        }
+
+        const Asignaciones = await this.vendedorProyectoRepo.find({
+            where: { proyectoId: In(ProyectoIds) }
+        });
+
+        return new Set(
+            Asignaciones.map((AsignacionActual) => `${AsignacionActual.proyectoId}:${AsignacionActual.idVendedor}`)
+        );
     }
 
 

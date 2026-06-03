@@ -38,7 +38,8 @@ export class CampaniasController {
             plantillaParametros: body.plantillaParametros ? JSON.parse(body.plantillaParametros) : null,
             codigoEmpresa: safeInt(body.codigoEmpresa) || 1,
             usuarioId: safeInt(body.usuarioId),
-            proyectoId: safeInt(body.proyectoId),
+            proyectoId: safeInt(body.proyectoId || body.projectId),
+            asesorId: safeInt(body.asesorId || body.idAsesor || body.asesor_id),
             filtrosAudiencia: body.filtrosAudiencia ? JSON.parse(body.filtrosAudiencia) : null,
             fechaProgramada: body.fechaProgramada || null
         };
@@ -83,11 +84,15 @@ export class CampaniasController {
 
     @Post('actualizar/:id')
     actualizar(@Param('id') id: string, @Body() body: any) {
+        const safeInt = (val: any) => (val && !isNaN(Number(val))) ? Number(val) : null;
+
         const data = {
             ...body,
             ...(body.nombre_campaign ? { nombre: body.nombre_campaign } : {}),
             ...(body.filtros ? { filtrosAudiencia: body.filtros } : {}),
-            ...(body.fecha_hora_envio ? { fechaProgramada: body.fecha_hora_envio } : {})
+            ...(body.fecha_hora_envio ? { fechaProgramada: body.fecha_hora_envio } : {}),
+            ...(body.proyectoId || body.projectId ? { proyectoId: safeInt(body.proyectoId || body.projectId) } : {}),
+            ...(body.asesorId || body.idAsesor || body.asesor_id ? { asesorId: safeInt(body.asesorId || body.idAsesor || body.asesor_id) } : {})
         };
 
         delete data.nombre_campaign;

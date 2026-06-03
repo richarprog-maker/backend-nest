@@ -29,9 +29,6 @@ export class Vendedor {
     @Column({ name: 'estado_vendedor', default: 'activo' })
     estado: string; // activo, inactivo
 
-    @Column({ name: 'codigo_asesor', nullable: true })
-    codigoAsesor: string; // Código externo genérico del asesor
-
     @Column({ name: 'sperant_vendedor_id', type: 'int', nullable: true })
     sperantVendedorId: number; // ID del vendedor en Sperant CRM para mapear asignaciones CRM
 

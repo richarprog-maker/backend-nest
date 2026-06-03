@@ -18,6 +18,7 @@ import { HistorialClasificacionLead } from '../clasificacion-leads/entities/hist
 import { Cita } from '../citas/entities/cita.entity';
 import { Proyecto } from '../proyectos/entities/proyecto.entity';
 import { Vendedor } from '../auth/entities/vendedor.entity';
+import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
 
 @Module({
     imports: [
@@ -31,7 +32,8 @@ import { Vendedor } from '../auth/entities/vendedor.entity';
             HistorialClasificacionLead,
             Cita,
             Proyecto,
-            Vendedor
+            Vendedor,
+            VendedorProyecto
         ]),
         PlantillasModule,
         HistorialEnviosModule,

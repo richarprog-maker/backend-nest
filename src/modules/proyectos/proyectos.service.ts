@@ -5,6 +5,8 @@ import { Proyecto } from './entities/proyecto.entity';
 import { VendedorProyecto } from './entities/asesor-proyecto.entity';
 import { PreguntasFrecuentesService } from '../preguntas-frecuentes/preguntas-frecuentes.service';
 
+const MAX_ASESORES_POR_PROYECTO = 10;
+
 @Injectable()
 export class ProyectosService {
     private readonly logger = new Logger(ProyectosService.name);
@@ -135,12 +137,12 @@ export class ProyectosService {
                 return { success: false, message: 'El vendedor ya esta asignado a este proyecto' };
             }
 
-            // Validar máximo de 2 responsables por proyecto
+            // Validar máximo de responsables por proyecto
             const totalAsignados = await this.vendedorProyectoRepo.count({ where: { proyectoId } });
-            if (totalAsignados >= 2) {
+            if (totalAsignados >= MAX_ASESORES_POR_PROYECTO) {
                 return {
                     success: false,
-                    message: 'El proyecto ya tiene 2 responsables asignados. Desasigna uno antes de agregar otro.'
+                    message: `El proyecto ya tiene ${MAX_ASESORES_POR_PROYECTO} responsables asignados. Desasigna uno antes de agregar otro.`
                 };
             }
 

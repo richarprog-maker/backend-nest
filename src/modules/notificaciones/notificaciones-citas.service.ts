@@ -79,16 +79,18 @@ export class NotificacionesCitasService {
 
     async NotificarCitaLeadCaliente(Datos: DatosNotificacionCitaCaliente): Promise<void> {
         const LeadAsignado = await this.ObtenerLead(Datos.LeadUuid, Datos.CodigoEmpresa);
-        const AsesorAsignado = await this.ObtenerAsesorAsignado(Datos.Cita, Datos.LeadUuid);
+        const AsesoresAsignados = await this.ObtenerAsesoresAsignados(Datos.Cita, Datos.LeadUuid);
 
-        if (!AsesorAsignado) {
-            this.Logger.warn(`No se encontro asesor activo para notificar cita ${Datos.Cita.id}`);
+        if (AsesoresAsignados.length === 0) {
+            this.Logger.warn(`No se encontraron asesores activos para notificar cita ${Datos.Cita.id}`);
             return;
         }
 
-        const VariablesMensaje = this.ConstruirVariablesMensaje(AsesorAsignado, LeadAsignado, Datos.Cita);
-        await this.EnviarCorreoAsesor(AsesorAsignado, Datos.Cita, VariablesMensaje);
-        await this.EnviarWhatsappAsesor(Datos.CodigoEmpresa, AsesorAsignado, Datos.Cita, VariablesMensaje);
+        for (const AsesorActual of AsesoresAsignados) {
+            const VariablesMensaje = this.ConstruirVariablesMensaje(AsesorActual, LeadAsignado, Datos.Cita);
+            await this.EnviarCorreoAsesor(AsesorActual, Datos.Cita, VariablesMensaje);
+            await this.EnviarWhatsappAsesor(Datos.CodigoEmpresa, AsesorActual, Datos.Cita, VariablesMensaje);
+        }
     }
 
     private async VerificarConfiguracionSmtp(): Promise<void> {
@@ -113,15 +115,32 @@ export class NotificacionesCitasService {
     }
 
     /**
-     * Resuelve el asesor siguiendo la prioridad:
-     *   1. sesion_conversacion.asesor_id  → fuente de verdad (CRM, campaña, manual)
-     *   2. cita.idVendedor                → fallback si la cita ya traía vendedor
-     *   3. Round-robin entre responsables activos del proyecto de la sesión
+     * Resuelve los asesores siguiendo la prioridad:
+     *   1. sesion_conversacion.asesor_id  → se incluye si está activo
+     *   2. cita.idVendedor                → se incluye si está activo
+     *   3. todos los responsables activos del proyecto
      *
-     * El asesor SIEMPRE debe estar activo. Si está inactivo (vacaciones/descanso)
-     * se escala al siguiente responsable activo del proyecto.
+     * Solo se notifican asesores activos y se eliminan duplicados por ID.
      */
-    private async ObtenerAsesorAsignado(CitaAgendada: Cita, LeadUuid: string): Promise<Vendedor | null> {
+    private async ObtenerAsesoresAsignados(CitaAgendada: Cita, LeadUuid: string): Promise<Vendedor[]> {
+        const AsesoresUnicos = new Map<number, Vendedor>();
+
+        const AgregarAsesorSiActivo = (AsesorActual: Vendedor | null | undefined) => {
+            if (!AsesorActual) {
+                return;
+            }
+
+            if (AsesorActual.estado !== ESTADO_VENDEDOR_ACTIVO) {
+                return;
+            }
+
+            if (AsesorActual.codigoEmpresa !== CitaAgendada.codigoEmpresa) {
+                return;
+            }
+
+            AsesoresUnicos.set(AsesorActual.id, AsesorActual);
+        };
+
         // --- Prioridad 1: asesor asignado en la sesión de conversación ---
         if (LeadUuid) {
             const Sesion = await this.SesionRepo.findOne({
@@ -141,13 +160,14 @@ export class NotificacionesCitasService {
 
                 if (AsesorSesion?.estado === ESTADO_VENDEDOR_ACTIVO) {
                     this.Logger.log(`[Notificacion] Asesor desde sesion: ${AsesorSesion.id} (${AsesorSesion.nombre})`);
-                    return AsesorSesion;
+                    AgregarAsesorSiActivo(AsesorSesion);
                 }
 
-                // Asesor asignado está inactivo (vacaciones) → escalar al proyecto
-                this.Logger.warn(
-                    `[Notificacion] Asesor ${Sesion.asesorId} de la sesion esta inactivo. Escalando al proyecto.`
-                );
+                if (AsesorSesion?.estado !== ESTADO_VENDEDOR_ACTIVO) {
+                    this.Logger.warn(
+                        `[Notificacion] Asesor ${Sesion.asesorId} de la sesion esta inactivo. Escalando al proyecto.`
+                    );
+                }
             }
         }
 
@@ -163,15 +183,17 @@ export class NotificacionesCitasService {
 
             if (VendedorCita) {
                 this.Logger.log(`[Notificacion] Asesor desde cita.idVendedor: ${VendedorCita.id}`);
-                return VendedorCita;
+                AgregarAsesorSiActivo(VendedorCita);
             }
         }
 
-        // --- Prioridad 3: primer responsable activo del proyecto (round-robin base) ---
+        // --- Prioridad 3: responsables activos del proyecto ---
         const ProyectoId = CitaAgendada.proyectoId;
         if (!ProyectoId) {
-            this.Logger.warn(`[Notificacion] Cita ${CitaAgendada.id} sin proyectoId. No se puede asignar asesor.`);
-            return null;
+            if (AsesoresUnicos.size === 0) {
+                this.Logger.warn(`[Notificacion] Cita ${CitaAgendada.id} sin proyectoId. No se puede resolver mas asesores.`);
+            }
+            return Array.from(AsesoresUnicos.values());
         }
 
         const AsignacionesProyecto = await this.VendedorProyectoRepo.find({
@@ -180,20 +202,22 @@ export class NotificacionesCitasService {
             order: { createdAt: 'ASC' },
         });
 
-        const AsignacionActiva = AsignacionesProyecto.find((Asignacion) => {
-            return (
-                Asignacion.vendedor?.estado === ESTADO_VENDEDOR_ACTIVO &&
-                Asignacion.vendedor?.codigoEmpresa === CitaAgendada.codigoEmpresa
-            );
+        const AsignacionesActivas = AsignacionesProyecto.filter((Asignacion) => {
+            return Asignacion.vendedor?.estado === ESTADO_VENDEDOR_ACTIVO &&
+                Asignacion.vendedor?.codigoEmpresa === CitaAgendada.codigoEmpresa;
         });
 
-        if (AsignacionActiva?.vendedor) {
+        for (const AsignacionActual of AsignacionesActivas) {
+            AgregarAsesorSiActivo(AsignacionActual.vendedor);
+        }
+
+        if (AsignacionesActivas.length > 0) {
             this.Logger.log(
-                `[Notificacion] Asesor por responsable activo del proyecto ${ProyectoId}: ${AsignacionActiva.vendedor.id}`
+                `[Notificacion] Asesores activos del proyecto ${ProyectoId}: ${AsignacionesActivas.map((AsignacionActual) => AsignacionActual.vendedor.id).join(', ')}`
             );
         }
 
-        return AsignacionActiva?.vendedor || null;
+        return Array.from(AsesoresUnicos.values());
     }
 
     private async EnviarCorreoAsesor(

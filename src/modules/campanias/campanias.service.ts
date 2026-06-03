@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -7,6 +7,9 @@ import { Campania, EstadoCampania, TipoAudiencia } from './entities/campania.ent
 import { CampaniaProgramada, EstadoCampaniaProgramada } from './entities/campania-programada.entity';
 import { MetaTemplatesService } from '../plantillas-campanias/services/meta-templates.service';
 import { PlantillasCampaniasService } from '../plantillas-campanias/plantillas-campanias.service';
+import { Proyecto } from '../proyectos/entities/proyecto.entity';
+import { Vendedor } from '../auth/entities/vendedor.entity';
+import { VendedorProyecto } from '../proyectos/entities/asesor-proyecto.entity';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -28,6 +31,12 @@ export class CampaniasService {
         private campaniaRepo: Repository<Campania>,
         @InjectRepository(CampaniaProgramada)
         private programadaRepo: Repository<CampaniaProgramada>,
+        @InjectRepository(Proyecto)
+        private proyectoRepo: Repository<Proyecto>,
+        @InjectRepository(Vendedor)
+        private vendedorRepo: Repository<Vendedor>,
+        @InjectRepository(VendedorProyecto)
+        private vendedorProyectoRepo: Repository<VendedorProyecto>,
         @InjectQueue('campanias') private campaniasQueue: Queue,
         private metaTemplatesService: MetaTemplatesService,
         private plantillasCampaniasService: PlantillasCampaniasService
@@ -44,6 +53,7 @@ export class CampaniasService {
             codigoEmpresa: number;
             usuarioId?: number;
             proyectoId?: number;
+            asesorId?: number;
             tipoAudiencia?: TipoAudiencia;
             filtrosAudiencia?: any;
             fechaProgramada?: string;
@@ -51,6 +61,8 @@ export class CampaniasService {
         archivos?: { excel?: Express.Multer.File[]; imagen?: Express.Multer.File[] }
     ) {
         try {
+            await this.ValidarAsignacionCampania(data.codigoEmpresa, data.proyectoId, data.asesorId);
+
             // Determinar si es una plantilla nueva antes de procesar, ya que data.plantillaId cambiará
             const esPlantillaNueva = !!(data.plantillaContenido && !data.plantillaId);
 
@@ -223,6 +235,18 @@ export class CampaniasService {
         const updateData = { ...data };
         let nuevaFechaProgramada: Date | null = null;
 
+        if (updateData.proyectoId !== undefined || updateData.asesorId !== undefined) {
+            const ProyectoIdActualizado = updateData.proyectoId !== undefined && updateData.proyectoId !== '' ? Number(updateData.proyectoId) : undefined;
+            const AsesorIdActualizado = updateData.asesorId !== undefined ? Number(updateData.asesorId) : undefined;
+            await this.ValidarAsignacionCampania(campania.codigoEmpresa, ProyectoIdActualizado, AsesorIdActualizado);
+            if (updateData.proyectoId !== undefined) {
+                updateData.proyectoId = ProyectoIdActualizado;
+            }
+            if (updateData.asesorId !== undefined) {
+                updateData.asesorId = AsesorIdActualizado;
+            }
+        }
+
         if (updateData.fechaProgramada !== undefined) {
             nuevaFechaProgramada = this.parseFechaProgramada(updateData.fechaProgramada);
             updateData.fechaProgramada = nuevaFechaProgramada;
@@ -304,6 +328,44 @@ export class CampaniasService {
     // Método para listar plantillas disponibles
     async listarPlantillas(codigoEmpresa: number) {
         return this.plantillasCampaniasService.obtenerTodas(codigoEmpresa);
+    }
+
+    private async ValidarAsignacionCampania(
+        codigoEmpresa: number,
+        proyectoId?: number,
+        asesorId?: number
+    ): Promise<void> {
+        if (!proyectoId) {
+            return;
+        }
+
+        const ProyectoCampania = await this.proyectoRepo.findOne({
+            where: { id: proyectoId, codigoEmpresa, estado: 'activo' }
+        });
+
+        if (!ProyectoCampania) {
+            throw new BadRequestException('El proyecto seleccionado no pertenece a la empresa o no está activo.');
+        }
+
+        if (!asesorId) {
+            return;
+        }
+
+        const AsesorCampania = await this.vendedorRepo.findOne({
+            where: { id: asesorId, codigoEmpresa }
+        });
+
+        if (!AsesorCampania) {
+            throw new BadRequestException('El asesor seleccionado no pertenece a la empresa.');
+        }
+
+        const AsignacionProyecto = await this.vendedorProyectoRepo.findOne({
+            where: { proyectoId, idVendedor: asesorId }
+        });
+
+        if (!AsignacionProyecto) {
+            throw new BadRequestException('El asesor seleccionado no está asignado al proyecto.');
+        }
     }
 
     async listarPlantillasMeta(codigoEmpresa: number) {
