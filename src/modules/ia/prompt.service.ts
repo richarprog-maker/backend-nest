@@ -298,6 +298,7 @@ ${cita.observacion ? `- Observación: ${cita.observacion}` : ''}
 - El cliente esta interesado en: **${nombre}**
 - Horarios de atención: **${horarioTexto}**
 - Usa este proyecto para herramientas OPERATIVAS como buscarDepartamento, cuota, proforma, citas y seguimiento.
+- Si el cliente pide opciones, unidades o precios sin mencionar otro proyecto, muestra SOLO inventario de **${nombre}**. NO mezcles unidades de otros proyectos.
 - EXCEPCION: si el cliente hace una pregunta frecuente de OTRO proyecto, responde con la info de ese proyecto PERO sin cambiar el proyecto actual.
 
 ## CAMBIO DE PROYECTO

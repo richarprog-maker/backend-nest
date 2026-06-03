@@ -198,12 +198,16 @@ Responde solo con el JSON requerido.`;
 
 
   private getBaseToolNamesByPaso(pasoPendiente: number, tieneCitaActiva = false, tieneProyectoAsignado = false): string[] {
+    const inventarioToolNames = tieneProyectoAsignado
+      ? ['buscar_departamento']
+      : ['buscar_departamento', 'explorar_inventario_proyectos'];
+
     if (tieneCitaActiva) {
-      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'reagendar_cita', 'agendar_cita', 'enviar_brochure', 'enviar_videos_proyecto', 'buscar_departamento', 'explorar_inventario_proyectos'];
+      return ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'reagendar_cita', 'agendar_cita', 'enviar_brochure', 'enviar_videos_proyecto', ...inventarioToolNames];
     }
 
     // Core tools always available
-    const base = ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'enviar_brochure', 'enviar_videos_proyecto', 'buscar_departamento', 'explorar_inventario_proyectos'];
+    const base = ['buscar_preguntas_frecuentes', 'guardar_proyecto', 'descartar_cliente', 'enviar_brochure', 'enviar_videos_proyecto', ...inventarioToolNames];
 
     if (pasoPendiente <= 5) {
       // Incluir verificacion de stock solo si el cliente ya tiene proyecto asignado
@@ -293,7 +297,10 @@ Responde solo con el JSON requerido.`;
       ? intentNames.filter(n => !BLOQUEADOS_EN_PRESENTACION.has(n))
       : intentNames;
 
-    const toolNames = new Set<string>([...baseNames, ...filteredIntent]);
+    const toolNames = new Set<string>([
+      ...baseNames,
+      ...filteredIntent.filter((toolName) => !(tieneProyectoAsignado && toolName === 'explorar_inventario_proyectos')),
+    ]);
 
     const filtered = tools.filter((tool) => toolNames.has(tool.name));
     return filtered.length > 0 ? filtered : tools;
