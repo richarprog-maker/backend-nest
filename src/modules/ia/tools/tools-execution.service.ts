@@ -1534,9 +1534,9 @@ RESPUESTA:`);
 
 
     /**
-     * EXPLORAR INVENTARIO EN TODOS LOS PROYECTOS ACTIVOS
-     * Busca departamentos en todas las colecciones de inventario a la vez.
-     * Devuelve resultados agrupados por proyecto.
+     * Explora inventario cuando el lead aun no tiene proyecto confirmado.
+     * Para evitar mezclar unidades de proyectos distintos en una sola lista utilizable,
+     * fija un solo proyecto activo en la sesion y busca solo dentro de ese proyecto.
      */
     async explorarInventarioProyectos(params: {
         dormitorios?: number | string;
@@ -1583,102 +1583,42 @@ RESPUESTA:`);
                 return '[INFO_FALTANTE]';
             }
 
-            // Buscar en paralelo en todos los proyectos
-            const resultadosPorProyecto = await Promise.all(
-                proyectos.map(async (proyecto) => {
-                    try {
-                        const collectionName = await this.obtenerColeccionInventario(proyecto.id);
-
-                        const queryParts = ['departamento disponible'];
-                        if (dormsNumber !== undefined) queryParts.push(`${dormsNumber} dormitorios`);
-                        if (tipoUnidad) queryParts.push(tipoUnidad);
-
-                        const filters: any = {};
-                        if (dormsNumber !== undefined) filters.dormitorios = dormsNumber;
-                        if (tipoUnidad) filters.tipoUnidad = tipoUnidad;
-
-                        const items = await this.qdrantVectorService.searchPropertiesWithFilters(
-                            collectionName,
-                            queryParts.join(' '),
-                            filters,
-                            { limit: 5, threshold: 0.4 }
-                        );
-
-                        return {
-                            proyecto: proyecto.nombre,
-                            proyectoId: proyecto.id,
-                            items: this.FiltrarUnidadesDisponibles(items),
-                        };
-                    } catch (err) {
-                        this.logger.warn(`Error buscando en inventario de ${proyecto.nombre}: ${err.message}`);
-                        return {
-                            proyecto: proyecto.nombre,
-                            proyectoId: proyecto.id,
-                            items: [],
-                        };
-                    }
+            const SesionActual = params.leadUuid
+                ? await this.sesionRepo.findOne({
+                    where: { leadUuid: params.leadUuid, codigoEmpresa: params.codigoEmpresa }
                 })
+                : null;
+
+            let ProyectoSeleccionado = proyectos.find((ProyectoActual) => ProyectoActual.id === SesionActual?.proyectoId) || null;
+
+            if (!ProyectoSeleccionado) {
+                ProyectoSeleccionado = await this.obtenerProyectoAleatorioActivo(params.codigoEmpresa);
+            }
+
+            if (!ProyectoSeleccionado) {
+                return '[ACCION_COMPLETADA] No hay proyectos activos disponibles.';
+            }
+
+            await this.sincronizarProyectoSesionPorId(
+                ProyectoSeleccionado.id,
+                params.codigoEmpresa,
+                params.leadUuid,
+                'explorar_inventario_proyectos'
             );
 
-            // Formatear resultados agrupados
-            const proyectosConResultados = resultadosPorProyecto.filter(r => r.items.length > 0);
-            const proyectosSinResultados = resultadosPorProyecto.filter(r => r.items.length === 0);
+            const ResultadoProyecto = await this.buscarDepartamentoUniversal({
+                dormitorios: params.dormitorios,
+                tipo_unidad: params.tipo_unidad,
+                codigoEmpresa: params.codigoEmpresa,
+                leadUuid: params.leadUuid,
+                proyectoId: ProyectoSeleccionado.id,
+                nombre_proyecto: ProyectoSeleccionado.nombre,
+            });
 
-            if (proyectosConResultados.length === 0) {
-                const ProyectoAleatorio = await this.obtenerProyectoAleatorioActivo(params.codigoEmpresa);
-
-                if (ProyectoAleatorio) {
-                    await this.sincronizarProyectoSesionPorId(
-                        ProyectoAleatorio.id,
-                        params.codigoEmpresa,
-                        params.leadUuid
-                    );
-
-                    return this.buscarDepartamentoUniversal({
-                        dormitorios: params.dormitorios,
-                        tipo_unidad: params.tipo_unidad,
-                        codigoEmpresa: params.codigoEmpresa,
-                        leadUuid: params.leadUuid,
-                        proyectoId: ProyectoAleatorio.id,
-                    });
-                }
-
-                const filtroDesc = [];
-                if (dormsNumber !== undefined) filtroDesc.push(`${dormsNumber === 0 ? 'monoambiente' : dormsNumber + ' dormitorios'}`);
-                if (tipoUnidad) filtroDesc.push(tipoUnidad);
-                return `[ACCION_COMPLETADA] No encontre departamentos ${filtroDesc.join(' tipo ')} en ninguno de los proyectos disponibles. <<INSTRUCCION_IA: Pregunta si quiere buscar con otros criterios (diferente cantidad de dormitorios o tipo).>>`;
+            if (ResultadoProyecto.includes('[ACCION_COMPLETADA]')) {
+                return `${ResultadoProyecto} <<INSTRUCCION_IA: Estas opciones pertenecen SOLO a ${ProyectoSeleccionado.nombre}. NO mezcles unidades de otros proyectos en tu respuesta. Si el cliente quiere comparar con otro proyecto, primero pregúntale cuál proyecto quiere revisar y luego cambia el contexto con guardar_proyecto.>>`;
             }
-
-            let respuesta = `[ACCION_COMPLETADA] Aqui estan las opciones disponibles en nuestros proyectos:\n\n`;
-
-            for (const resultado of proyectosConResultados) {
-                respuesta += `**${resultado.proyecto}:**\n`;
-                const top = resultado.items.slice(0, 3);
-                top.forEach((r, idx) => {
-                    const m = r.document.metadata;
-                    const pList = m.price_list ? parseFloat(m.price_list) : 0;
-
-                    const detalles = [
-                        m.bedrooms !== undefined ? (m.bedrooms === 0 ? 'Monoambiente' : `${m.bedrooms} dorm`) : '',
-                        m.area_total ? `${m.area_total}m2` : '',
-                        m.view ? `vista ${m.view}` : '',
-                        m.floor ? `piso ${m.floor}` : '',
-                        m.unit_type || '',
-                    ].filter(Boolean).join(', ');
-
-                    respuesta += `${idx + 1}. Unidad ${m.unit_number} - ${detalles} - **S/${pList.toLocaleString('es-PE')}**\n`;
-                });
-                respuesta += '\n';
-            }
-
-            if (proyectosSinResultados.length > 0) {
-                const nombres = proyectosSinResultados.map(r => r.proyecto).join(', ');
-                respuesta += `No se encontraron opciones con esos criterios en: ${nombres}.\n\n`;
-            }
-
-            respuesta += `<<INSTRUCCION_IA: Pregunta al cliente cual de estas opciones o proyectos le interesa mas. Si elige un proyecto, ejecuta guardar_proyecto para registrarlo. NO vuelvas a listar los proyectos como menu.>>`;
-
-            return respuesta;
+            return ResultadoProyecto;
 
         } catch (error) {
             this.logger.error(`Error en explorarInventarioProyectos: ${error.message}`, error.stack);
