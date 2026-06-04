@@ -75,14 +75,13 @@ export class AgentService {
     }
   }
 
-  private normalizeNumericText(Valor?: string | null): string | null {
+  private NormalizeNumericText(Valor?: string | null): string | null {
     if (!Valor) return null;
     const SoloDigitos = Valor.replace(/\D/g, '');
     return SoloDigitos.length > 0 ? SoloDigitos : null;
   }
 
-  private shouldSkipBudgetOverwrite(
-    PasoPendiente: number,
+  private ShouldSkipBudgetOverwrite(
     PresupuestoActual?: string,
     PresupuestoExtraido?: string | null,
     IngresosExtraidos?: string | null,
@@ -90,13 +89,37 @@ export class AgentService {
     if (!PresupuestoActual) return false;
     if (!PresupuestoExtraido) return false;
     if (!IngresosExtraidos) return false;
-    if (PasoPendiente < 9) return false;
 
-    const PresupuestoNormalizado = this.normalizeNumericText(PresupuestoExtraido);
-    const IngresosNormalizados = this.normalizeNumericText(IngresosExtraidos);
+    const PresupuestoNormalizado = this.NormalizeNumericText(PresupuestoExtraido);
+    const IngresosNormalizados = this.NormalizeNumericText(IngresosExtraidos);
 
     if (!PresupuestoNormalizado || !IngresosNormalizados) return false;
     return PresupuestoNormalizado === IngresosNormalizados;
+  }
+
+  private ShouldSkipPurchaseTimingOverwrite(contextoActual: ReturnType<typeof parseSessionSummary>): boolean {
+    if (!contextoActual.tiempoCompra) return false;
+    return !!(
+      contextoActual.unidadInteres ||
+      contextoActual.tieneProforma ||
+      contextoActual.ocupacion ||
+      contextoActual.ingresos
+    );
+  }
+
+  private ShouldUseExtractedField(CamposConfirmados: Set<string>, Campo: string, Valor: unknown): boolean {
+    if (Valor === null || Valor === undefined) return false;
+    if (Array.isArray(Valor) && Valor.length === 0) return false;
+    if (typeof Valor === 'string' && Valor.trim().length === 0) return false;
+    return CamposConfirmados.has(Campo);
+  }
+
+  private BuildQuestionContext(UltimaPreguntaBot?: string): string {
+    if (!UltimaPreguntaBot?.trim()) {
+      return 'No hay pregunta previa del bot disponible.';
+    }
+
+    return UltimaPreguntaBot.replace(/\s+/g, ' ').trim();
   }
 
   private isValidDniFormat(dni?: string | null): boolean {
@@ -1026,6 +1049,7 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
     options?: {
       omitirSiSeleccionProyectoNumerica?: boolean;
       nombresProyectosActivos?: string[];
+      UltimaPreguntaBot?: string;
     }
   ): Promise<void> {
     await this.extraerYGuardarResumen(mensaje, leadUuid, codigoEmpresa, options);
@@ -1043,6 +1067,7 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
     options?: {
       omitirSiSeleccionProyectoNumerica?: boolean;
       nombresProyectosActivos?: string[];
+      UltimaPreguntaBot?: string;
     }
   ): Promise<void> {
     try {
@@ -1056,6 +1081,7 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
       const nombresProyectosActivosNormalizados = new Set(
         (options?.nombresProyectosActivos || []).map((nombre) => this.normalizeText(nombre)),
       );
+      const UltimaPreguntaBot = this.BuildQuestionContext(options?.UltimaPreguntaBot);
 
       // Schema para extracción estructurada
       const InfoResumenSchema = z.object({
@@ -1072,93 +1098,57 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
         ocupacion: z.string().nullable().describe('Ocupación o profesión del cliente si la menciona. Null si no hay.'),
         unidad_interes: z.string().nullable().describe('Unidad específica si el cliente menciona una (ej: "1003", "A-602"). Null si no hay.'),
         intereses_adicionales: z.array(z.string()).describe('Temas adicionales: estacionamiento, mascota, entrega, areas_comunes, inicial. Si no hay, array vacio.'),
+        campos_confirmados: z.array(z.enum([
+          'dormitorios',
+          'proposito',
+          'zonas',
+          'tiempo_compra',
+          'financiamiento',
+          'presupuesto',
+          'ingresos',
+          'nombre_completo',
+          'dni',
+          'email',
+          'ocupacion',
+          'unidad_interes',
+          'intereses_adicionales',
+        ])).describe('Campos que la respuesta del cliente confirma de forma directa según la última pregunta del bot. Si un campo es dudoso, no lo incluyas.'),
       });
 
       const prompt = `
-      Eres un extractor de datos de conversaciones inmobiliarias en Perú. Analiza el mensaje del cliente y extrae TODOS los datos útiles que puedas encontrar. Un solo mensaje puede contener múltiples datos de distintas categorías.
+      Eres un extractor de datos de conversaciones inmobiliarias en Perú. Analiza la respuesta del cliente usando la última pregunta del bot y el estado actual de la sesión. Extrae solo datos reales dados por el cliente.
 
-      El cliente puede escribir con errores tipográficos, abreviaciones, jerga peruana o de forma muy casual. SIEMPRE interpreta la intención real aunque haya errores. Este resumen es la FUENTE PRINCIPAL de continuidad del flujo.
+      El cliente puede escribir con errores tipográficos, abreviaciones, jerga peruana o de forma casual. Interpreta la intención real sin inventar datos. Este resumen es la FUENTE PRINCIPAL de continuidad del flujo.
 
       CONTEXTO DE SESIÓN ACTUAL:
       - Paso actual del flujo: ${contextoActual.pasoPendiente}
       - Dormitorios ya registrados: ${contextoActual.dormitorios || 'ninguno'}
-      - Zona ya registrada: ${contextoActual.zonaPreferida || 'ninguna'}
+      - Proposito ya registrado: ${contextoActual.proposito || 'ninguno'}
+      - Tiempo de compra ya registrado: ${contextoActual.tiempoCompra || 'ninguno'}
+      - Financiamiento ya registrado: ${contextoActual.financiamiento || 'ninguno'}
       - Presupuesto ya registrado: ${contextoActual.presupuesto || 'ninguno'}
+      - Unidad ya registrada: ${contextoActual.unidadInteres || 'ninguna'}
+      - Ocupacion ya registrada: ${contextoActual.ocupacion || 'ninguna'}
+      - Ingresos ya registrados: ${contextoActual.ingresos || 'ninguno'}
 
-      DORMITORIOS — cuántos cuartos/habitaciones busca el cliente
+      ULTIMA PREGUNTA DEL BOT:
+      "${UltimaPreguntaBot}"
 
-      Extrae si el cliente describe cuántos dormitorios quiere. Acepta CUALQUIER forma de decirlo:
-      "1 dorm", "dos cuartos", "tres habitaciones", "3 ambientes", "una", "de 2", "quiero 2",
-      "busco de 3", "dijiste de 2", "2 dormis", "dos", "quiero un depa de 2", "con 2", etc.
+      REGLAS DE EXTRACCION:
+      - La ultima pregunta del bot define que significa la respuesta corta del cliente.
+      - Primero decide "campos_confirmados": incluye solo campos que la respuesta confirma directamente por la última pregunta del bot o por una corrección explícita del cliente.
+      - Si un valor aparece pero pertenece a una cita, visita, agenda, horario o email y no al flujo de compra, no lo incluyas en campos de compra.
+      - Si el bot preguntó por cuota, monto disponible o pago mensual, el monto va en "presupuesto".
+      - Si el bot preguntó por ocupación, trabajo, profesión, sueldo o ingresos, el monto va en "ingresos" y el oficio va en "ocupacion".
+      - Si el bot mostró opciones o pidió elegir una unidad, un número o código elegido va en "unidad_interes", no en "presupuesto" ni "ingresos".
+      - Si el bot preguntó cuándo compra o se muda, la respuesta va en "tiempo_compra", aunque contenga palabras relativas.
+      - Si el bot preguntó por coordinar visita, cita, agenda, día, fecha u hora de atención, NO extraigas "tiempo_compra"; esas fechas pertenecen a la cita y no al plan de compra.
+      - Si el bot preguntó por financiamiento, la respuesta va en "financiamiento".
+      - Si el bot preguntó por dormitorios, la respuesta va en "dormitorios".
+      - No sobrescribas un dato ya registrado con otro campo distinto salvo que el cliente esté corrigiendo ese mismo dato.
+      - Nunca guardes el mismo monto como "presupuesto" e "ingresos" a la vez. Si ambos parecen posibles, prioriza el campo que responde a la ultima pregunta del bot.
 
-      EXCEPCIÓN POSICIONAL: Si el paso actual es >= 6 (ya se mostró inventario), los dormitorios ya están capturados.
-      Un número suelto como "la 2", "la primera", "a ver la 3", "opción 2" es UNA ELECCIÓN DE LISTA → array vacío.
-      Ejemplos:
-      * "1" (paso 1) → dormitorios: [1]
-      * "dos" (paso 1) → dormitorios: [2]
-      * "de 2" (paso 1) → dormitorios: [2]
-      * "busco de tres cuartos" → dormitorios: [3]
-      * "quiero 2 o 3 dormitorios" → dormitorios: [2, 3]
-      * "a ver la 2" (paso 6+) → dormitorios: []
-      * "la primera" (paso 6+) → dormitorios: []
-
-
-      PRESUPUESTO — cuota mensual o monto que puede pagar
-
-      Extrae si el cliente menciona un monto, aunque el mensaje sea corto o tenga errores. Acepta cualquier variante:
-      * "400" (paso 5) → presupuesto: "400 soles"
-      * "S/1200" → presupuesto: "1200 soles"
-      * "unos 800 al mes" → presupuesto: "800 soles mensuales"
-      * "puedo 1500" → presupuesto: "1500 soles"
-      * "maximo 2000" → presupuesto: "2000 soles"
-      * "3k de cuota" → presupuesto: "3k"
-      * "mi cuota seria de 900" → presupuesto: "900 soles cuota"
-      * "tengo como 500" → presupuesto: "500 soles"
-      * "no mas de 1000" → presupuesto: "1000 soles"
-      * "presupueto 600" (typo) → presupuesto: "600 soles"
-      * "manejaría hasta 1500" → presupuesto: "1500 soles"
-      * "mi cuota eria 700" (typo) → presupuesto: "700 soles cuota"
-      * "podria pagar unos 2500" → presupuesto: "2500 soles"
-      * "con 2000 al mes" → presupuesto: "2000 soles mensuales"
-
-
-      FINANCIAMIENTO — cómo pagará el departamento
-
-      - "hipotecario" → hipotecario: crédito hipotecario, banco, via banco, crédito, bbva, scotiabank, bcp, interbank, Mivivienda, Techo Propio, "con el banco", "crédito bancario"
-      - "directo" → directo con la empresa: con Checor, con ustedes, con la inmobiliaria, con la constructora, financiamiento propio, financiado por ustedes, financiamiento directo, "directo"
-      - "contado" → al contado, al cash, de contado, pago total, efectivo, "pago todo"
-
-
-      PROPÓSITO — para qué quiere el depa
-
-      - "vivir": para vivir, para mi familia, para mudarme, vivienda, para mi, para residencia
-      - "inversion": inversión, invertir, rentar, alquilar, arrendar, para negocio, para pasivo
-      - "mix_uso": los dos, vivir y rentar, para vivir/invertir, uso mixto
-
-      
-      TIEMPO DE COMPRA — cuándo planea comprar
-
-      Acepta cualquier forma: "este año", "en 6 meses", "pronto", "ahorita", "ya", "para diciembre",
-      "a fin de año", "no sé todavía", "en un año", "a largo plazo", "cuando pueda", "próximo año".
-
-
-      ZONA / DISTRITO — dónde quiere el depa
-
-      Extrae distritos o zonas de Lima u otras ciudades peruanas. NO confundas con nombres de proyectos inmobiliarios.
-      OTROS CAMPOS
-      - nombre_completo: si el cliente dice sus nombres o datos 
-      - dni: 8 dígitos consecutivos que el cliente mencione como DNI.
-      - email: correo electrónico si lo proporciona.
-      - ocupacion: profesión u oficio. Ej: "soy enfermera", "trabajo en construcción", "ingeniero civil".
-      - ingresos: sueldo o ingresos mensuales. Mantén rangos exactos. Ej: "5000-6000", "entre 3k y 4k", "unos 4500".
-      - unidad_interes: número o código de unidad específica si el cliente la menciona. Ej: "la 1003", "unidad 802", "A-602".
-      - intereses_adicionales: temas adicionales detectados (estacionamiento, mascota, fecha de entrega, areas_comunes, cuota inicial).
-
-      REGLA CRITICA DE COHERENCIA:
-      - NO dupliques el mismo monto en "presupuesto" e "ingresos".
-      - Si el paso actual es 9 o mayor y ya existe presupuesto en la sesión, un monto mencionado junto con ocupación o datos laborales debe ir en "ingresos", no en "presupuesto", salvo que el cliente corrija explícitamente su cuota/presupuesto.
-
-      Si no encuentras información de un campo, déjalo vacío/null. Ignora saludos, gracias, emojis y texto sin datos útiles.
+      Si no encuentras información de un campo, déjalo vacío/null. Ignora saludos, gracias y texto sin datos útiles.
 
       Mensaje del cliente: "${mensaje}"
       `;
@@ -1182,33 +1172,42 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
       await this.sincronizarDatosLeadExtraidos(leadUuid, codigoEmpresa, result);
 
       const puntos: string[] = [];
+      const CamposConfirmados = new Set<string>(result.campos_confirmados || []);
       const zonasDetectadas = (result.zonas || []).filter((zona: string) => {
         const zonaNormalizada = this.normalizeText(zona);
         return zonaNormalizada.length > 0 && !nombresProyectosActivosNormalizados.has(zonaNormalizada);
       });
 
       // Mapear resultados a formato de resumen
-      if (result.dormitorios && result.dormitorios.length > 0) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'dormitorios', result.dormitorios)) {
         const dormsStr = result.dormitorios.sort().join(' y ');
         this.addSummaryPoint(puntos, `Paso 1 - Dormitorios: ${dormsStr}`);
       }
 
-      if (result.proposito) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'proposito', result.proposito)) {
         const mapa: Record<string, string> = { 'vivir': 'para vivir', 'inversion': 'inversión', 'mix_uso': 'uso mixto' };
         this.addSummaryPoint(puntos, `Paso 2 - Proposito: ${mapa[result.proposito] || result.proposito}`);
       }
 
-      if (zonasDetectadas.length > 0) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'zonas', zonasDetectadas)) {
         // Capitalizar
         const zonasCap = zonasDetectadas.map(z => z.charAt(0).toUpperCase() + z.slice(1).toLowerCase()).join(', ');
         this.addSummaryPoint(puntos, `Paso 2 - Zona preferida: ${zonasCap}`);
       }
 
-      if (result.tiempo_compra) {
+      const DebeOmitirTiempoCompra = this.ShouldUseExtractedField(CamposConfirmados, 'tiempo_compra', result.tiempo_compra) && this.ShouldSkipPurchaseTimingOverwrite(contextoActual);
+
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'tiempo_compra', result.tiempo_compra) && !DebeOmitirTiempoCompra) {
         this.addSummaryPoint(puntos, `Paso 3 - Tiempo de compra: ${result.tiempo_compra}`);
       }
 
-      if (result.financiamiento) {
+      if (DebeOmitirTiempoCompra) {
+        this.logger.debug(
+          `Resumen: se omitio sobreescribir tiempo de compra en etapa posterior para lead ${leadUuid}`,
+        );
+      }
+
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'financiamiento', result.financiamiento)) {
         const mapa: Record<string, string> = {
           'hipotecario': 'crédito hipotecario',
           'banco': 'crédito hipotecario',
@@ -1218,39 +1217,38 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
         this.addSummaryPoint(puntos, `Paso 4 - Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
       }
 
-      const DebeOmitirPresupuesto = this.shouldSkipBudgetOverwrite(
-        contextoActual.pasoPendiente,
+      const DebeOmitirPresupuesto = this.ShouldSkipBudgetOverwrite(
         contextoActual.presupuesto,
         result.presupuesto,
         result.ingresos,
       );
 
-      if (result.presupuesto && !DebeOmitirPresupuesto) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'presupuesto', result.presupuesto) && !DebeOmitirPresupuesto) {
         this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${result.presupuesto}`);
       }
 
       if (DebeOmitirPresupuesto) {
         this.logger.debug(
-          `Resumen: se omitio sobreescribir presupuesto con monto detectado en paso ${contextoActual.pasoPendiente} para lead ${leadUuid}`,
+          `Resumen: se omitio sobreescribir presupuesto con monto duplicado como ingreso para lead ${leadUuid}`,
         );
       }
 
-      if (result.unidad_interes) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'unidad_interes', result.unidad_interes)) {
         this.addSummaryPoint(puntos, `Paso 6 - Unidad de interes: ${result.unidad_interes}`);
       }
 
-      if (result.ocupacion) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'ocupacion', result.ocupacion)) {
         this.addSummaryPoint(puntos, `Paso 9 - Ocupación: ${result.ocupacion}`);
       }
 
-      if (result.ingresos) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'ingresos', result.ingresos)) {
         this.addSummaryPoint(puntos, `Paso 9 - Ingresos mensuales: ${result.ingresos}`);
       }
 
 
 
       // Intereses adicionales mapeados
-      if (result.intereses_adicionales && result.intereses_adicionales.length > 0) {
+      if (this.ShouldUseExtractedField(CamposConfirmados, 'intereses_adicionales', result.intereses_adicionales)) {
         const mapaInteres: Record<string, string> = {
           'estacionamiento': 'Preguntó por estacionamiento',
           'mascota': 'Preguntó por política de mascotas',

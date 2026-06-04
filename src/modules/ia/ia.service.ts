@@ -104,10 +104,12 @@ export class AiService {
             const proyectosActivos = await this.proyectoRepo.find({
                 where: { codigoEmpresa, estado: 'activo' }
             });
+            const UltimaPreguntaBot = this.ObtenerUltimaPreguntaBot(historialFormateado);
 
             await this.agentService.actualizarResumenSesion(mensajeUsuario, leadUuid, codigoEmpresa, {
                 omitirSiSeleccionProyectoNumerica: !proyectoIdPrevio && proyectosActivos.length > 1 && /^\s*\d{1,2}\s*$/.test(mensajeUsuario || ''),
                 nombresProyectosActivos: proyectosActivos.map((proyecto) => proyecto.nombre).filter(Boolean),
+                UltimaPreguntaBot,
             });
 
             // Recargar sesión DESPUÉS de actualizar el resumen para obtener datos frescos
@@ -216,5 +218,36 @@ export class AiService {
             : descripcionBase;
 
         return `${proyecto.nombre}: ${resumenCorto}`;
+    }
+
+    private ObtenerUltimaPreguntaBot(Historial: BaseMessage[]): string | undefined {
+        const MensajesAsistente = [...Historial].reverse();
+
+        for (const Mensaje of MensajesAsistente) {
+            if (Mensaje._getType() !== 'ai') {
+                continue;
+            }
+
+            const Contenido = this.ObtenerContenidoMensaje(Mensaje);
+            if (Contenido) {
+                return Contenido;
+            }
+        }
+
+        return undefined;
+    }
+
+    private ObtenerContenidoMensaje(Mensaje: BaseMessage): string {
+        if (typeof Mensaje.content === 'string') {
+            return Mensaje.content;
+        }
+
+        if (Array.isArray(Mensaje.content)) {
+            return Mensaje.content
+                .map((Parte) => typeof Parte === 'string' ? Parte : JSON.stringify(Parte))
+                .join('\n');
+        }
+
+        return JSON.stringify(Mensaje.content);
     }
 }

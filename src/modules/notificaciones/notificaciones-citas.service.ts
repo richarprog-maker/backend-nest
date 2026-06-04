@@ -37,6 +37,8 @@ const PARAM_HORA_CITA = 'hora_cita';
 const PARAM_TIPO_CITA = 'tipo_cita';
 const PARAM_CITA_ID = 'cita_id';
 const PARAM_RESUMEN_CONVERSACION = 'resumen_conversacion';
+const RESUMEN_LINEA_BULLET_REGEX = /^•\s*/;
+const RESUMEN_LINEA_PASO_REGEX = /^Paso\s+\d+\s*-\s*/i;
 
 interface DatosNotificacionCitaCaliente {
     Cita: Cita;
@@ -342,12 +344,11 @@ export class NotificacionesCitasService {
                 PlantillaWhatsapp.idioma,
                 Componentes,
             );
-        } else {
-            const MensajeTexto = this.ProcesarContenidoPlantilla(PlantillaWhatsapp?.contenido, VariablesMensaje);
-            await this.WapiService.sendMessage(CodigoEmpresa, Asesor.telefono, MensajeTexto);
+            this.Logger.log(`WhatsApp de cita ${CitaAgendada.id} enviado a asesor ${Asesor.id}`);
+            return;
         }
 
-        this.Logger.log(`WhatsApp de cita ${CitaAgendada.id} enviado a asesor ${Asesor.id}`);
+        this.Logger.warn(`No se envio WhatsApp de cita ${CitaAgendada.id}: falta nombre_template_whatsapp aprobado/configurado`);
     }
 
     private async ObtenerPlantilla(
@@ -376,7 +377,7 @@ export class NotificacionesCitasService {
         const DniLead = LeadAsignado?.dni || TEXTO_SIN_DATO;
         const Proyecto = CitaAgendada.nombreProyecto || TEXTO_PROYECTO_DEFAULT;
         const TipoCita = CitaAgendada.tipoCita || TEXTO_TIPO_CITA_DEFAULT;
-        const ResumenConversacion = SesionActual?.resumenConversacion || TEXTO_SIN_DATO;
+        const ResumenConversacion = this.FormatearResumenConversacionNotificacion(SesionActual?.resumenConversacion);
 
         return {
             [PARAM_ASESOR_NOMBRE]: Asesor.nombre || TEXTO_SIN_DATO,
@@ -391,6 +392,27 @@ export class NotificacionesCitasService {
             [PARAM_CITA_ID]: String(CitaAgendada.id),
             [PARAM_RESUMEN_CONVERSACION]: ResumenConversacion,
         };
+    }
+
+    private FormatearResumenConversacionNotificacion(ResumenConversacion?: string | null): string {
+        const LineasResumen = (ResumenConversacion || '')
+            .split('\n')
+            .map((LineaResumen) => this.FormatearLineaResumenConversacion(LineaResumen))
+            .filter((LineaResumen) => LineaResumen.length > 0);
+
+        if (!LineasResumen.length) {
+            return TEXTO_SIN_DATO;
+        }
+
+        return LineasResumen.map((LineaResumen) => `• ${LineaResumen}`).join('\n');
+    }
+
+    private FormatearLineaResumenConversacion(LineaResumen: string): string {
+        return LineaResumen
+            .replace(RESUMEN_LINEA_BULLET_REGEX, '')
+            .replace(RESUMEN_LINEA_PASO_REGEX, '')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
     private ProcesarContenidoPlantilla(
