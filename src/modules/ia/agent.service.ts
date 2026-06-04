@@ -75,6 +75,30 @@ export class AgentService {
     }
   }
 
+  private normalizeNumericText(Valor?: string | null): string | null {
+    if (!Valor) return null;
+    const SoloDigitos = Valor.replace(/\D/g, '');
+    return SoloDigitos.length > 0 ? SoloDigitos : null;
+  }
+
+  private shouldSkipBudgetOverwrite(
+    PasoPendiente: number,
+    PresupuestoActual?: string,
+    PresupuestoExtraido?: string | null,
+    IngresosExtraidos?: string | null,
+  ): boolean {
+    if (!PresupuestoActual) return false;
+    if (!PresupuestoExtraido) return false;
+    if (!IngresosExtraidos) return false;
+    if (PasoPendiente < 9) return false;
+
+    const PresupuestoNormalizado = this.normalizeNumericText(PresupuestoExtraido);
+    const IngresosNormalizados = this.normalizeNumericText(IngresosExtraidos);
+
+    if (!PresupuestoNormalizado || !IngresosNormalizados) return false;
+    return PresupuestoNormalizado === IngresosNormalizados;
+  }
+
   private isValidDniFormat(dni?: string | null): boolean {
     if (!dni) return false;
     const normalized = dni.trim();
@@ -1130,6 +1154,10 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
       - unidad_interes: número o código de unidad específica si el cliente la menciona. Ej: "la 1003", "unidad 802", "A-602".
       - intereses_adicionales: temas adicionales detectados (estacionamiento, mascota, fecha de entrega, areas_comunes, cuota inicial).
 
+      REGLA CRITICA DE COHERENCIA:
+      - NO dupliques el mismo monto en "presupuesto" e "ingresos".
+      - Si el paso actual es 9 o mayor y ya existe presupuesto en la sesión, un monto mencionado junto con ocupación o datos laborales debe ir en "ingresos", no en "presupuesto", salvo que el cliente corrija explícitamente su cuota/presupuesto.
+
       Si no encuentras información de un campo, déjalo vacío/null. Ignora saludos, gracias, emojis y texto sin datos útiles.
 
       Mensaje del cliente: "${mensaje}"
@@ -1190,8 +1218,21 @@ USO: Solo cuando el cliente expresa su preferencia de dormitorios por primera ve
         this.addSummaryPoint(puntos, `Paso 4 - Financiamiento: ${mapa[result.financiamiento] || result.financiamiento}`);
       }
 
-      if (result.presupuesto) {
+      const DebeOmitirPresupuesto = this.shouldSkipBudgetOverwrite(
+        contextoActual.pasoPendiente,
+        contextoActual.presupuesto,
+        result.presupuesto,
+        result.ingresos,
+      );
+
+      if (result.presupuesto && !DebeOmitirPresupuesto) {
         this.addSummaryPoint(puntos, `Paso 5 - Presupuesto/Cuota: ${result.presupuesto}`);
+      }
+
+      if (DebeOmitirPresupuesto) {
+        this.logger.debug(
+          `Resumen: se omitio sobreescribir presupuesto con monto detectado en paso ${contextoActual.pasoPendiente} para lead ${leadUuid}`,
+        );
       }
 
       if (result.unidad_interes) {
