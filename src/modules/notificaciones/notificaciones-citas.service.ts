@@ -37,6 +37,7 @@ const PARAM_HORA_CITA = 'hora_cita';
 const PARAM_TIPO_CITA = 'tipo_cita';
 const PARAM_CITA_ID = 'cita_id';
 const PARAM_RESUMEN_CONVERSACION = 'resumen_conversacion';
+const PARAM_RESUMEN_NOTIFICACION = 'resumen_notificacion';
 const RESUMEN_LINEA_BULLET_REGEX = /^•\s*/;
 const RESUMEN_LINEA_PASO_REGEX = /^Paso\s+\d+\s*-\s*/i;
 
@@ -337,13 +338,21 @@ export class NotificacionesCitasService {
 
         if (PlantillaWhatsapp?.nombreTemplateWhatsapp) {
             const Componentes = this.ConstruirComponentesWhatsapp(PlantillaWhatsapp, VariablesMensaje);
-            await this.WapiService.sendTemplate(
+            const RespuestaEnvio: any = await this.WapiService.sendTemplate(
                 CodigoEmpresa,
                 Asesor.telefono,
                 PlantillaWhatsapp.nombreTemplateWhatsapp,
                 PlantillaWhatsapp.idioma,
                 Componentes,
             );
+
+            if (RespuestaEnvio?.error) {
+                this.Logger.warn(
+                    `No se envio WhatsApp de cita ${CitaAgendada.id} al asesor ${Asesor.id}: ${JSON.stringify(RespuestaEnvio.details)}`,
+                );
+                return;
+            }
+
             this.Logger.log(`WhatsApp de cita ${CitaAgendada.id} enviado a asesor ${Asesor.id}`);
             return;
         }
@@ -378,6 +387,17 @@ export class NotificacionesCitasService {
         const Proyecto = CitaAgendada.nombreProyecto || TEXTO_PROYECTO_DEFAULT;
         const TipoCita = CitaAgendada.tipoCita || TEXTO_TIPO_CITA_DEFAULT;
         const ResumenConversacion = this.FormatearResumenConversacionNotificacion(SesionActual?.resumenConversacion);
+        const ResumenNotificacion = this.ConstruirResumenNotificacion({
+            NombreLead,
+            TelefonoLead,
+            EmailLead,
+            DniLead,
+            Proyecto,
+            FechaCita: String(CitaAgendada.fechaCita || TEXTO_SIN_DATO),
+            HoraCita: String(CitaAgendada.horaCita || TEXTO_SIN_DATO),
+            TipoCita,
+            ResumenConversacion,
+        });
 
         return {
             [PARAM_ASESOR_NOMBRE]: Asesor.nombre || TEXTO_SIN_DATO,
@@ -391,7 +411,34 @@ export class NotificacionesCitasService {
             [PARAM_TIPO_CITA]: TipoCita,
             [PARAM_CITA_ID]: String(CitaAgendada.id),
             [PARAM_RESUMEN_CONVERSACION]: ResumenConversacion,
+            [PARAM_RESUMEN_NOTIFICACION]: ResumenNotificacion,
         };
+    }
+
+    private ConstruirResumenNotificacion(Datos: {
+        NombreLead: string;
+        TelefonoLead: string;
+        EmailLead: string;
+        DniLead: string;
+        Proyecto: string;
+        FechaCita: string;
+        HoraCita: string;
+        TipoCita: string;
+        ResumenConversacion: string;
+    }): string {
+        return [
+            `Lead: ${Datos.NombreLead}`,
+            `Telefono: ${Datos.TelefonoLead}`,
+            `Email: ${Datos.EmailLead}`,
+            `DNI: ${Datos.DniLead}`,
+            `Proyecto: ${Datos.Proyecto}`,
+            `Fecha: ${Datos.FechaCita}`,
+            `Hora: ${Datos.HoraCita}`,
+            `Tipo: ${Datos.TipoCita}`,
+            `Resumen conversacion: ${Datos.ResumenConversacion}`,
+        ]
+            .map((LineaResumen) => this.NormalizarTextoParametroWhatsapp(LineaResumen))
+            .join(' | ');
     }
 
     private FormatearResumenConversacionNotificacion(ResumenConversacion?: string | null): string {
@@ -415,6 +462,13 @@ export class NotificacionesCitasService {
             .trim();
     }
 
+    private NormalizarTextoParametroWhatsapp(TextoParametro: string): string {
+        return String(TextoParametro || TEXTO_SIN_DATO)
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+    }
+
     private ProcesarContenidoPlantilla(
         ContenidoPlantilla: string | undefined,
         VariablesMensaje: Record<string, string>,
@@ -432,14 +486,13 @@ export class NotificacionesCitasService {
     private ConstruirComponentesWhatsapp(
         PlantillaWhatsapp: PlantillaNotificacionAsesor,
         VariablesMensaje: Record<string, string>,
-    ): Array<{ type: string; parameters: Array<{ type: string; parameter_name: string; text: string }> }> {
+    ): Array<{ type: string; parameters: Array<{ type: string; text: string }> }> {
         const ParametrosPlantilla = Array.isArray(PlantillaWhatsapp.parametros)
             ? PlantillaWhatsapp.parametros
             : [];
 
         const ParametrosBody = ParametrosPlantilla.map((NombreParametro) => ({
             type: 'text',
-            parameter_name: NombreParametro,
             text: VariablesMensaje[NombreParametro] || TEXTO_SIN_DATO,
         }));
 
